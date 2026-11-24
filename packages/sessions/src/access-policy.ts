@@ -2,6 +2,8 @@ import { accessPolicyHash, AccessPoliciesRepo, SessionsRepo, WorktreesRepo } fro
 import type { SessionId, SessionRuntime } from "@mend/domain";
 import {
   type AccessPolicyRules,
+  type BrokeredSecretBinding,
+  revocationReaches,
   type AccessPolicySource as PolicySource,
   type AccessRevocation,
   type BrokeredSecretLaunch,
@@ -93,6 +95,8 @@ export interface LaunchAccessPolicy {
   readonly fingerprintHash: string | null;
   readonly revokedSecretIds: ReadonlySet<string>;
   readonly revokedHosts: ReadonlyArray<string>;
+  /** An `all` revocation reaches the worktree: every grant is gone, the automatic ones too. */
+  readonly revokedAll: boolean;
 }
 
 const STANDARD_HASH = accessPolicyHash(STANDARD_ACCESS_POLICY_RULES);
@@ -104,13 +108,91 @@ export const launchAccessPolicyOf = (
   const rules = effectiveAccessPolicyRules(pin, revocations);
   const hosts = revokedHosts(pin.source, revocations);
   const policyHash = accessPolicyHash(rules);
+  const secretIds = revokedSecretIds(pin.source, revocations);
+  const all = revocations.some(
+    (revocation) => revocation.kind === "all" && revocationReaches(revocation, pin.source),
+  );
+  // The fingerprint names what a standby holds that a revocation took back since: a standby made
+  // before a revocation never serves a claim after it (§8.3).
+  const revoked = [
+    ...(all ? ["all"] : []),
+    ...[...hosts].toSorted().map((host) => `host:${host}`),
+    ...[...secretIds].toSorted().map((id) => `secret:${id}`),
+  ];
   return {
     rules,
     source: pin.source,
     policyHash,
-    fingerprintHash: policyHash === STANDARD_HASH && hosts.length === 0 ? null : policyHash,
-    revokedSecretIds: revokedSecretIds(pin.source, revocations),
+    fingerprintHash:
+      policyHash === STANDARD_HASH && revoked.length === 0
+        ? null
+        : revoked.length === 0
+          ? policyHash
+          : `${policyHash}+revoked:${revoked.join(",")}`,
+    revokedSecretIds: secretIds,
     revokedHosts: hosts,
+    revokedAll: all,
+  };
+};
+
+/**
+ * The project secrets a launch under `policy` delivers: Direct ones to the environment, Brokered
+ * ones to the egress proxy with every revoked host taken out of their bind hosts. A revoked
+ * secret goes nowhere, nor one whose bind hosts are all revoked, nor any Brokered secret once
+ * everything is revoked; none falls back to the environment.
+ */
+export const deliverableSecrets = <
+  S extends {
+    readonly id: string;
+    readonly brokered: {
+      readonly binding: BrokeredSecretBinding;
+      readonly placeholder: string;
+    } | null;
+  },
+>(
+  sealed: ReadonlyArray<S>,
+  policy: Pick<LaunchAccessPolicy, "revokedSecretIds" | "revokedHosts" | "revokedAll">,
+): { readonly direct: ReadonlyArray<S>; readonly brokered: ReadonlyArray<S> } => {
+  const revokedHostSet = new Set(policy.revokedHosts);
+  const direct: Array<S> = [];
+  const brokered: Array<S> = [];
+  for (const secret of sealed) {
+    if (policy.revokedSecretIds.has(secret.id)) continue;
+    if (secret.brokered === null) {
+      direct.push(secret);
+      continue;
+    }
+    if (policy.revokedAll) continue;
+    const bindHosts = secret.brokered.binding.bindHosts.filter(
+      (host) => !revokedHostSet.has(host.toLowerCase().replace(/\.$/, "")),
+    );
+    if (bindHosts.length === 0) continue;
+    brokered.push({
+      ...secret,
+      brokered: { ...secret.brokered, binding: { ...secret.brokered.binding, bindHosts } },
+    });
+  }
+  return { direct, brokered };
+};
+
+/**
+ * What a new workspace is told is revoked, right after its create and before anything runs in
+ * it: sealant holds a revocation per workspace, so one made after the organization's revocation
+ * needs telling. Null when nothing reaches the worktree.
+ */
+export const revocationsToCarry = (
+  policy: Pick<LaunchAccessPolicy, "revokedSecretIds" | "revokedHosts" | "revokedAll">,
+):
+  | { readonly all: true }
+  | { readonly hosts?: ReadonlyArray<string>; readonly secretIds?: ReadonlyArray<string> }
+  | null => {
+  if (policy.revokedAll) return { all: true };
+  const hosts = [...policy.revokedHosts];
+  const secretIds = [...policy.revokedSecretIds];
+  if (hosts.length === 0 && secretIds.length === 0) return null;
+  return {
+    ...(hosts.length === 0 ? {} : { hosts }),
+    ...(secretIds.length === 0 ? {} : { secretIds }),
   };
 };
 
@@ -191,13 +273,14 @@ export const policyMirrorsOf = (env: {
  * a proxy refuses a host). Otherwise the create carries none, as before Access policies.
  */
 export const launchNeedsNetworkPolicy = (
-  policy: Pick<LaunchAccessPolicy, "rules" | "revokedHosts">,
+  policy: Pick<LaunchAccessPolicy, "rules" | "revokedHosts" | "revokedAll">,
   brokeredCount: number,
 ): boolean =>
   policy.rules.mode === "restricted" ||
   policy.rules.requireVmIsolation ||
   brokeredCount > 0 ||
-  policy.revokedHosts.length > 0;
+  policy.revokedHosts.length > 0 ||
+  policy.revokedAll;
 
 /**
  * The network policy a create or "Apply updated policy" hands sealant: the pinned hosts, under
@@ -232,7 +315,8 @@ export const networkPolicyFor = (input: {
       ...(entry.pathPrefixes === undefined ? {} : { pathPrefixes: entry.pathPrefixes }),
     });
   }
-  if (input.policy.rules.mode === "restricted") {
+  // Everything revoked: not even what a session needs to run is let through.
+  if (input.policy.rules.mode === "restricted" && !input.policy.revokedAll) {
     for (const host of input.autoHosts) add({ host });
   }
   for (const secret of input.brokered) {
@@ -246,7 +330,9 @@ export const networkPolicyFor = (input: {
     sourcePolicyRevision: input.policy.source.revision,
     ...(input.policy.rules.requireVmIsolation ? { requireVmIsolation: true } : {}),
     ...(allowHosts.length === 0 ? {} : { allowHosts }),
-    ...(input.policy.rules.mode === "restricted" && input.mirrors.length > 0
+    ...(input.policy.rules.mode === "restricted" &&
+    !input.policy.revokedAll &&
+    input.mirrors.length > 0
       ? { allowMirrors: input.mirrors.map((mirror) => ({ ...mirror })) }
       : {}),
   };
@@ -284,6 +370,8 @@ export const accessPolicyAdmissionRefusal = (input: {
   readonly brokeredCount: number;
   /** Brokered secrets the policy does not allow, by name. */
   readonly brokeredNames: ReadonlyArray<string>;
+  /** A host or `all` revocation reaches the worktree: only an egress proxy refuses a host. */
+  readonly revokesHosts?: boolean;
 }): string | null => {
   const runtime = input.runtime ?? "docker";
   if (input.brokeredCount > 0 && !input.rules.allowBrokeredSecrets) {
@@ -297,6 +385,14 @@ export const accessPolicyAdmissionRefusal = (input: {
   }
   if (input.brokeredCount > 0 && !PROXY_RUNTIMES.has(runtime)) {
     return `Brokered secrets reach a workspace only through an egress proxy of its own, which sessions on ${runtime === "boat" ? "Boat" : runtime} do not have. Make the secrets Direct, or run this organization's sessions on this server's Docker or KVM.`;
+  }
+  // sealant runs a Docker workspace's proxy only for Restricted egress or a Brokered secret; a
+  // host VM always has one.
+  const runsProxy =
+    runtime === "host-vm" ||
+    (runtime === "docker" && (input.rules.mode === "restricted" || input.brokeredCount > 0));
+  if (input.revokesHosts === true && !runsProxy) {
+    return "An Organization Owner revoked access this worktree's policy granted, and only a workspace's own egress proxy can refuse a host. Its sessions run without one here, so the revocation could not hold. An owner can make the project's policy Restricted, or switch Organization → Runtime to this server's KVM.";
   }
   return null;
 };

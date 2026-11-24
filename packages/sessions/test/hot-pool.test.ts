@@ -196,15 +196,15 @@ describe("hotFingerprint", () => {
 
   it("names the Access policy and Brokered secrets a standby holds, and leaves Standard out (§8.3)", () => {
     const standard = hotFingerprint(base, SHARED);
-    expect(
-      hotFingerprint({ ...base, accessPolicyHash: null, hasBrokeredSecrets: false }, SHARED),
-    ).toBe(standard);
+    expect(hotFingerprint({ ...base, accessPolicyHash: null, brokeredSecrets: null }, SHARED)).toBe(
+      standard,
+    );
     const restricted = hotFingerprint({ ...base, accessPolicyHash: "sha256:restricted" }, SHARED);
     expect(restricted).not.toBe(standard);
     expect(hotFingerprint({ ...base, accessPolicyHash: "sha256:other" }, SHARED)).not.toBe(
       restricted,
     );
-    expect(hotFingerprint({ ...base, hasBrokeredSecrets: true }, SHARED)).not.toBe(standard);
+    expect(hotFingerprint({ ...base, brokeredSecrets: "digest" }, SHARED)).not.toBe(standard);
     expect(hotFingerprint({ ...base, runtime: "host-vm" }, SHARED)).not.toBe(
       hotFingerprint({ ...base, runtime: "docker" }, SHARED),
     );

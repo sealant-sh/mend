@@ -393,7 +393,7 @@ describe.skipIf(postgres.skip)("Access policies in Postgres", () => {
       await run(
         Effect.flatMap(ProjectSecretsRepo, (repo) => repo.deliveryOf(project, created.secret.id)),
       ),
-    ).toEqual({ name: "STRIPE_KEY", delivery: "brokered" });
+    ).toEqual({ name: "STRIPE_KEY", delivery: "brokered", binding });
 
     // A new binding keeps the placeholder the workspace already holds.
     const rebound = await run(
@@ -454,5 +454,42 @@ describe.skipIf(postgres.skip)("Access policies in Postgres", () => {
         ),
       ),
     ).toBeNull();
+  });
+
+  it("creates a secret Brokered in its first write, never Direct, and refuses a bad binding", async () => {
+    const project = await newProject(ORG_A);
+    const binding = { headerName: "Authorization", bindHosts: ["api.vercel.com"] };
+    const created = await run(
+      Effect.flatMap(ProjectSecretsRepo, (repo) =>
+        repo.create(project, {
+          name: "VERCEL_TOKEN",
+          sealedValue: "sealed:vercel",
+          delivery: { mode: "brokered", binding },
+        }),
+      ),
+    );
+    expect(created.secret.delivery).toMatchObject({ mode: "brokered", binding });
+    const launched = await run(
+      Effect.flatMap(ProjectSecretsRepo, (repo) => repo.sealedForLaunch(project)),
+    );
+    expect(
+      launched.secrets.find((secret) => secret.name === "VERCEL_TOKEN")?.brokered,
+    ).toMatchObject({
+      binding,
+    });
+    const refused = await run(
+      Effect.flip(
+        Effect.flatMap(ProjectSecretsRepo, (repo) =>
+          repo.create(project, {
+            name: "OTHER_TOKEN",
+            sealedValue: "sealed:other",
+            delivery: { mode: "brokered", binding: { headerName: "Host", bindHosts: [] } },
+          }),
+        ),
+      ),
+    );
+    expect(refused._tag).toBe("ProjectEnvironmentInvalidInputError");
+    const after = await run(Effect.flatMap(ProjectSecretsRepo, (repo) => repo.snapshot(project)));
+    expect(after.secrets.map((secret) => secret.name)).toEqual(["VERCEL_TOKEN"]);
   });
 });

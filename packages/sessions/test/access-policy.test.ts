@@ -8,11 +8,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   accessPolicyAdmissionRefusal,
+  deliverableSecrets,
   launchAccessPolicyOf,
   launchNeedsNetworkPolicy,
   networkPolicyFor,
   policyMirrorsOf,
   providerHostsFor,
+  revocationsToCarry,
 } from "../src/access-policy.ts";
 
 const source = { policyId: AccessPolicyId.make("ap_deploy"), name: "Deploy", revision: 4 };
@@ -122,5 +124,88 @@ describe("admission under an Access policy", () => {
       refusal({ ...brokered, rules: rules({ allowBrokeredSecrets: true }), runtime: "boat" }),
     ).toContain("egress proxy of its own");
     expect(refusal({ ...brokered, rules: rules({ allowBrokeredSecrets: true }) })).toBeNull();
+  });
+});
+
+const brokeredSecret = (id: string, bindHosts: ReadonlyArray<string>) => ({
+  id,
+  brokered: {
+    binding: { headerName: "Authorization", bindHosts },
+    placeholder: "mend_sec_abcdefghijklmnopqrstuvwx",
+  },
+});
+describe("what a launch carries of the organization's revocations", () => {
+  const pin = { rules: rules({ allowBrokeredSecrets: true, mode: "restricted" as const }), source };
+
+  it("takes revoked hosts out of bind hosts, and drops a secret left with none", () => {
+    const policy = launchAccessPolicyOf(pin, [
+      { policyId: null, kind: "host", target: "api.vercel.com" },
+    ]);
+    const { direct, brokered: kept } = deliverableSecrets(
+      [
+        { id: "plain", brokered: null },
+        brokeredSecret("vercel", ["api.vercel.com"]),
+        brokeredSecret("stripe", ["api.stripe.com", "API.vercel.com"]),
+      ],
+      policy,
+    );
+    expect(direct.map((secret) => secret.id)).toEqual(["plain"]);
+    expect(kept.map((secret) => [secret.id, secret.brokered?.binding.bindHosts])).toEqual([
+      ["stripe", ["api.stripe.com"]],
+    ]);
+    expect(revocationsToCarry(policy)).toEqual({ hosts: ["api.vercel.com"] });
+  });
+
+  it("under `all`, drops every Brokered secret and lets no automatic host or mirror through", () => {
+    const policy = launchAccessPolicyOf(pin, [
+      { policyId: AccessPolicyId.make("ap_deploy"), kind: "all", target: null },
+    ]);
+    expect(
+      deliverableSecrets([brokeredSecret("vercel", ["api.vercel.com"])], policy).brokered,
+    ).toEqual([]);
+    expect(revocationsToCarry(policy)).toEqual({ all: true });
+    expect(launchNeedsNetworkPolicy(policy, 0)).toBe(true);
+    const network = networkPolicyFor({
+      policy,
+      autoHosts: providerHostsFor("claude"),
+      mirrors: policyMirrorsOf({ npm: "http://npm-mirror:4873/" }),
+      brokered: [],
+    });
+    expect(network.allowHosts).toBeUndefined();
+    expect(network.allowMirrors).toBeUndefined();
+  });
+
+  it("names the revocations in the standby fingerprint", () => {
+    const none = launchAccessPolicyOf(STANDARD_PROJECT_ACCESS_POLICY, []);
+    const secret = launchAccessPolicyOf(STANDARD_PROJECT_ACCESS_POLICY, [
+      { policyId: null, kind: "secret", target: "sec_1" },
+    ]);
+    expect(none.fingerprintHash).toBeNull();
+    expect(secret.fingerprintHash).toContain("secret:sec_1");
+    expect(revocationsToCarry(none)).toBeNull();
+  });
+
+  it("refuses a launch with a revoked host and no egress proxy to refuse it", () => {
+    const base = {
+      rules: STANDARD_ACCESS_POLICY_RULES,
+      dockerInside: false,
+      brokeredCount: 0,
+      brokeredNames: [],
+      revokesHosts: true,
+    };
+    expect(accessPolicyAdmissionRefusal({ ...base, runtime: "docker" })).toContain(
+      "egress proxy can refuse a host",
+    );
+    expect(accessPolicyAdmissionRefusal({ ...base, runtime: "boat" })).toContain(
+      "egress proxy can refuse a host",
+    );
+    expect(accessPolicyAdmissionRefusal({ ...base, runtime: "host-vm" })).toBeNull();
+    expect(
+      accessPolicyAdmissionRefusal({
+        ...base,
+        runtime: "docker",
+        rules: rules({ mode: "restricted" }),
+      }),
+    ).toBeNull();
   });
 });

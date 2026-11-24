@@ -3,6 +3,7 @@ import {
   AccessPoliciesRepo,
   DopplerRepo,
   McpServersRepo,
+  ProjectsRepo,
   ProjectSecretsRepo,
   type SealedProjectSecret,
   SessionsRepo,
@@ -22,7 +23,9 @@ import { Config, DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import {
+  accessPolicyAdmissionRefusal,
   AccessPolicyStore,
+  deliverableSecrets,
   brokeredSecretsFor,
   DOPPLER_HOST,
   launchAccessPolicyOf,
@@ -69,14 +72,14 @@ export interface BrokeredForLaunch {
  */
 export const brokeredForLaunch = (
   sealed: ReadonlyArray<SealedProjectSecret>,
-  policy: Pick<LaunchAccessPolicy, "revokedSecretIds">,
+  policy: Pick<LaunchAccessPolicy, "revokedSecretIds" | "revokedHosts" | "revokedAll">,
   decrypt: (sealedValue: string) => Effect.Effect<string, unknown>,
 ): Effect.Effect<BrokeredForLaunch, AccessPolicyApplyError> =>
   Effect.gen(function* () {
     const secrets: Array<BrokeredSecretLaunch> = [];
     const values: Record<string, string> = {};
-    for (const secret of sealed) {
-      if (secret.brokered === null || policy.revokedSecretIds.has(secret.id)) continue;
+    for (const secret of deliverableSecrets(sealed, policy).brokered) {
+      if (secret.brokered === null) continue;
       const value = yield* decrypt(secret.sealedValue).pipe(
         // Named by key only: a broken machine key must never print a value.
         Effect.mapError(
@@ -150,6 +153,7 @@ export const AccessPolicyEnforcementLive: Layer.Layer<
   | SecretCipher
   | McpServersRepo
   | DopplerRepo
+  | ProjectsRepo
 > = Layer.effect(
   AccessPolicyEnforcement,
   Effect.gen(function* () {
@@ -161,6 +165,7 @@ export const AccessPolicyEnforcementLive: Layer.Layer<
     const cipher = yield* SecretCipher;
     const mcpServers = yield* McpServersRepo;
     const doppler = yield* DopplerRepo;
+    const projects = yield* ProjectsRepo;
 
     /** Each running workspace of a worktree, with the harnesses and people of its sessions. */
     const runningWorkspaces = (worktreeId: WorktreeId) =>
@@ -240,10 +245,21 @@ export const AccessPolicyEnforcementLive: Layer.Layer<
       worktreeId: WorktreeId,
     ) {
       const worktree = yield* worktrees.byId(worktreeId);
+      const project = yield* projects
+        .byId(worktree.projectId)
+        .pipe(
+          Effect.mapError(
+            () =>
+              new AccessPolicyApplyError({ message: "the worktree's project could not be read" }),
+          ),
+        );
       const store = yield* AccessPolicyStore;
-      const project = yield* store.projectPolicy(worktree.projectId);
-      const pin = accessPolicyPin(project.rules, project.source, yield* DateTime.nowAsDate);
-      yield* worktrees.setAccessPolicy(worktreeId, pin);
+      const projectPolicy = yield* store.projectPolicy(worktree.projectId);
+      const pin = accessPolicyPin(
+        projectPolicy.rules,
+        projectPolicy.source,
+        yield* DateTime.nowAsDate,
+      );
       const revocations = yield* store.revocationsForProject(worktree.projectId);
       const policy = launchAccessPolicyOf(pin, revocations);
       const sealed = yield* secrets
@@ -254,6 +270,18 @@ export const AccessPolicyEnforcementLive: Layer.Layer<
               new AccessPolicyApplyError({ message: "the project's secrets could not be read" }),
           ),
         );
+      // The worktree's runtime must hold to the new rules before anything changes: refused, the
+      // worktree keeps the pin it had, as a launch under them would be refused (§8.3).
+      const deliverable = deliverableSecrets(sealed.secrets, policy);
+      const refusal = accessPolicyAdmissionRefusal({
+        rules: policy.rules,
+        runtime: worktree.sessionRuntime,
+        dockerInside: project.workspaceImage.services.docker,
+        brokeredCount: deliverable.brokered.length,
+        brokeredNames: deliverable.brokered.map((secret) => secret.name),
+        revokesHosts: policy.revokedAll || policy.revokedHosts.length > 0,
+      });
+      if (refusal !== null) return yield* new AccessPolicyApplyError({ message: refusal });
       const brokered = policy.rules.allowBrokeredSecrets
         ? yield* brokeredForLaunch(sealed.secrets, policy, cipher.decrypt)
         : { secrets: [], values: {} };
@@ -265,6 +293,20 @@ export const AccessPolicyEnforcementLive: Layer.Layer<
           applyTo(workspaceId, policy, worktree.projectId, who, brokered, mirrors),
         { concurrency: 4 },
       );
+      // A running workspace that did not take the rules (sealant refused them, or did not answer)
+      // keeps the worktree on its old pin, so Mend never says it holds rules it does not.
+      const refused = workspaces.filter((workspace) => workspace.enforcement === "failed");
+      if (refused.length > 0) {
+        return yield* new AccessPolicyApplyError({
+          message: `The worktree keeps the policy it had: ${refused
+            .map(
+              (workspace) =>
+                `workspace ${workspace.workspaceId} did not take the new rules (${workspace.message ?? "no answer"})`,
+            )
+            .join("; ")}.`,
+        });
+      }
+      yield* worktrees.setAccessPolicy(worktreeId, pin);
       return { pin, workspaces };
     });
 

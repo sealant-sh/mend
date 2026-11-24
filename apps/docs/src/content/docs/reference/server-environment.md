@@ -179,15 +179,27 @@ change or a revoked secret to a running workspace.
 
 ### Host VM workspaces
 
-The compose file mounts two more volumes, `mend-vm-images` (base disks, one per workspace image) and
-`mend-vm-data` (each VM's data disk), at `/var/lib/mend/vm-images` and `/var/lib/mend/vm-data`.
-Compose makes them; setup claims neither. They stay unused until `MEND_SESSION_RUNTIMES` or
-`MEND_SESSION_RUNTIME` names `host-vm`, which boots each workspace in a virtual machine of its own
-on this server's KVM. Then the Mend container hands the worker `SEALANT_HOST_VM_IMAGE_DIR` and
-`SEALANT_HOST_VM_DATA_DIR`. It refuses to start when `host-vm` is named and the two volumes are not
-mapped in `SEALANT_DOCKER_VOLUME_MAPPINGS`, or `SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS` is unset:
-each VM runs behind an egress proxy on a network of its own. `mend server setup` does not offer
-`host-vm` yet.
+`host-vm` boots each workspace in a virtual machine of its own on this server's KVM. It needs one
+more Compose file, `compose.host-vm.yaml`, merged after `compose.v2.yaml`. The overlay mounts two
+volumes, `mend-vm-images` (base disks, one per workspace image) and `mend-vm-data` (each VM's data
+disk), at `/var/lib/mend/vm-images` and `/var/lib/mend/vm-data`, and adds both roots to
+`SEALANT_DOCKER_VOLUME_MAPPINGS`. Compose makes the volumes; setup claims neither.
+`MEND_VM_IMAGES_VOLUME_NAME` and `MEND_VM_DATA_VOLUME_NAME` rename them. Without the overlay, the
+bundle maps the store and the control sockets only, as before.
+
+When the saved config's session runtimes name `host-vm`, `mend server setup` writes the overlay into
+the install's generation, and every start, restart and upgrade runs it. A Compose install you run
+yourself adds it by hand:
+
+```sh
+docker compose -f compose.v2.yaml -f compose.host-vm.yaml up -d
+```
+
+When `MEND_SESSION_RUNTIMES` or `MEND_SESSION_RUNTIME` names `host-vm`, the Mend container hands the
+worker `SEALANT_HOST_VM_IMAGE_DIR` and `SEALANT_HOST_VM_DATA_DIR`. It refuses to start when
+`host-vm` is named without the overlay's two mappings, or when
+`SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS` is unset: each VM runs behind an egress proxy on a network
+of its own. `mend server setup` does not offer `host-vm` yet.
 
 ## Package and image mirrors
 

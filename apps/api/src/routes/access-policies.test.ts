@@ -16,6 +16,7 @@ import {
   ProjectSecret,
   STANDARD_ACCESS_POLICY_ID,
   STANDARD_ACCESS_POLICY_RULES,
+  ProjectEnvironmentSnapshot,
 } from "@mend/domain/workbench";
 import { Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -45,7 +46,14 @@ const audits: Array<NewAuditEvent> = [];
 const templates = new Map<string, AccessPolicy>();
 const projectPolicies = new Map<string, ProjectAccessPolicy>();
 const revocations: Array<AccessRevocation> = [];
-const deliveries = new Map<string, { name: string; delivery: "direct" | "brokered" }>();
+const deliveries = new Map<
+  string,
+  {
+    name: string;
+    delivery: "direct" | "brokered";
+    binding: { headerName: string; bindHosts: ReadonlyArray<string> } | null;
+  }
+>();
 
 const template = (
   id: string,
@@ -87,6 +95,11 @@ let api: TenancyApi;
 beforeAll(async () => {
   api = await createTenancyApi(undefined, {
     implement: {
+      cipher: { encrypt: (plaintext) => Effect.succeed(`sealed:${plaintext.length}`) },
+      environment: {
+        snapshot: () =>
+          Effect.succeed(new ProjectEnvironmentSnapshot({ revision: 0, variables: [] })),
+      },
       audit: {
         record: (event) =>
           Effect.sync(() => {
@@ -207,12 +220,24 @@ beforeAll(async () => {
           }),
       },
       secrets: {
+        create: (projectId, input) =>
+          Effect.sync(() => {
+            log.push(`create:${input.delivery?.mode ?? "direct"}`);
+            return {
+              secret: secretOf(projectId, input.delivery?.mode ?? "direct"),
+              revision: 1,
+            };
+          }),
         deliveryOf: (projectId) => Effect.succeed(deliveries.get(deliveryKey(projectId)) ?? null),
         setDelivery: (projectId, _, input) =>
           Effect.sync(() => {
             const key = deliveryKey(projectId);
             const previous = deliveries.get(key)?.delivery ?? "direct";
-            deliveries.set(key, { name: "STRIPE_KEY", delivery: input.delivery.mode });
+            deliveries.set(key, {
+              name: "STRIPE_KEY",
+              delivery: input.delivery.mode,
+              binding: input.delivery.mode === "brokered" ? input.delivery.binding : null,
+            });
             log.push(`setDelivery:${input.delivery.mode}`);
             return {
               secret: secretOf(projectId, input.delivery.mode),
@@ -564,7 +589,11 @@ describe("a project secret's delivery", () => {
   const path = (project: string) => `/api/projects/${project}/secrets/${SECRET}/delivery`;
 
   it("whoever manages the project makes a secret Brokered; the answer and the audit carry no value", async () => {
-    deliveries.set(deliveryKey(privateCarol), { name: "STRIPE_KEY", delivery: "direct" });
+    deliveries.set(deliveryKey(privateCarol), {
+      name: "STRIPE_KEY",
+      delivery: "direct",
+      binding: null,
+    });
     const brokered = await send("carol", "PUT", path(privateCarol), {
       delivery: { mode: "brokered", binding: BINDING },
       expectedRevision: 2,
@@ -589,7 +618,93 @@ describe("a project secret's delivery", () => {
         action: "project.secret_brokered",
         subjectType: "project",
         subjectId: privateCarol,
-        data: { secret: "STRIPE_KEY" },
+        data: {
+          secret: "STRIPE_KEY",
+          headerName: BINDING.headerName,
+          bindHosts: BINDING.bindHosts.join(","),
+          previousHeaderName: null,
+          previousBindHosts: null,
+        },
+      },
+    ]);
+  });
+
+  it("adds a secret Brokered in one write, audited with where it goes and never its value", async () => {
+    const added = await send("carol", "POST", `/api/projects/${privateCarol}/secrets`, {
+      name: "STRIPE_KEY",
+      value: "sk_live_real",
+      delivery: { mode: "brokered", binding: BINDING },
+    });
+    expect(added).toMatchObject({
+      status: 200,
+      body: { secret: { delivery: { mode: "brokered", binding: BINDING } } },
+    });
+    expect(log[0]).toBe("create:brokered");
+    expect(audits.map((event) => [event.action, event.data])).toEqual([
+      [
+        "project.secret_brokered",
+        {
+          secret: "STRIPE_KEY",
+          headerName: BINDING.headerName,
+          bindHosts: BINDING.bindHosts.join(","),
+          previousHeaderName: null,
+          previousBindHosts: null,
+        },
+      ],
+    ]);
+    expect(JSON.stringify(added.body)).not.toContain("sk_live_real");
+    const refused = await send("carol", "POST", `/api/projects/${privateCarol}/secrets`, {
+      name: "OTHER",
+      value: "x",
+      delivery: {
+        mode: "brokered",
+        binding: { headerName: "Host", bindHosts: ["api.stripe.com"] },
+      },
+    });
+    expect(refused).toMatchObject({ status: 400, body: { _tag: "AccessPolicyRejected" } });
+  });
+
+  it("only an Organization Owner changes where an existing Brokered secret's value goes, audited", async () => {
+    deliveries.set(deliveryKey(privateCarol), {
+      name: "STRIPE_KEY",
+      delivery: "brokered",
+      binding: BINDING,
+    });
+    const elsewhere = { headerName: BINDING.headerName, bindHosts: ["collector.example.net"] };
+    const member = await send("carol", "PUT", path(privateCarol), {
+      delivery: { mode: "brokered", binding: elsewhere },
+      expectedRevision: 2,
+    });
+    expect(member).toMatchObject({ status: 403, body: { _tag: "AccessPolicyOwnersOnly" } });
+    expect(log).toEqual([]);
+    // The same binding, its hosts in another order, is no move.
+    const same = await send("carol", "PUT", path(privateCarol), {
+      delivery: {
+        mode: "brokered",
+        binding: { ...BINDING, bindHosts: BINDING.bindHosts.toReversed() },
+      },
+      expectedRevision: 2,
+    });
+    expect(same.status).toBe(200);
+
+    deliveries.set(deliveryKey(sharedA), {
+      name: "STRIPE_KEY",
+      delivery: "brokered",
+      binding: BINDING,
+    });
+    audits.length = 0;
+    const owner = await send("alice", "PUT", path(sharedA), {
+      delivery: { mode: "brokered", binding: elsewhere },
+      expectedRevision: 2,
+    });
+    expect(owner.status).toBe(200);
+    expect(audits.map((event) => event.data)).toEqual([
+      {
+        secret: "STRIPE_KEY",
+        headerName: BINDING.headerName,
+        bindHosts: "collector.example.net",
+        previousHeaderName: BINDING.headerName,
+        previousBindHosts: BINDING.bindHosts.join(","),
       },
     ]);
   });
@@ -607,7 +722,11 @@ describe("a project secret's delivery", () => {
   });
 
   it("turning a Brokered secret back to Direct takes an Organization Owner", async () => {
-    deliveries.set(deliveryKey(privateCarol), { name: "STRIPE_KEY", delivery: "brokered" });
+    deliveries.set(deliveryKey(privateCarol), {
+      name: "STRIPE_KEY",
+      delivery: "brokered",
+      binding: BINDING,
+    });
     const member = await send("carol", "PUT", path(privateCarol), {
       delivery: { mode: "direct" },
       expectedRevision: 2,
@@ -615,7 +734,11 @@ describe("a project secret's delivery", () => {
     expect(member).toMatchObject({ status: 403, body: { _tag: "AccessPolicyOwnersOnly" } });
     expect(log).toEqual([]);
 
-    deliveries.set(deliveryKey(sharedA), { name: "STRIPE_KEY", delivery: "brokered" });
+    deliveries.set(deliveryKey(sharedA), {
+      name: "STRIPE_KEY",
+      delivery: "brokered",
+      binding: BINDING,
+    });
     const owner = await send("alice", "PUT", path(sharedA), {
       delivery: { mode: "direct" },
       expectedRevision: 2,
@@ -630,7 +753,11 @@ describe("a project secret's delivery", () => {
   });
 
   it("a Direct secret staying Direct needs no owner and is not audited", async () => {
-    deliveries.set(deliveryKey(privateCarol), { name: "STRIPE_KEY", delivery: "direct" });
+    deliveries.set(deliveryKey(privateCarol), {
+      name: "STRIPE_KEY",
+      delivery: "direct",
+      binding: null,
+    });
     const kept = await send("carol", "PUT", path(privateCarol), {
       delivery: { mode: "direct" },
       expectedRevision: 2,

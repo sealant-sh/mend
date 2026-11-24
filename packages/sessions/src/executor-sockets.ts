@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as https from "node:https";
-import type * as net from "node:net";
+import * as net from "node:net";
 import * as path from "node:path";
 
 import { SessionChannelTokensRepo } from "@mend/db";
@@ -57,8 +57,10 @@ export interface ObjectStoreEndpoint {
   readonly hostname: string;
   readonly port: number;
   /**
-   * How the relay reaches the store: as configured, so an https store is never dialled in plain
-   * http. The executor's side of the socket is always plain HTTP: the relay reads each `Host`.
+   * The store's scheme, as configured: an https store is reached only over TLS. sealantd dials an
+   * https presigned URL with TLS over the socket itself, which the relay passes to the store
+   * unopened after checking its SNI names the store (`clientHelloServerName`); an http one it
+   * writes as plain HTTP, which the relay reads and relays by its `Host`.
    */
   readonly protocol: "http" | "https";
 }
@@ -358,7 +360,54 @@ export class ExecutorSockets extends Context.Service<
 /** A container name, which is what a `mend-control` subpath is: never `..`, never a path. */
 const SCOPE_SHAPE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
-const listen = (server: http.Server, socketPath: string): Promise<void> =>
+/**
+ * The server name a TLS ClientHello asks for (its SNI), from the first TLS record, or null when
+ * the record names none or is not a ClientHello. `undefined` while more bytes are needed.
+ */
+export const clientHelloServerName = (bytes: Buffer): string | null | undefined => {
+  if (bytes.length < 5) return undefined;
+  if (bytes[0] !== 0x16) return null;
+  const recordLength = bytes.readUInt16BE(3);
+  if (bytes.length < 5 + recordLength) return undefined;
+  const record = bytes.subarray(5, 5 + recordLength);
+  // Handshake type 1 (ClientHello), its 3-byte length, the client version and 32 random bytes.
+  if (record.length < 38 || record[0] !== 0x01) return null;
+  let at = 38;
+  const need = (count: number) => at + count <= record.length;
+  if (!need(1)) return null;
+  at += 1 + (record[at] ?? 0); // session id
+  if (!need(2)) return null;
+  at += 2 + record.readUInt16BE(at); // cipher suites
+  if (!need(1)) return null;
+  at += 1 + (record[at] ?? 0); // compression methods
+  if (!need(2)) return null;
+  const extensionsEnd = Math.min(record.length, at + 2 + record.readUInt16BE(at));
+  at += 2;
+  while (at + 4 <= extensionsEnd) {
+    const type = record.readUInt16BE(at);
+    const length = record.readUInt16BE(at + 2);
+    const start = at + 4;
+    if (type === 0x0000 && start + 5 <= extensionsEnd) {
+      // server_name: the list's length, then each entry's type (0 = a host name) and length.
+      let entry = start + 2;
+      while (entry + 3 <= start + length) {
+        const nameType = record[entry];
+        const nameLength = record.readUInt16BE(entry + 1);
+        const name = record.subarray(entry + 3, entry + 3 + nameLength).toString("ascii");
+        if (nameType === 0) return name.toLowerCase();
+        entry += 3 + nameLength;
+      }
+      return null;
+    }
+    at = start + length;
+  }
+  return null;
+};
+
+/** The largest first TLS record the relay reads before deciding: one record's 16 KiB and its header. */
+const MAX_CLIENT_HELLO = 16 * 1024 + 5;
+
+const listen = (server: net.Server, socketPath: string): Promise<void> =>
   new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(socketPath, () => {
@@ -382,7 +431,7 @@ const makeExecutorSockets = (
       blobStore.publicUrl,
       blobStore.target.kind === "s3" ? blobStore.target.endpoint : undefined,
     );
-    const bound = new Map<string, ReadonlyArray<http.Server>>();
+    const bound = new Map<string, ReadonlyArray<net.Server>>();
     /**
      * Each scope's upgraded connections (a Git tunnel, an `Upgrade`): once handed over they are
      * no longer the server's, so `closeAllConnections` would leave them open past their scope.
@@ -394,11 +443,19 @@ const makeExecutorSockets = (
     const close = (scope: string): void => {
       for (const server of bound.get(scope) ?? []) {
         server.close();
-        server.closeAllConnections();
+        if (server instanceof http.Server) server.closeAllConnections();
       }
       bound.delete(scope);
       for (const socket of upgraded.get(scope) ?? []) socket.destroy();
       upgraded.delete(scope);
+    };
+
+    /** Keep `socket` with `scope`'s connections, so closing the scope closes it. */
+    const held = (scope: string, socket: net.Socket) => {
+      const sockets = upgraded.get(scope) ?? new Set<net.Socket>();
+      sockets.add(socket);
+      upgraded.set(scope, sockets);
+      socket.once("close", () => sockets.delete(socket));
     };
 
     /** Run `work` for `scope` after every bind or unbind of it already asked for has ended. */
@@ -422,7 +479,7 @@ const makeExecutorSockets = (
       }),
     );
 
-    const captureServer = (launchId: string): http.Server => {
+    const captureServer = (scope: string, launchId: string): net.Server => {
       const server = http.createServer((request, response) => {
         try {
           serveCapture(request, response);
@@ -476,7 +533,62 @@ const makeExecutorSockets = (
       server.on("upgrade", refuseTunnel);
       server.maxHeadersCount = 64;
       server.headersTimeout = 10_000;
-      return server;
+      // sealantd's capture dial (sealant-capture `transport.rs`) writes plain HTTP for an http URL
+      // and speaks TLS over this socket for an https one, naming the URL's host as its SNI. A
+      // connection that opens with a ClientHello naming the configured https store is relayed to
+      // it byte for byte, the TLS between sealantd and the store left whole; one naming anything
+      // else, or any TLS when the store is not https, is closed. Everything else is HTTP.
+      const front = net.createServer((socket) => {
+        held(scope, socket);
+        let first = Buffer.alloc(0);
+        const decide = (chunk: Buffer) => {
+          first = Buffer.concat([first, chunk]);
+          if (first[0] !== 0x16) {
+            socket.removeListener("data", decide);
+            socket.setTimeout(0);
+            socket.pause();
+            socket.unshift(first);
+            server.emit("connection", socket);
+            socket.resume();
+            return;
+          }
+          const name = clientHelloServerName(first);
+          if (name === undefined) {
+            if (first.length > MAX_CLIENT_HELLO) socket.destroy();
+            return;
+          }
+          socket.removeListener("data", decide);
+          socket.setTimeout(0);
+          if (store === null || store.protocol !== "https" || name !== store.hostname) {
+            socket.destroy();
+            return;
+          }
+          socket.pause();
+          const upstream = net.connect({ host: store.hostname, port: store.port });
+          held(scope, upstream);
+          upstream.once("connect", () => {
+            upstream.write(first);
+            socket.pipe(upstream);
+            upstream.pipe(socket);
+            socket.resume();
+          });
+          const end = () => {
+            socket.destroy();
+            upstream.destroy();
+          };
+          upstream.on("error", end);
+          upstream.on("close", end);
+          socket.on("error", end);
+          socket.on("close", end);
+        };
+        socket.on("data", decide);
+        socket.on("error", () => socket.destroy());
+        socket.setTimeout(10_000, () => {
+          if (first.length === 0 || first[0] === 0x16) socket.destroy();
+        });
+      });
+      front.on("close", () => server.closeAllConnections());
+      return front;
     };
 
     const sessionServer = (scope: string, launchId: string): http.Server => {
@@ -493,19 +605,14 @@ const makeExecutorSockets = (
         const api: SessionSocketApi = { ...auth.api, capture: undefined, captureAs: undefined };
         return { ...auth, api };
       }, registry);
-      const held = (socket: net.Socket) => {
-        const sockets = upgraded.get(scope) ?? new Set<net.Socket>();
-        sockets.add(socket);
-        upgraded.set(scope, sockets);
-        socket.once("close", () => sockets.delete(socket));
-      };
+
       const server = http.createServer(handlers.onRequest);
       server.on("connect", (request: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
-        held(socket);
+        held(scope, socket);
         handlers.onConnect(request, socket, head);
       });
       server.on("upgrade", (request: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
-        held(socket);
+        held(scope, socket);
         handlers.onUpgrade(request, socket, head);
       });
       server.maxHeadersCount = 64;
@@ -523,8 +630,8 @@ const makeExecutorSockets = (
       fs.mkdirSync(dir, { recursive: true });
       fs.rmSync(capturePath, { force: true });
       fs.rmSync(sessionPath, { force: true });
-      const servers: Array<{ readonly server: http.Server; readonly path: string }> = [
-        { server: captureServer(binding.launchId), path: capturePath },
+      const servers: Array<{ readonly server: net.Server; readonly path: string }> = [
+        { server: captureServer(binding.scope, binding.launchId), path: capturePath },
         ...(binding.mode === "recover"
           ? []
           : [{ server: sessionServer(binding.scope, binding.launchId), path: sessionPath }]),

@@ -120,6 +120,7 @@ import {
   type Tenancy,
   TENANCIES,
 } from "./server-edge.ts";
+import { HOST_VM_COMPOSE_FILE, renderHostVmOverlay } from "./server-host-vm.ts";
 import {
   DEFAULT_MIRRORS,
   DEFAULT_NPM_MIRROR_MAX_SIZE,
@@ -2775,6 +2776,10 @@ const validateOverlays = (
     throw setupError(
       `Server generation is corrupt: ${WORKSPACE_MEMORY_COMPOSE_FILE} does not match the saved workspace memory settings.`,
     );
+  if (files.hostVm !== renderHostVmOverlay(config))
+    throw setupError(
+      `Server generation is corrupt: ${HOST_VM_COMPOSE_FILE} does not match the saved session runtimes.`,
+    );
   if (!isBoatOverlayOf(files.boat, config.boat))
     throw setupError(
       "Server generation is corrupt: compose.boat.yaml does not match the saved Boat settings.",
@@ -3111,6 +3116,9 @@ export const readServerInstallationFacts = async (
           ...(generation.files.workspaceMemory === undefined
             ? []
             : [{ name: WORKSPACE_MEMORY_COMPOSE_FILE, content: generation.files.workspaceMemory }]),
+          ...(generation.files.hostVm === undefined
+            ? []
+            : [{ name: HOST_VM_COMPOSE_FILE, content: generation.files.hostVm }]),
           ...(generation.files.npmMirrorConf === undefined
             ? []
             : [{ name: NPM_MIRROR_CONF_NAME, content: generation.files.npmMirrorConf }]),
@@ -3218,6 +3226,7 @@ const generationFiles = (
   const mirrors = renderMirrorsOverlay(config.mirrors);
   const workspaceImages = renderWorkspaceImagesOverlay(config.workspaceImages);
   const workspaceMemory = renderWorkspaceMemoryOverlay(config.workspaceMemory);
+  const hostVm = renderHostVmOverlay(config);
   const t3Gateway = renderT3GatewayOverlay(config);
   const remoteEndpoints = renderRemoteEndpointsOverlay(config.remoteEndpoints, config.edgeHost);
   const remoteEndpointsCaddyfile =
@@ -3245,6 +3254,7 @@ const generationFiles = (
     ...(mirrors === undefined ? {} : { mirrors }),
     ...(workspaceImages === undefined ? {} : { workspaceImages }),
     ...(workspaceMemory === undefined ? {} : { workspaceMemory }),
+    ...(hostVm === undefined ? {} : { hostVm }),
     ...(config.mirrors === undefined || config.mirrors.npm === null
       ? {}
       : { npmMirrorConf: NPM_MIRROR_CONF }),

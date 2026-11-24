@@ -1302,7 +1302,8 @@ const ADMITTED: Readonly<
   // Cipher encrypt masks update.
   "projectSecrets.update": { status: 500, calls: ["cipher.encrypt"] },
   "projectSecrets.remove": { status: 500, calls: ["secrets.remove"] },
-  "projectSecrets.setDelivery": { status: 500, calls: ["secrets.setDelivery"] },
+  // The secret's delivery is read first: changing an approved Brokered one takes an owner.
+  "projectSecrets.setDelivery": { status: 500, calls: ["secrets.deliveryOf"] },
   "projectAccessPolicy.get": { status: 500, calls: ["accessPolicies.projectPolicy"] },
   "projectAccessPolicy.set": { status: 500, calls: ["accessPolicies.byId"] },
   "worktreeAccessPolicy.get": { status: 500, calls: ["accessPolicies.revocationsForProject"] },

@@ -87,9 +87,14 @@ export class ProjectSecretsRepo extends Context.Service<
       { readonly revision: number; readonly secrets: ReadonlyArray<SealedProjectSecret> },
       ProjectNotFoundError
     >;
+    /** `delivery` Brokered writes the binding and placeholder in the same insert. */
     readonly create: (
       projectId: ProjectId,
-      input: { readonly name: string; readonly sealedValue: string },
+      input: {
+        readonly name: string;
+        readonly sealedValue: string;
+        readonly delivery?: ProjectSecretDeliveryInput;
+      },
     ) => Effect.Effect<ProjectSecretMutation, ProjectSecretWriteError>;
     /** Replace the value and/or rename; `sealedValue` null keeps the stored value (pure rename). */
     readonly update: (
@@ -140,7 +145,12 @@ export class ProjectSecretsRepo extends Context.Service<
     readonly deliveryOf: (
       projectId: ProjectId,
       secretId: ProjectSecretId,
-    ) => Effect.Effect<{ readonly name: string; readonly delivery: "direct" | "brokered" } | null>;
+    ) => Effect.Effect<{
+      readonly name: string;
+      readonly delivery: "direct" | "brokered";
+      /** The binding a Brokered secret has now; null for a Direct one. */
+      readonly binding: BrokeredSecretBinding | null;
+    } | null>;
   }
 >()("@mend/db/ProjectSecretsRepo") {}
 
@@ -282,9 +292,26 @@ export const ProjectSecretsRepoLive: Layer.Layer<
 
     const create = Effect.fn("ProjectSecretsRepo.create")(function* (
       projectId: ProjectId,
-      input: { readonly name: string; readonly sealedValue: string },
+      input: {
+        readonly name: string;
+        readonly sealedValue: string;
+        readonly delivery?: ProjectSecretDeliveryInput;
+      },
     ) {
       yield* validateName(input.name);
+      const delivery = input.delivery;
+      if (delivery?.mode === "brokered") {
+        const problems = brokeredSecretBindingProblems(delivery.binding);
+        if (problems.length > 0) {
+          return yield* new ProjectEnvironmentInvalidInputError({
+            issues: problems.map((message) => ({
+              field: "value" as const,
+              rule: "brokered-binding",
+              message,
+            })),
+          });
+        }
+      }
       const result = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -306,6 +333,13 @@ export const ProjectSecretsRepoLive: Layer.Layer<
                 projectId,
                 name: input.name,
                 sealedValue: input.sealedValue,
+                ...(delivery?.mode === "brokered"
+                  ? {
+                      delivery: "brokered" as const,
+                      brokeredBinding: delivery.binding,
+                      placeholder: newBrokeredPlaceholder(),
+                    }
+                  : {}),
               })
               .returning()
               .pipe(Effect.orDie);
@@ -528,7 +562,11 @@ export const ProjectSecretsRepoLive: Layer.Layer<
       secretId: ProjectSecretId,
     ) {
       const [row] = yield* db
-        .select({ name: projectSecrets.name, delivery: projectSecrets.delivery })
+        .select({
+          name: projectSecrets.name,
+          delivery: projectSecrets.delivery,
+          binding: projectSecrets.brokeredBinding,
+        })
         .from(projectSecrets)
         .where(and(eq(projectSecrets.id, secretId), eq(projectSecrets.projectId, projectId)))
         .limit(1)

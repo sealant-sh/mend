@@ -358,8 +358,9 @@ const reservedResourceName = (
 export const GENERATION_DIRECTORY = /\/generations\/gen-[0-9a-f-]{36}$/;
 
 /**
- * The host VM runtime's volumes (compose.v2.yaml): Compose's own, but named outright rather than
- * under the project, because sealant mounts them by the name SEALANT_DOCKER_VOLUME_MAPPINGS gives.
+ * The host VM runtime's volumes (compose.host-vm.yaml, only when host-vm is among the session
+ * runtimes): Compose's own, but named outright rather than under the project, because sealant
+ * mounts them by the name SEALANT_DOCKER_VOLUME_MAPPINGS gives. Absent on most installs.
  */
 export const BUNDLE_NAMED_VOLUMES: ReadonlyArray<string> = ["mend-vm-images", "mend-vm-data"];
 

@@ -24,6 +24,7 @@ import {
   AccessPoliciesRepo,
   AuditEventsRepo,
   type OrganizationMembership,
+  ProjectsRepo,
 } from "@mend/db";
 import { AccessPolicyId, type OrganizationId, type ProjectId } from "@mend/domain";
 import {
@@ -299,6 +300,14 @@ export const AccessPoliciesGroupLive = HttpApiBuilder.group(MendApi, "accessPoli
             policyId: revocation.policyId,
           },
         });
+        // A standby holds the grants it was made with: each project's pool drains the ones the
+        // revocation reaches (their fingerprint names it) before any is claimed.
+        const engine = yield* SessionEngine;
+        for (const project of yield* (yield* ProjectsRepo).listForOrganization(
+          found.organization.id,
+        )) {
+          yield* engine.reconcileHotSessions(project.id);
+        }
         const workspaces = yield* pushed;
         return new AccessRevoked({ revocation, workspaces: workspaces.map(enforcementView) });
       }),

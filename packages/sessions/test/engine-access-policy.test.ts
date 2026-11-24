@@ -1,17 +1,34 @@
-import { accessPolicyPin } from "@mend/db";
-import { AccessPolicyId } from "@mend/domain";
+import { AccessPoliciesRepo, accessPolicyPin, DopplerRepo } from "@mend/db";
+import { AccessPolicyId, OrganizationId } from "@mend/domain";
 import {
   type AccessPolicyRules,
   type ProjectAccessPolicy,
+  AccessRevocation,
   STANDARD_ACCESS_POLICY_RULES,
+  STANDARD_PROJECT_ACCESS_POLICY,
   Worktree,
 } from "@mend/domain/workbench";
-import { SessionEngine } from "@mend/sessions";
-import type { CreateOptions } from "@sealant/sdk";
-import { Effect } from "effect";
+import {
+  AccessPolicyEnforcement,
+  AccessPolicyEnforcementLive,
+  AccessPolicyStore,
+  SessionEngine,
+} from "@mend/sessions";
+import type { CreateOptions, RevokeAccessOptions } from "@sealant/sdk";
+import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { sealantLaunchLayer, setup, withEngine } from "./engine/fixture.ts";
+import {
+  mcpServersLayerOf,
+  projectSecretsLayer,
+  projectsLayer,
+  sealantLaunchLayer,
+  secretCipherStubLayer,
+  sessionsLayer,
+  setup,
+  withEngine,
+  worktreesLayer,
+} from "./engine/fixture.ts";
 
 /**
  * A launch under a project's Access policy (agent-home `workspace-isolation-architecture.md`
@@ -27,10 +44,24 @@ const policy = (rules: Partial<AccessPolicyRules>): ProjectAccessPolicy => ({
   },
 });
 
-const storeOf = (project: ProjectAccessPolicy) => ({
+const storeOf = (
+  project: ProjectAccessPolicy,
+  revocations: ReadonlyArray<AccessRevocation> = [],
+) => ({
   projectPolicy: () => Effect.succeed(project),
-  revocationsForProject: () => Effect.succeed([]),
+  revocationsForProject: () => Effect.succeed(revocations),
 });
+
+const revocationOf = (kind: "host" | "all", target: string | null) =>
+  new AccessRevocation({
+    id: `arv_${kind}`,
+    organizationId: OrganizationId.make("org-fixture"),
+    policyId: null,
+    kind,
+    target,
+    revokedByUserId: "owner",
+    revokedAt: new Date(),
+  });
 
 const BROKERED = {
   VERCEL_TOKEN: {
@@ -41,9 +72,16 @@ const BROKERED = {
 
 const launchUnder = (
   project: ProjectAccessPolicy,
-  options: { readonly sessionRuntime?: "docker" | "host-vm" | "boat" } = {},
+  options: {
+    readonly sessionRuntime?: "docker" | "host-vm" | "boat";
+    readonly revocations?: ReadonlyArray<AccessRevocation>;
+  } = {},
 ) => {
   const created: CreateOptions[] = [];
+  const accessRevokes: Array<{
+    readonly workspaceId: string;
+    readonly options: RevokeAccessOptions;
+  }> = [];
   const run = withEngine(
     (world, tmp) =>
       Effect.gen(function* () {
@@ -72,8 +110,21 @@ const launchUnder = (
         return { outcome, session: world.sessions.get(session.id) };
       }),
     {
-      sealantLayer: sealantLaunchLayer(created),
-      accessPolicyStore: storeOf(project),
+      sealantLayer: sealantLaunchLayer(
+        created,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { accessRevokes },
+      ),
+      accessPolicyStore: storeOf(project, options.revocations),
       secrets: () => ({
         revision: 1,
         secrets: { DATABASE_URL: "postgres://u:p@h/db", VERCEL_TOKEN: "vercel-real-token" },
@@ -82,7 +133,7 @@ const launchUnder = (
       ...(options.sessionRuntime === undefined ? {} : { sessionRuntime: options.sessionRuntime }),
     },
   );
-  return run.then((result) => ({ ...result, created }));
+  return run.then((result) => ({ ...result, created, accessRevokes }));
 };
 
 describe("a launch under an Access policy", () => {
@@ -160,5 +211,98 @@ describe("a launch under an Access policy", () => {
     });
     expect(created).toHaveLength(0);
     expect(JSON.stringify(session?.summary ?? null)).toContain("egress proxy of its own");
+  });
+
+  it("tells a new workspace the organization's revoked hosts before anything runs in it", async () => {
+    const { created, accessRevokes } = await launchUnder(policy({ allowBrokeredSecrets: true }), {
+      sessionRuntime: "host-vm",
+      revocations: [revocationOf("host", "api.vercel.com")],
+    });
+    expect(created).toHaveLength(1);
+    // The revoked bind host is gone, and with it the secret it was bound to alone.
+    expect(created[0]?.brokeredSecrets).toBeUndefined();
+    expect(created[0]?.networkPolicy?.allowHosts?.map((entry) => entry.host) ?? []).not.toContain(
+      "api.vercel.com",
+    );
+    expect(accessRevokes.map((entry) => entry.options)).toEqual([{ hosts: ["api.vercel.com"] }]);
+  });
+
+  it("refuses a Standard launch on this server's Docker that could not refuse a revoked host", async () => {
+    const { created, session } = await launchUnder(policy({}), {
+      sessionRuntime: "docker",
+      revocations: [revocationOf("all", null)],
+    });
+    expect(created).toHaveLength(0);
+    expect(session?.summary).toContain("egress proxy can refuse a host");
+  });
+});
+
+describe("Apply updated policy", () => {
+  const applyUnder = (runtime: "docker" | "host-vm") =>
+    withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const adopted = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: adopted.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const worktree = world.worktrees.get(session.worktreeId);
+          if (worktree === undefined) throw new Error("no worktree");
+          const before = accessPolicyPin(
+            STANDARD_ACCESS_POLICY_RULES,
+            STANDARD_PROJECT_ACCESS_POLICY.source,
+            new Date(),
+          );
+          world.worktrees.set(
+            worktree.id,
+            new Worktree({ ...worktree, sessionRuntime: runtime, accessPolicy: before }),
+          );
+          const outcome = yield* Effect.gen(function* () {
+            const enforcement = yield* AccessPolicyEnforcement;
+            return yield* enforcement.applyUpdatedPolicy(worktree.id);
+          }).pipe(
+            Effect.provide(
+              AccessPolicyEnforcementLive.pipe(
+                Layer.provide(
+                  Layer.mergeAll(
+                    projectsLayer(world),
+                    worktreesLayer(world),
+                    sessionsLayer(world),
+                    projectSecretsLayer(() => ({ revision: 0, secrets: {} })),
+                    secretCipherStubLayer,
+                    mcpServersLayerOf(),
+                    Layer.mock(DopplerRepo, { mappings: () => Effect.succeed([]) }),
+                    Layer.mock(AccessPoliciesRepo, {}),
+                    sealantLaunchLayer([]),
+                  ),
+                ),
+              ),
+            ),
+            Effect.provideService(AccessPolicyStore, storeOf(policy({ requireVmIsolation: true }))),
+            Effect.result,
+          );
+          return { outcome, before, after: world.worktrees.get(worktree.id)?.accessPolicy };
+        }),
+      {},
+    );
+
+  it("keeps the pin it had when the worktree's runtime cannot hold to the new rules", async () => {
+    const { outcome, before, after } = await applyUnder("docker");
+    expect(outcome._tag).toBe("Failure");
+    expect(JSON.stringify(outcome)).toContain("needs a VM of its own");
+    expect(after?.policyHash).toBe(before.policyHash);
+  });
+
+  it("pins the new rules once the runtime holds to them", async () => {
+    const { outcome, before, after } = await applyUnder("host-vm");
+    expect(outcome._tag).toBe("Success");
+    expect(after?.policyHash).not.toBe(before.policyHash);
+    expect(after?.rules.requireVmIsolation).toBe(true);
   });
 });

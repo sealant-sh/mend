@@ -442,6 +442,7 @@ import {
   AccessPolicyStore,
   allProviderHosts,
   brokeredSecretsFor,
+  deliverableSecrets,
   DOPPLER_HOST,
   launchAccessPolicyOf,
   launchNeedsNetworkPolicy,
@@ -449,6 +450,7 @@ import {
   networkPolicyFor,
   pinOrStandard,
   providerHostsFor,
+  revocationsToCarry,
 } from "./access-policy.ts";
 import { withPrompt } from "./agent-command.ts";
 import {
@@ -623,6 +625,7 @@ import { makeHeadPeopleCheck } from "./head-people.ts";
 import { historyBindingPaths } from "./history-binding.ts";
 import { WorkspaceHostUserNamespaces } from "./host-user-namespaces.ts";
 import {
+  brokeredDigestOf,
   hotFingerprint,
   type HotFingerprintInputs,
   isStandbyPlaceholderAnswer,
@@ -14312,24 +14315,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         // A revoked secret reaches the workspace in no form. A Brokered one never reaches its
         // environment: only its placeholder does, and its value goes to the egress proxy alone.
-        const deliveredSecrets = sealedSecrets.secrets.filter(
-          (secret) => !launchPolicy.revokedSecretIds.has(secret.id),
-        );
-        const brokeredNames = deliveredSecrets
-          .filter((secret) => secret.brokered !== null)
-          .map((secret) => secret.name);
+        const deliverable = deliverableSecrets(sealedSecrets.secrets, launchPolicy);
+        const brokeredNames = deliverable.brokered.map((secret) => secret.name);
         const admissionRefusal = accessPolicyAdmissionRefusal({
           rules: launchPolicy.rules,
           runtime: input.runtime,
           dockerInside: project.workspaceImage.services.docker,
           brokeredCount: brokeredNames.length,
           brokeredNames,
+          revokesHosts: launchPolicy.revokedAll || launchPolicy.revokedHosts.length > 0,
         });
         if (admissionRefusal !== null) {
           return yield* new DotfilesResolveError({ message: admissionRefusal }).pipe(report);
         }
         const brokered = yield* brokeredForLaunch(
-          deliveredSecrets,
+          deliverable.brokered,
           launchPolicy,
           secretCipher.decrypt,
         ).pipe(
@@ -14350,7 +14350,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             })
           : null;
         const secretEnv = yield* Effect.forEach(
-          deliveredSecrets.filter((secret) => secret.brokered === null),
+          deliverable.direct,
           (secret) =>
             secretCipher.decrypt(secret.sealedValue).pipe(
               Effect.map((value) => [secret.name, value] as const),
@@ -14670,6 +14670,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
         if (input.onCreated !== undefined) yield* input.onCreated(workspace);
+        // The organization's revocations, held by sealant per workspace, before anything runs in
+        // this one (§7.3): a revoked host stays refused and `all` takes even the automatic hosts.
+        // A workspace that could not be told, or whose proxy would only hear it at its next start,
+        // is not used: the launch is refused rather than run with what was revoked.
+        const carried = revocationsToCarry(launchPolicy);
+        if (carried !== null) {
+          const refuseRevocation = (message: string) =>
+            (input.abandon === undefined
+              ? sealant.stopWorkspace(workspace).pipe(Effect.ignore)
+              : input.abandon(workspace, message)
+            ).pipe(Effect.andThen(Effect.fail(new DotfilesResolveError({ message }))), report);
+          const answer = yield* sealant.revokeAccess(workspace, carried).pipe(Effect.result);
+          if (Result.isFailure(answer)) {
+            return yield* refuseRevocation(
+              `The organization's revocations could not be given to this workspace, so it was not used: ${answer.failure.message}`,
+            );
+          }
+          if (answer.success.enforcement === "next-start") {
+            return yield* refuseRevocation(
+              "The organization's revocations would reach this workspace only at its next start, so it was not used.",
+            );
+          }
+        }
         // A capture-mode standby admits no writer until it is claimed (review 2026-09-28 e2e9
         // F-B, sealantd#121): an exec clears sealantd's unclaimed marker, and a standby that ran
         // one reads as holding a session's work — a failed replan wedged its launch and a pool
@@ -31396,12 +31419,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const inputs: HotFingerprintInputs = {
           runtime,
           accessPolicyHash: hotPolicy.fingerprintHash,
-          hasBrokeredSecrets:
-            hotPolicy.rules.allowBrokeredSecrets &&
-            secrets.secrets.some(
-              (secret) =>
-                secret.delivery.mode === "brokered" && !hotPolicy.revokedSecretIds.has(secret.id),
-            ),
+          brokeredSecrets: hotPolicy.rules.allowBrokeredSecrets
+            ? brokeredDigestOf(
+                deliverableSecrets(
+                  secrets.secrets.map((secret) => ({
+                    id: secret.id,
+                    brokered:
+                      secret.delivery.mode === "brokered"
+                        ? {
+                            binding: secret.delivery.binding,
+                            placeholder: secret.delivery.placeholder,
+                          }
+                        : null,
+                  })),
+                  hotPolicy,
+                ).brokered.map((secret) => ({
+                  id: secret.id,
+                  bindHosts: secret.brokered?.binding.bindHosts ?? [],
+                })),
+              )
+            : null,
           boatAccountId:
             runtime === "boat"
               ? (yield* boatKeys.launchKey(project.organizationId, ownerUserId))

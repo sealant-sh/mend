@@ -16,7 +16,7 @@ import { supervise } from "./process-supervisor.mjs";
 const READY_FILE = "/run/mend-bundle/ready";
 const STORE_ROOT = "/var/lib/mend/store";
 const SOCKET_ROOT = "/run/sealant/sockets";
-/** Where the host VM runtime keeps its base disks and each VM's data disk (compose.v2.yaml). */
+/** Where the host VM runtime keeps its base disks and each VM's data disk (compose.host-vm.yaml). */
 export const VM_IMAGES_ROOT = "/var/lib/mend/vm-images";
 export const VM_DATA_ROOT = "/var/lib/mend/vm-data";
 
@@ -151,7 +151,7 @@ export const hostVmEnvironment = (environment, vmRoots) => {
   if (!namesHostVm(environment)) return {};
   if (!vmRoots)
     throw new Error(
-      `host-vm sessions are on (MEND_SESSION_RUNTIMES or MEND_SESSION_RUNTIME), but SEALANT_DOCKER_VOLUME_MAPPINGS maps no ${VM_IMAGES_ROOT} and ${VM_DATA_ROOT}. Use a compose file that mounts the VM volumes, or take host-vm out of the session runtimes.`,
+      `host-vm sessions are on (MEND_SESSION_RUNTIMES or MEND_SESSION_RUNTIME), but SEALANT_DOCKER_VOLUME_MAPPINGS maps no ${VM_IMAGES_ROOT} and ${VM_DATA_ROOT}. Add compose.host-vm.yaml after compose.v2.yaml, or take host-vm out of the session runtimes.`,
     );
   if ((environment.SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS?.trim() ?? "") === "")
     throw new Error(

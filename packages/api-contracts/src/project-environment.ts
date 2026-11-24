@@ -97,12 +97,28 @@ export const projectEnvironmentGroup = HttpApiGroup.make("projectEnvironment")
   )
   .middleware(AuthMiddleware);
 
-/** Create a secret: the value is sealed at rest and never returned by any response. */
+/**
+ * How a secret reaches the workspace from now on. `direct`: its value goes into the workspace's
+ * environment at launch. `brokered`: the workspace holds a placeholder, and its egress proxy puts
+ * the value into `binding.headerName` on HTTPS requests to `binding.bindHosts` only.
+ */
+export const ProjectSecretDeliveryChoice = Schema.Union([
+  Schema.Struct({ mode: Schema.Literal("direct") }),
+  Schema.Struct({ mode: Schema.Literal("brokered"), binding: BrokeredSecretBinding }),
+]);
+export type ProjectSecretDeliveryChoice = typeof ProjectSecretDeliveryChoice.Type;
+
+/**
+ * Create a secret: the value is sealed at rest and never returned by any response. `delivery`
+ * makes it Brokered in the same write, so it never reaches a workspace as Direct first; omitted,
+ * it is Direct.
+ */
 export class ProjectSecretRequest extends Schema.Class<ProjectSecretRequest>(
   "ProjectSecretRequest",
 )({
   name: Schema.String,
   value: Schema.String,
+  delivery: Schema.optional(ProjectSecretDeliveryChoice),
 }) {}
 
 /**
@@ -122,17 +138,6 @@ export class ProjectSecretRemoveRequest extends Schema.Class<ProjectSecretRemove
 )({
   expectedRevision: Schema.Int,
 }) {}
-
-/**
- * How a secret reaches the workspace from now on. `direct`: its value goes into the workspace's
- * environment at launch. `brokered`: the workspace holds a placeholder, and its egress proxy puts
- * the value into `binding.headerName` on HTTPS requests to `binding.bindHosts` only.
- */
-export const ProjectSecretDeliveryChoice = Schema.Union([
-  Schema.Struct({ mode: Schema.Literal("direct") }),
-  Schema.Struct({ mode: Schema.Literal("brokered"), binding: BrokeredSecretBinding }),
-]);
-export type ProjectSecretDeliveryChoice = typeof ProjectSecretDeliveryChoice.Type;
 
 export class ProjectSecretDeliveryRequest extends Schema.Class<ProjectSecretDeliveryRequest>(
   "ProjectSecretDeliveryRequest",
@@ -170,7 +175,7 @@ export const projectSecretsGroup = HttpApiGroup.make("projectSecrets")
       params: { id: ProjectId },
       payload: ProjectSecretRequest,
       success: ProjectSecretMutationResult,
-      error: [NotFound, EnvironmentRejected, RemovalInProgress],
+      error: [NotFound, EnvironmentRejected, RemovalInProgress, AccessPolicyRejected],
     }),
   )
   .add(

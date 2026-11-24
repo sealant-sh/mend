@@ -1,8 +1,11 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
+import * as https from "node:https";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as tls from "node:tls";
 
 import { SessionChannelTokensRepo, SessionChannelTokensRepoMemory } from "@mend/db";
 import { SessionId } from "@mend/domain";
@@ -14,6 +17,7 @@ import type { SessionCaptureApi } from "../src/capture-channel.ts";
 import {
   CAPTURE_SOCKET_NAME,
   classifyCaptureSocketRequest,
+  clientHelloServerName,
   ExecutorSockets,
   executorSocketsAt,
   objectStoreEndpointOf,
@@ -585,5 +589,146 @@ describe("binding one scope", () => {
     );
     await closed;
     expect(fs.readdirSync(path.join(root, scope))).toEqual([CAPTURE_SOCKET_NAME]);
+  });
+});
+
+describe("capture.sock in front of an https object store", () => {
+  // sealant-capture's capture dial (`transport.rs`) speaks TLS over the socket for an https
+  // presigned URL, naming the URL's host as its SNI: the relay passes those bytes to the store.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-xs-tls-"));
+  const key = path.join(dir, "key.pem");
+  const cert = path.join(dir, "cert.pem");
+  const seen: Array<{ readonly method: string; readonly url: string; readonly host: string }> = [];
+  let tlsStore: https.Server;
+  let tlsRuntime: ManagedRuntime.ManagedRuntime<ExecutorSockets, never>;
+  const scope = "sealant-run-tls";
+  const socketPath = path.join(dir, "sockets", scope, CAPTURE_SOCKET_NAME);
+
+  beforeAll(async () => {
+    execFileSync(
+      "openssl",
+      [
+        "req",
+        "-x509",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:prime256v1",
+        "-nodes",
+      ].concat(
+        [
+          "-keyout",
+          key,
+          "-out",
+          cert,
+          "-subj",
+          "/CN=localhost",
+          "-addext",
+          "subjectAltName=DNS:localhost",
+        ],
+        ["-days", "1"],
+      ),
+      { stdio: "ignore" },
+    );
+    tlsStore = https.createServer(
+      { key: fs.readFileSync(key), cert: fs.readFileSync(cert) },
+      (request, response) => {
+        seen.push({
+          method: request.method ?? "",
+          url: request.url ?? "",
+          host: request.headers.host ?? "",
+        });
+        request.resume();
+        request.on("end", () => {
+          response.writeHead(200, { etag: '"etag-tls"' });
+          response.end();
+        });
+      },
+    );
+    await new Promise<void>((resolve) => tlsStore.listen(0, "127.0.0.1", resolve));
+    const address = tlsStore.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    tlsRuntime = ManagedRuntime.make(
+      executorSocketsAt(path.join(dir, "sockets")).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            SessionChannelRegistryLive,
+            SessionChannelTokensRepoMemory,
+            BlobStoreConfig.layerFor(
+              { kind: "dir", root: path.join(dir, "blobs") },
+              `https://localhost:${port}`,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tlsRuntime.runPromise(
+      Effect.gen(function* () {
+        const sockets = yield* ExecutorSockets;
+        yield* sockets.bind({ scope, launchId: LAUNCH, mode: "normal" });
+      }),
+    );
+  });
+
+  afterAll(async () => {
+    await tlsRuntime.dispose();
+    await new Promise<void>((resolve) => tlsStore.close(() => resolve()));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const overTls = (servername: string, request: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const client = tls.connect({
+        socket: net.createConnection(socketPath),
+        servername,
+        ca: fs.readFileSync(cert),
+      });
+      let answer = "";
+      client.setEncoding("utf8");
+      client.on("secureConnect", () => client.write(request));
+      client.on("data", (chunk: string) => (answer += chunk));
+      client.on("end", () => resolve(answer));
+      client.on("close", () => resolve(answer));
+      client.on("error", reject);
+    });
+
+  it("relays TLS naming the store to it unchanged, its certificate checked end to end", async () => {
+    const answer = await overTls(
+      "localhost",
+      `PUT /mend/k?${SIGNED_QUERY} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n` +
+        `Connection: close\r\n\r\nhi`,
+    );
+    expect(statusOf(answer)).toBe(200);
+    expect(answer).toContain('"etag-tls"');
+    expect(seen).toEqual([{ method: "PUT", url: `/mend/k?${SIGNED_QUERY}`, host: "localhost" }]);
+  });
+
+  it("closes TLS that names another host, and reaches nothing", async () => {
+    const before = seen.length;
+    const answer = await overTls(
+      "garage",
+      `GET / HTTP/1.1\r\nHost: garage\r\nConnection: close\r\n\r\n`,
+    ).catch(() => "");
+    expect(answer).toBe("");
+    expect(seen).toHaveLength(before);
+  });
+
+  it("still serves plain HTTP capture routes beside it", async () => {
+    const answer = await exchange(
+      socketPath,
+      `POST /lease.heartbeat HTTP/1.1\r\nHost: mend:3106\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}`,
+    );
+    // No credential: refused by the capture route's own check, so the HTTP path was taken.
+    expect(statusOf(answer)).toBe(401);
+  });
+});
+
+describe("a TLS ClientHello's server name", () => {
+  it("is read from the record, and answers undefined until the record is whole", () => {
+    expect(clientHelloServerName(Buffer.from([0x47, 0x45, 0x54, 0x20, 0x2f]))).toBeNull();
+    expect(clientHelloServerName(Buffer.from([0x16, 0x03, 0x01]))).toBeUndefined();
+    expect(
+      clientHelloServerName(Buffer.from([0x16, 0x03, 0x01, 0x00, 0x40, 0x01])),
+    ).toBeUndefined();
   });
 });

@@ -41,9 +41,8 @@ services:
       WORKSPACE_SSH_GATEWAY_TOKEN:
         ${WORKSPACE_SSH_GATEWAY_TOKEN:?set WORKSPACE_SSH_GATEWAY_TOKEN in .env}
       SEALANT_MOUNT_ALLOWED_STORE_ROOTS: /var/lib/mend/store
-      # The host VM runtime keeps its base disks and each VM's data disk on the last two volumes.
       SEALANT_DOCKER_VOLUME_MAPPINGS: >-
-        [{"logicalRoot":"/var/lib/mend/store","volumeName":"${MEND_STORE_VOLUME_NAME:-mend-store}"},{"logicalRoot":"/run/sealant/sockets","volumeName":"${MEND_CONTROL_VOLUME_NAME:-mend-control}"},{"logicalRoot":"/var/lib/mend/vm-images","volumeName":"${MEND_VM_IMAGES_VOLUME_NAME:-mend-vm-images}"},{"logicalRoot":"/var/lib/mend/vm-data","volumeName":"${MEND_VM_DATA_VOLUME_NAME:-mend-vm-data}"}]
+        [{"logicalRoot":"/var/lib/mend/store","volumeName":"${MEND_STORE_VOLUME_NAME:-mend-store}"},{"logicalRoot":"/run/sealant/sockets","volumeName":"${MEND_CONTROL_VOLUME_NAME:-mend-control}"}]
       # Each workspace gets a /28 network of its own from this range, behind a guard that refuses
       # the private ranges, so it reaches neither Postgres, Garage's admin port nor another
       # workspace. Workspaces no longer join mend_default.
@@ -75,8 +74,6 @@ services:
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
       - mend-store:/var/lib/mend/store
       - mend-control:/run/sealant/sockets
-      - mend-vm-images:/var/lib/mend/vm-images
-      - mend-vm-data:/var/lib/mend/vm-data
       - mend-config:/var/lib/mend/config
       - mend-ssh:/var/lib/mend/ssh
 
@@ -167,9 +164,3 @@ volumes:
   mend-config:
   mend-ssh:
   mend-postgres:
-  # The host VM runtime's disks. Named as in SEALANT_DOCKER_VOLUME_MAPPINGS, which Sealant mounts
-  # by the volume's Docker name. Compose owns them: setup claims none of them.
-  mend-vm-images:
-    name: ${MEND_VM_IMAGES_VOLUME_NAME:-mend-vm-images}
-  mend-vm-data:
-    name: ${MEND_VM_DATA_VOLUME_NAME:-mend-vm-data}

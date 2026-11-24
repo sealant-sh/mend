@@ -133,15 +133,8 @@ test("named-volume lowering and persistence paths stay aligned", () => {
   assert.deepEqual(JSON.parse(mend.environment.SEALANT_DOCKER_VOLUME_MAPPINGS), [
     { logicalRoot: "/var/lib/mend/store", volumeName: "mend-test-store" },
     { logicalRoot: "/run/sealant/sockets", volumeName: "mend-test-control" },
-    { logicalRoot: "/var/lib/mend/vm-images", volumeName: "mend-test-vm-images" },
-    { logicalRoot: "/var/lib/mend/vm-data", volumeName: "mend-test-vm-data" },
   ]);
   assert.equal(mend.environment.SEALANT_MOUNT_ALLOWED_STORE_ROOTS, "/var/lib/mend/store");
-  // Compose's own volumes, named as the mapping names them, so sealant mounts the same disks.
-  assert.equal(compose.volumes["mend-vm-images"].name, "mend-test-vm-images");
-  assert.equal(compose.volumes["mend-vm-data"].name, "mend-test-vm-data");
-  assert.equal(compose.volumes["mend-vm-images"].external, undefined);
-  assert.equal(compose.volumes["mend-vm-data"].external, undefined);
   assert.equal(compose.volumes["mend-store"].name, "mend-test-store");
   assert.equal(compose.volumes["mend-control"].name, "mend-test-control");
   assert.equal(compose.volumes["mend-garage"].name, "mend-test-garage");
@@ -158,12 +151,63 @@ test("named-volume lowering and persistence paths stay aligned", () => {
   assert.equal(mounts.get("/run/sealant/sockets"), "mend-control");
   assert.equal(mounts.get("/var/lib/mend/config"), "mend-config");
   assert.equal(mounts.get("/var/lib/mend/ssh"), "mend-ssh");
-  assert.equal(mounts.get("/var/lib/mend/vm-images"), "mend-vm-images");
-  assert.equal(mounts.get("/var/lib/mend/vm-data"), "mend-vm-data");
   assert.equal(mounts.has("/var/lib/rabbitmq"), false);
   assert.equal(mounts.has("/var/lib/registry"), false);
   assert.equal(compose.volumes["mend-rabbitmq"], undefined);
   assert.equal(compose.volumes["mend-registry"], undefined);
+});
+
+test("only the host VM overlay maps and mounts the host VM runtime's volumes", () => {
+  // A released Mend image checks the mappings hold exactly two entries, so compose.v2.yaml alone,
+  // what every Docker-only install runs, never names the VM roots.
+  const docker = renderCompose();
+  assert.equal(
+    JSON.parse(docker.services.mend.environment.SEALANT_DOCKER_VOLUME_MAPPINGS).length,
+    2,
+  );
+  const dockerTargets = docker.services.mend.volumes.map((volume) => volume.target);
+  assert.ok(!dockerTargets.includes("/var/lib/mend/vm-images"));
+  assert.ok(!dockerTargets.includes("/var/lib/mend/vm-data"));
+  assert.equal(docker.volumes["mend-vm-images"], undefined);
+  assert.equal(docker.volumes["mend-vm-data"], undefined);
+
+  const hostVm = renderCompose(path.join(composeDirectory, "compose.host-vm.yaml"), [
+    path.join(composeDirectory, "compose.v2.yaml"),
+  ]);
+  const mend = hostVm.services.mend;
+  assert.deepEqual(JSON.parse(mend.environment.SEALANT_DOCKER_VOLUME_MAPPINGS), [
+    { logicalRoot: "/var/lib/mend/store", volumeName: "mend-test-store" },
+    { logicalRoot: "/run/sealant/sockets", volumeName: "mend-test-control" },
+    { logicalRoot: "/var/lib/mend/vm-images", volumeName: "mend-test-vm-images" },
+    { logicalRoot: "/var/lib/mend/vm-data", volumeName: "mend-test-vm-data" },
+  ]);
+  // Compose's own volumes, named as the mapping names them, so sealant mounts the same disks.
+  assert.equal(hostVm.volumes["mend-vm-images"].name, "mend-test-vm-images");
+  assert.equal(hostVm.volumes["mend-vm-data"].name, "mend-test-vm-data");
+  assert.equal(hostVm.volumes["mend-vm-images"].external, undefined);
+  assert.equal(hostVm.volumes["mend-vm-data"].external, undefined);
+  const mounts = new Map(mend.volumes.map((volume) => [volume.target, volume.source]));
+  assert.equal(mounts.get("/var/lib/mend/vm-images"), "mend-vm-images");
+  assert.equal(mounts.get("/var/lib/mend/vm-data"), "mend-vm-data");
+  // The base file's mounts stay.
+  assert.equal(mounts.get("/var/lib/mend/store"), "mend-store");
+  assert.equal(mounts.get("/run/sealant/sockets"), "mend-control");
+  assert.equal(mounts.get("/var/lib/mend/config"), "mend-config");
+});
+
+test("the setup contract keeps the VM roots to the host VM overlay", async () => {
+  const contract = JSON.parse(
+    await readFile(path.join(composeDirectory, "setup-contract.v2.json"), "utf8"),
+  );
+  assert.deepEqual(
+    contract.dockerVolumeMappings.map((mapping) => mapping.logicalRoot),
+    ["/var/lib/mend/store", "/run/sealant/sockets"],
+  );
+  assert.equal(contract.hostVm.composeOverlay, "compose.host-vm.yaml");
+  assert.deepEqual(contract.hostVm.dockerVolumeMappings, [
+    { logicalRoot: "/var/lib/mend/vm-images", volumeName: "mend-vm-images" },
+    { logicalRoot: "/var/lib/mend/vm-data", volumeName: "mend-vm-data" },
+  ]);
 });
 
 test("the bundle uses the catalog sealant version and declared digest images with its official migrator", async () => {

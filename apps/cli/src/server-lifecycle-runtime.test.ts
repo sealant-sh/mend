@@ -3,6 +3,7 @@ import * as path from "node:path";
 
 import { afterEach, expect, it } from "vitest";
 
+import { HOST_VM_COMPOSE_FILE, HOST_VM_COMPOSE_OVERLAY } from "./server-host-vm.ts";
 import { lifecycleTestFixtures } from "./server-lifecycle-test-fixtures.ts";
 import { serverCommand } from "./server-setup.ts";
 
@@ -87,6 +88,8 @@ it(
     expect(
       await serverCommand(["setup", "--offline", "--session-runtime", "docker"], f.runtime),
     ).toEqual({ _tag: "ok" });
+    // A Docker install maps the store and control roots only: no host VM overlay.
+    expect(f.files()[HOST_VM_COMPOSE_FILE]).toBeUndefined();
     // What an owner, or a later setup, writes: the saved config and its environment name host-vm.
     const configFile = path.join(f.active(), "server.json");
     const config = JSON.parse(fs.readFileSync(configFile, "utf8"));
@@ -101,10 +104,17 @@ it(
         .readFileSync(envFile, "utf8")
         .replace("MEND_SESSION_RUNTIME=docker\n", "MEND_SESSION_RUNTIME=host-vm\n"),
     );
+    // A config naming host-vm without the overlay that maps its volumes is a corrupt generation.
+    expect(await serverCommand(["restart"], f.runtime)).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(`${HOST_VM_COMPOSE_FILE} does not match`),
+    });
+    fs.writeFileSync(path.join(f.active(), HOST_VM_COMPOSE_FILE), HOST_VM_COMPOSE_OVERLAY);
     for (const command of [["restart"], ["setup", "--yes", "--offline"]]) {
       expect(await serverCommand(command, f.runtime)).toEqual({ _tag: "ok" });
       expect(f.files()["server.env"]).toContain("MEND_SESSION_RUNTIME=host-vm\n");
       expect(JSON.parse(f.files()["server.json"] ?? "{}").sessionRuntime).toBe("host-vm");
+      expect(f.files()[HOST_VM_COMPOSE_FILE]).toBe(HOST_VM_COMPOSE_OVERLAY);
     }
     for (const flags of [
       ["--session-runtime", "host-vm"],

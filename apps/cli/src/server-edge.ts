@@ -5,6 +5,7 @@ import { writePreviewPorts } from "@mend/network";
 
 import { BOAT_COMPOSE_FILE, type ServerBoat } from "./server-boat.ts";
 import { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY, T3_GATEWAY_CADDYFILE } from "./server-edge-files.ts";
+import { HOST_VM_COMPOSE_FILE, namesHostVm } from "./server-host-vm.ts";
 import { MIRRORS_COMPOSE_FILE, runsMirrors, type ServerMirrors } from "./server-mirrors.ts";
 import {
   REMOTE_ENDPOINTS_COMPOSE_FILE,
@@ -510,6 +511,7 @@ export const composeOverlays = (
   ...(runsMirrors(posture.mirrors) ? [MIRRORS_COMPOSE_FILE] : []),
   ...(posture.workspaceImages === undefined ? [] : [WORKSPACE_IMAGES_COMPOSE_FILE]),
   ...(posture.workspaceMemory === undefined ? [] : [WORKSPACE_MEMORY_COMPOSE_FILE]),
+  ...(namesHostVm(posture) ? [HOST_VM_COMPOSE_FILE] : []),
   ...(posture.t3GatewayPort === undefined ? [] : [T3_GATEWAY_COMPOSE_FILE]),
   ...(posture.preview === undefined ? [] : [PREVIEW_COMPOSE_FILE]),
   ...(posture.remoteEndpoints === undefined ? [] : [REMOTE_ENDPOINTS_COMPOSE_FILE]),
