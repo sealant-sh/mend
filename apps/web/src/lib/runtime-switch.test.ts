@@ -68,6 +68,17 @@ describe("the runtimes the page lists", () => {
     expect(offerLine(choices)).toBe("An operator chose which runtimes this server offers.");
   });
 
+  it("lists this server's KVM between Docker and Boat when the server offers it", () => {
+    expect(
+      runtimeChoices({
+        chosen: "host-vm",
+        effective: "host-vm",
+        offered: ["host-vm", "docker", "boat"],
+        serverDefault: "host-vm",
+      }),
+    ).toEqual({ kind: "offered", runtimes: ["docker", "host-vm", "boat"], selected: "host-vm" });
+  });
+
   it("selects the server's default for an organization that never chose", () => {
     expect(
       runtimeChoices({

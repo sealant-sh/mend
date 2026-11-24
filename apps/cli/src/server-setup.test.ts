@@ -15,6 +15,11 @@ import { parseDockerInfo } from "./docker-shutdown.ts";
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
 import { PREVIEW_CADDYFILE, T3_GATEWAY_CADDYFILE } from "./server-edge.ts";
 import {
+  HOST_VM_COMPOSE_FILE,
+  HOST_VM_COMPOSE_OVERLAY,
+  VM_RUNNER_IMAGE,
+} from "./server-host-vm.ts";
+import {
   HOST_HELPER_IMAGE,
   instanceIdOf,
   NETWORK_GUARD_IMAGE,
@@ -5450,5 +5455,294 @@ describe("server readiness for shell agents", () => {
       error: { code: "timeout", fix: expect.stringContaining("status --json") },
     });
     expect(bounds.every((bound) => bound !== undefined && bound <= 5)).toBe(true);
+  });
+});
+
+/** The vm-runner self-tests a run made. */
+const selfTests = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
+  calls.filter((args) => args.includes(VM_RUNNER_IMAGE));
+
+describe("mend server setup chooses where sessions run by this server's KVM (spec §9.1, §5.4)", () => {
+  const PASSED = JSON.stringify({
+    version: 1,
+    ok: true,
+    checks: [
+      { name: "kvm", ok: true, observed: "/dev/kvm opened read-write, KVM API 12" },
+      { name: "tun", ok: true, observed: "/dev/net/tun opened" },
+      { name: "nftables", ok: true, observed: "nftables v1.1.3" },
+      { name: "landlock", ok: true, observed: "Landlock ABI 7 (Cloud Hypervisor needs 3)" },
+      { name: "cloudHypervisor", ok: true, observed: "cloud-hypervisor v54.0" },
+    ],
+  });
+  const FAILED = JSON.stringify({
+    version: 1,
+    ok: false,
+    checks: [
+      { name: "kvm", ok: true, observed: "/dev/kvm opened read-write, KVM API 12" },
+      {
+        name: "nftables",
+        ok: false,
+        observed: "nftables v1.1.3, but a test table could not be created in this netns",
+      },
+    ],
+  });
+  const PASSED_LINE =
+    "Observed: this server's KVM passed the vm-runner self-test — offering host-vm (a virtual machine of its own per workspace) and docker; new organizations start on host-vm";
+  const DOCKER_ONLY =
+    "offering docker runtime (shared Linux kernel; no per-workspace VM isolation)";
+
+  /**
+   * A Docker host with KVM in front of `makeRuntime`'s: the self-test, the isolation check's
+   * network, and the volumes and filesystems the shared-filesystem check reads. `filesystems`:
+   * each backing path's device number, as `stat -c %d` prints it.
+   */
+  const withKvm = (
+    control: RuntimeControl,
+    host: {
+      readonly kvm?: boolean;
+      readonly selfTest?: { readonly status: number; readonly stdout: string };
+      readonly networkCreate?: number;
+      readonly volumes?: Readonly<Record<string, object>>;
+      readonly filesystems?: Readonly<Record<string, string>>;
+    } = {},
+  ) => {
+    const calls: Array<ReadonlyArray<string>> = [];
+    const runtime: ServerSetupRuntime = {
+      ...control.runtime,
+      kvmDevice: () => host.kvm ?? true,
+      run: async (command, args, options) => {
+        const answer = (status: number, stdout = "", stderr = "") => {
+          calls.push(args);
+          return { status, stdout, stderr };
+        };
+        if (args.includes(VM_RUNNER_IMAGE)) {
+          const said = host.selfTest ?? { status: 0, stdout: PASSED };
+          return answer(said.status, `${said.stdout}\n`);
+        }
+        if (args[2] === "version" && args.includes("{{.Server.Version}}"))
+          return answer(0, "29.1.3\n");
+        if (args[2] === "network" && args.at(-1)?.startsWith("mend-setup-isolation-check-"))
+          return args[3] === "create"
+            ? answer(host.networkCreate ?? 0, "", host.networkCreate ? "invalid option" : "")
+            : answer(0);
+        if (
+          args[2] === "volume" &&
+          args[3] === "inspect" &&
+          args.some((arg) => arg.includes("{{json .Mountpoint}}"))
+        ) {
+          const volume = host.volumes?.[args.at(-1) ?? ""];
+          return volume === undefined
+            ? answer(1, "", `Error response from daemon: get ${args.at(-1)}: no such volume`)
+            : answer(0, JSON.stringify(volume));
+        }
+        if (args[2] === "info" && args.includes("{{.DockerRootDir}}"))
+          return answer(0, "/var/lib/docker\n");
+        if (args[2] === "run" && args.includes("stat")) {
+          const paths = args
+            .filter((arg) => arg.includes(":/mend-fs/"))
+            .map((arg) => arg.split(":/mend-fs/")[0] ?? "");
+          return answer(0, paths.map((each) => host.filesystems?.[each] ?? "2049").join("\n"));
+        }
+        return control.runtime.run(command, args, options);
+      },
+    };
+    return { runtime, calls };
+  };
+
+  it("offers host-vm and docker where the self-test and the isolation check pass, with the overlay", async () => {
+    const control = makeRuntime();
+    const { runtime, calls } = withKvm(control, {
+      volumes: {
+        "mend-vm-data": {
+          Driver: "local",
+          Mountpoint: "/var/lib/docker/volumes/mend-vm-data/_data",
+          Options: { type: "none", o: "bind", device: "/srv/vm-data" },
+        },
+      },
+      filesystems: { "/srv/vm-data": "64769" },
+    });
+    expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
+    expect(selfTests(calls)).toEqual([
+      [
+        "--context",
+        "default",
+        "run",
+        "--rm",
+        "--device",
+        "/dev/kvm",
+        "--device",
+        "/dev/net/tun",
+        "--cap-drop",
+        "ALL",
+        "--cap-add",
+        "NET_ADMIN",
+        "--cap-add",
+        "SETUID",
+        "--cap-add",
+        "SETGID",
+        "--cap-add",
+        "SETPCAP",
+        "--security-opt",
+        "no-new-privileges:true",
+        VM_RUNNER_IMAGE,
+        "--self-test",
+      ],
+    ]);
+    // The isolation check's network is created, then removed.
+    const networks = calls.filter((args) => args[2] === "network");
+    expect(networks.map((args) => args[3])).toEqual(["create", "rm"]);
+    expect(networks[0]).toContain("com.docker.network.bridge.gateway_mode_ipv4=isolated");
+    expect(control.lines).toContain(PASSED_LINE);
+    const env = readEnv(activeFile(runtime.configDir, "server.env"));
+    expect(env.get("MEND_SESSION_RUNTIME")).toBe("host-vm");
+    expect(env.get("MEND_SESSION_RUNTIMES")).toBe("host-vm,docker");
+    expect(serverJson(runtime.configDir)).toMatchObject({
+      sessionRuntime: "host-vm",
+      sessionRuntimes: ["host-vm", "docker"],
+    });
+    expect(fs.readFileSync(activeFile(runtime.configDir, HOST_VM_COMPOSE_FILE), "utf8")).toBe(
+      HOST_VM_COMPOSE_OVERLAY,
+    );
+    // mend-vm-data is bound to a filesystem of its own: nothing to warn about.
+    expect(control.lines.some((line) => line.includes("mend-vm-data"))).toBe(false);
+  });
+
+  it("warns when mend-vm-data would share one filesystem with Postgres and Garage", async () => {
+    const control = makeRuntime();
+    // Nothing created yet: every volume lands under Docker's own data root.
+    const { runtime } = withKvm(control);
+    expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
+    expect(control.lines).toContain(
+      "Warning: mend-vm-data shares one filesystem with mend_mend-postgres (and mend-garage). A workspace VM that fills its disk can leave Postgres and Garage without space. For a hard guarantee, put mend-vm-data on a separate filesystem or quota (docs: Server environment → host-vm).",
+    );
+  });
+
+  it("offers docker alone where /dev/kvm is missing, in exactly these words", async () => {
+    const control = makeRuntime();
+    const { runtime, calls } = withKvm(control, { kvm: false });
+    expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
+    expect(control.lines).toContain(
+      "Observed: /dev/kvm unavailable — offering docker runtime (shared Linux kernel; no per-workspace VM isolation)",
+    );
+    expect(calls).toEqual([]);
+    expect(readEnv(activeFile(runtime.configDir, "server.env")).get("MEND_SESSION_RUNTIME")).toBe(
+      "docker",
+    );
+    expect(serverJson(runtime.configDir).sessionRuntimes).toBeUndefined();
+    expect(fs.existsSync(activeFile(runtime.configDir, HOST_VM_COMPOSE_FILE))).toBe(false);
+  });
+
+  it("offers docker alone where the self-test fails, saying what failed", async () => {
+    const control = makeRuntime();
+    const { runtime, calls } = withKvm(control, { selfTest: { status: 1, stdout: FAILED } });
+    expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
+    expect(control.lines).toContain(
+      `Observed: nftables: nftables v1.1.3, but a test table could not be created in this netns — ${DOCKER_ONLY}`,
+    );
+    // No isolation check after a failed self-test.
+    expect(calls.some((args) => args[2] === "network")).toBe(false);
+    expect(serverJson(runtime.configDir)).toMatchObject({ sessionRuntime: "docker" });
+    expect(fs.existsSync(activeFile(runtime.configDir, HOST_VM_COMPOSE_FILE))).toBe(false);
+  });
+
+  it("offers docker alone where Docker cannot isolate a network's gateway", async () => {
+    const control = makeRuntime();
+    const { runtime, calls } = withKvm(control, { networkCreate: 1 });
+    expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
+    expect(control.lines).toContain(
+      `Observed: Docker could not create a network with an isolated gateway (gateway_mode_ipv4=isolated): invalid option — ${DOCKER_ONLY}`,
+    );
+    expect(calls.filter((args) => args[2] === "network").map((args) => args[3])).toEqual([
+      "create",
+      "rm",
+    ]);
+    expect(serverJson(runtime.configDir)).toMatchObject({ sessionRuntime: "docker" });
+  });
+
+  it("runs no check where flags name the runtimes, and keeps a saved choice on a rerun", async () => {
+    const configDir = temporaryDirectory("host-vm-flags");
+    const flagged = withKvm(makeRuntime({ configDir }));
+    expect(
+      await serverCommand(["setup", "--yes", "--session-runtime", "docker"], flagged.runtime),
+    ).toEqual({ _tag: "ok" });
+    expect(flagged.calls).toEqual([]);
+    expect(serverJson(configDir).sessionRuntime).toBe("docker");
+    // KVM would pass now; the saved choice stays as it is, and nothing is checked.
+    const rerun = withKvm(makeRuntime({ configDir }));
+    expect(await serverCommand(["setup", "--yes"], rerun.runtime)).toEqual({ _tag: "ok" });
+    expect(selfTests(rerun.calls)).toEqual([]);
+    expect(serverJson(configDir).sessionRuntime).toBe("docker");
+    expect(fs.existsSync(activeFile(configDir, HOST_VM_COMPOSE_FILE))).toBe(false);
+  });
+
+  it("leaves an install that exists on what it runs on, even one that never saved a runtime", async () => {
+    const configDir = temporaryDirectory("host-vm-existing");
+    // Set up before setup looked at KVM: no runtime saved, so it runs on Docker.
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(serverJson(configDir).sessionRuntime).toBeUndefined();
+    // KVM would pass now; its organizations stay on Docker until someone offers host-vm.
+    const rerun = withKvm(makeRuntime({ configDir }));
+    expect(await serverCommand(["setup", "--yes"], rerun.runtime)).toEqual({ _tag: "ok" });
+    expect(selfTests(rerun.calls)).toEqual([]);
+    expect(serverJson(configDir).sessionRuntime).toBeUndefined();
+    expect(serverJson(configDir).sessionRuntimes).toBeUndefined();
+    expect(fs.existsSync(activeFile(configDir, HOST_VM_COMPOSE_FILE))).toBe(false);
+  });
+
+  it("keeps host-vm on a rerun without looking again; a flag naming it checks and refuses on a failure", async () => {
+    const configDir = temporaryDirectory("host-vm-saved");
+    expect(
+      await serverCommand(["setup", "--yes"], withKvm(makeRuntime({ configDir })).runtime),
+    ).toEqual({ _tag: "ok" });
+    const rerun = withKvm(makeRuntime({ configDir }), { kvm: false });
+    expect(await serverCommand(["setup", "--yes"], rerun.runtime)).toEqual({ _tag: "ok" });
+    expect(selfTests(rerun.calls)).toEqual([]);
+    expect(serverJson(configDir)).toMatchObject({
+      sessionRuntime: "host-vm",
+      sessionRuntimes: ["host-vm", "docker"],
+    });
+    expect(fs.readFileSync(activeFile(configDir, HOST_VM_COMPOSE_FILE), "utf8")).toBe(
+      HOST_VM_COMPOSE_OVERLAY,
+    );
+    // Forcing host-vm where the self-test fails changes nothing.
+    const forced = withKvm(makeRuntime({ configDir }), {
+      selfTest: { status: 1, stdout: FAILED },
+    });
+    const before = fs.readlinkSync(path.join(configDir, "active"));
+    expect(
+      await serverCommand(
+        ["setup", "--yes", "--session-runtimes", "host-vm", "--session-runtime", "host-vm"],
+        forced.runtime,
+      ),
+    ).toEqual({
+      _tag: "error",
+      message:
+        "This server cannot run host-vm sessions: nftables: nftables v1.1.3, but a test table could not be created in this netns. Name docker or boat instead, or fix that and run mend server setup again.",
+    });
+    expect(fs.readlinkSync(path.join(configDir, "active"))).toBe(before);
+  });
+
+  it("starts the guide's answers from host-vm and docker on a fresh install where KVM passed", async () => {
+    const control = makeRuntime();
+    const { runtime } = withKvm(control);
+    const transcript: Array<string> = [];
+    const result = await serverCommand(["setup"], {
+      ...runtime,
+      prompter: scriptedPrompter(["1", "", "", "", "", "", ""], transcript),
+    });
+    expect(result, transcript.join("\n")).toEqual({ _tag: "ok" });
+    expect(control.lines).toContain(PASSED_LINE);
+    expect(control.lines).toContain(
+      "  5. This server's KVM or Docker · each organization's owner chooses; new organizations start on host-vm, a virtual machine of its own per workspace",
+    );
+    expect(control.lines).toContain(
+      "  sessions run     Docker or this server's KVM, each organization chooses (new organizations: this server's KVM)",
+    );
+    expect(serverJson(runtime.configDir)).toMatchObject({
+      sessionRuntime: "host-vm",
+      sessionRuntimes: ["host-vm", "docker"],
+    });
   });
 });

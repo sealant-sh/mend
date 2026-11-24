@@ -412,6 +412,10 @@ const READS: Readonly<Record<string, Reads>> = {
   "server-docker-volumes.ts inspectResource": CHILD,
   "server-docker-volumes.ts listNames": CHILD,
   "server-docker-volumes.ts removeServerLeftovers": CHILD,
+  "server-host-vm.ts backingOf": CHILD,
+  "server-host-vm.ts isolatedGatewayFailure": CHILD,
+  "server-host-vm.ts observeHostVm": CHILD,
+  "server-host-vm.ts sharedFilesystemLines": CHILD,
   "server-mirrors.ts npmMirrorService": CHILD,
   "server-runtime.ts serverComposeArgs": CHILD,
   // The `mend server setup` command a guide prints for the operator to run.

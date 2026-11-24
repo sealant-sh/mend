@@ -175,7 +175,9 @@ const createFixture = async (cleanups: Array<() => Promise<void>>) => {
   // This machine's own sign-in never reaches the fixture: status reads cli.json under configDir.
   delete process.env["MEND_URL"];
   delete process.env["MEND_TOKEN"];
-  const base = nodeServerRuntime();
+  // This machine's /dev/kvm says nothing about the fixture's Docker: without it, setup never
+  // chooses runtimes by host-vm's checks, as before host-vm (server-setup.test.ts covers them).
+  const { kvmDevice: _kvmDevice, ...base } = nodeServerRuntime();
   for (const key of [
     "PATH",
     "MEND_VERSION",

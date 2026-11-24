@@ -1392,7 +1392,7 @@ describe("where sessions run", () => {
       resolveSetupSettings({ ...both, sessionRuntimes: ["docker"] }, ["--session-runtime", "boat"]),
     ).toThrow(/does not offer \(docker\)\. Offer it with --session-runtimes docker,boat/);
     expect(() => resolveSetupSettings(saved, ["--session-runtimes", "docker,vm"])).toThrow(
-      /docker, boat or both/,
+      /among docker, host-vm and boat/,
     );
   });
 

@@ -115,18 +115,18 @@ organization's audit log records it.
 Workspaces reach their session over a mounted Unix socket by default, or over a network channel when
 `MEND_SESSION_ENDPOINT_LISTEN` is set.
 
-| Variable                         | Default                                                  | What it does                                                                                                                                                                                                                                                                                                  |
-| -------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEND_SESSION_RUNTIME`           | Docker installs: `docker`; Kubernetes: sealant selection | Where an organization's new session workspaces run until its owner chooses: `docker`, `host-vm` or `boat`. Saved by `mend server setup --session-runtime`, which offers `docker` and `boat`. Existing worktrees keep their choice. Boat requests are explicit and refused if unavailable; no Docker fallback. |
-| `MEND_SESSION_RUNTIMES`          | unset: the one runtime `MEND_SESSION_RUNTIME` names      | The runtimes organizations may choose among, comma separated, from `docker`, `host-vm` and `boat`, such as `docker,boat`. `MEND_SESSION_RUNTIME` must be one of them; unset, it is the first. Saved by `mend server setup --session-runtimes`.                                                                |
-| `MEND_DEPLOYMENT_MODE`           | `local`                                                  | `local` or `kubernetes`. In `kubernetes`, the session engine refuses to start without a network channel.                                                                                                                                                                                                      |
-| `MEND_SESSION_ENDPOINT_LISTEN`   | unset                                                    | `host:port` the network session channel listens on.                                                                                                                                                                                                                                                           |
-| `MEND_SESSION_ENDPOINT_URL`      | unset                                                    | The address workspaces use to reach the channel. Required with `MEND_SESSION_ENDPOINT_LISTEN`.                                                                                                                                                                                                                |
-| `MEND_SESSION_ENDPOINT_TLS_CERT` | unset                                                    | The channel's certificate file. Set with `MEND_SESSION_ENDPOINT_TLS_KEY`, and the URL must then be `https`.                                                                                                                                                                                                   |
-| `MEND_SESSION_ENDPOINT_TLS_KEY`  | unset                                                    | The channel's private key file.                                                                                                                                                                                                                                                                               |
-| `MEND_SESSION_ENDPOINT_CA_FILE`  | unset                                                    | PEM roots workspaces verify the channel's certificate against, when a private CA signed it.                                                                                                                                                                                                                   |
-| `MEND_BLOB_STORE_CA_FILE`        | unset                                                    | PEM roots workspaces verify the bucket's certificate against.                                                                                                                                                                                                                                                 |
-| `MEND_EXECUTOR_NETWORK`          | unset                                                    | `private` states that executors reach the channel and the bucket over a network you control, so plain HTTP may be dialled. The only accepted value.                                                                                                                                                           |
+| Variable                         | Default                                                  | What it does                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_SESSION_RUNTIME`           | Docker installs: `docker`; Kubernetes: sealant selection | Where an organization's new session workspaces run until its owner chooses: `docker`, `host-vm` or `boat`. Saved by `mend server setup --session-runtime`, which takes all three; with no flag, setup chooses on a fresh install ([Host VM workspaces](#host-vm-workspaces)). Existing worktrees keep their choice. Boat requests are explicit and refused if unavailable; no Docker fallback. |
+| `MEND_SESSION_RUNTIMES`          | unset: the one runtime `MEND_SESSION_RUNTIME` names      | The runtimes organizations may choose among, comma separated, from `docker`, `host-vm` and `boat`, such as `docker,boat`. `MEND_SESSION_RUNTIME` must be one of them; unset, it is the first. Saved by `mend server setup --session-runtimes`.                                                                                                                                                 |
+| `MEND_DEPLOYMENT_MODE`           | `local`                                                  | `local` or `kubernetes`. In `kubernetes`, the session engine refuses to start without a network channel.                                                                                                                                                                                                                                                                                       |
+| `MEND_SESSION_ENDPOINT_LISTEN`   | unset                                                    | `host:port` the network session channel listens on.                                                                                                                                                                                                                                                                                                                                            |
+| `MEND_SESSION_ENDPOINT_URL`      | unset                                                    | The address workspaces use to reach the channel. Required with `MEND_SESSION_ENDPOINT_LISTEN`.                                                                                                                                                                                                                                                                                                 |
+| `MEND_SESSION_ENDPOINT_TLS_CERT` | unset                                                    | The channel's certificate file. Set with `MEND_SESSION_ENDPOINT_TLS_KEY`, and the URL must then be `https`.                                                                                                                                                                                                                                                                                    |
+| `MEND_SESSION_ENDPOINT_TLS_KEY`  | unset                                                    | The channel's private key file.                                                                                                                                                                                                                                                                                                                                                                |
+| `MEND_SESSION_ENDPOINT_CA_FILE`  | unset                                                    | PEM roots workspaces verify the channel's certificate against, when a private CA signed it.                                                                                                                                                                                                                                                                                                    |
+| `MEND_BLOB_STORE_CA_FILE`        | unset                                                    | PEM roots workspaces verify the bucket's certificate against.                                                                                                                                                                                                                                                                                                                                  |
+| `MEND_EXECUTOR_NETWORK`          | unset                                                    | `private` states that executors reach the channel and the bucket over a network you control, so plain HTTP may be dialled. The only accepted value.                                                                                                                                                                                                                                            |
 
 ## Tenancy, git and services
 
@@ -200,7 +200,51 @@ When `MEND_SESSION_RUNTIMES` or `MEND_SESSION_RUNTIME` names `host-vm`, the Mend
 worker `SEALANT_HOST_VM_IMAGE_DIR` and `SEALANT_HOST_VM_DATA_DIR`. It refuses to start when
 `host-vm` is named without the overlay's two mappings, or when
 `SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS` is unset: each VM runs behind an egress proxy on a network
-of its own. `mend server setup` does not offer `host-vm` yet.
+of its own.
+
+#### What setup chooses
+
+When neither `--session-runtime` nor `--session-runtimes` is given and the saved config names no
+runtime (a fresh install, or one set up before setup chose), `mend server setup` looks at this
+server's KVM and saves what it found:
+
+- On a Linux host with `/dev/kvm`, it runs the pinned vm-runner's `--self-test` through Docker (KVM,
+  `/dev/net/tun`, nftables, Landlock and Cloud Hypervisor), then creates and removes an internal
+  network with `com.docker.network.bridge.gateway_mode_ipv4=isolated`, which needs Docker Engine 28
+  or newer. When both pass, it offers `host-vm` and `docker`, and new organizations start on
+  `host-vm`:
+  `Observed: this server's KVM passed the vm-runner self-test — offering host-vm (a virtual machine of its own per workspace) and docker; new organizations start on host-vm`.
+- Otherwise it offers `docker` alone and says why, such as
+  `Observed: /dev/kvm unavailable — offering docker runtime (shared Linux kernel; no per-workspace VM isolation)`.
+  A failed check is named in the same place. macOS has no `/dev/kvm` for Docker's containers.
+
+A saved choice is kept as it is, whatever a later run observes. Either flag wins over the choice and
+skips the look, except that a flag naming `host-vm` runs the same checks, and setup refuses it with
+what it observed when one fails. The guide runs the checks before its questions, and its "Where can
+sessions run?" offers host-vm and Docker where they passed.
+
+#### Keep VM disks apart from the server's data
+
+Each VM's data disk lives in `mend-vm-data`. A workspace VM that fills it fills the filesystem it
+sits on, so when that is also where Postgres (`mend_mend-postgres`) or Garage (`mend-garage`) keeps
+its data, they can run out of space. When the config names `host-vm`, each setup run compares the
+volumes' filesystems on the Docker host (a bind volume's device, a volume's mountpoint, or Docker's
+data root for one Compose has not made yet) and warns when they share one:
+
+```text
+Warning: mend-vm-data shares one filesystem with mend_mend-postgres (and mend-garage). A workspace VM that fills its disk can leave Postgres and Garage without space. For a hard guarantee, put mend-vm-data on a separate filesystem or quota (docs: Server environment → host-vm).
+```
+
+The warning never stops setup, and setup says when it could not check (a volume on another driver,
+or `stat` failing). For a hard guarantee, give `mend-vm-data` a filesystem of its own before the
+first `host-vm` session, for example as a local bind volume, then run `mend server setup` again:
+
+```sh
+docker volume create --driver local --opt type=none --opt o=bind --opt device=/srv/mend-vm-data mend-vm-data
+```
+
+Compose warns that it did not create that volume; that is expected. A filesystem quota on the
+directory Docker keeps it in does the same.
 
 ## Package and image mirrors
 

@@ -120,7 +120,16 @@ import {
   type Tenancy,
   TENANCIES,
 } from "./server-edge.ts";
-import { HOST_VM_COMPOSE_FILE, renderHostVmOverlay } from "./server-host-vm.ts";
+import {
+  HOST_VM_COMPOSE_FILE,
+  type HostVmObservation,
+  hostVmChoice,
+  hostVmChoiceLine,
+  namesHostVm,
+  observeHostVm,
+  renderHostVmOverlay,
+  sharedFilesystemLines,
+} from "./server-host-vm.ts";
 import {
   DEFAULT_MIRRORS,
   DEFAULT_NPM_MIRROR_MAX_SIZE,
@@ -293,6 +302,13 @@ export interface ServerSetupRuntime {
   sleep(milliseconds: number): Promise<void>;
   /** Print one progress or result line. */
   readonly writeLine: (line: string) => void;
+  /**
+   * Whether /dev/kvm is on this machine. Present, setup chooses where sessions run when nothing
+   * names it (`settleHostVm`): host-vm and Docker where this server's KVM passes the
+   * vm-runner self-test, Docker alone otherwise. Absent: setup never looks, and an install that
+   * names no runtime offers Docker, as before host-vm.
+   */
+  readonly kvmDevice?: () => boolean;
   /** Receives only public facts while the installation lock is held. */
   readonly observe?: (observation: ServerObservation) => void;
   /**
@@ -407,12 +423,13 @@ const reportServer = (
 
 interface SetupOptions {
   /**
-   * `--session-runtime`: where an organization's new sessions run until it chooses. Setup offers
-   * docker and boat only; host-vm is not one of its choices yet.
+   * `--session-runtime`: where an organization's new sessions run until it chooses. Naming host-vm
+   * here or in `--session-runtimes` runs setup's host-vm checks, and a failed one refuses the run.
+   * With neither flag, an install that names no runtime has them chosen (`settleHostVm`).
    */
-  readonly sessionRuntime?: "docker" | "boat";
+  readonly sessionRuntime?: SessionRuntime;
   /** `--session-runtimes`: the runtimes organizations may choose among. */
-  readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
+  readonly sessionRuntimes?: ReadonlyArray<SessionRuntime>;
   readonly remoteEndpoints?: ServerRemoteEndpoints | null;
   /**
    * `--boat-deployment-id`, `--boat-api-key-stdin`, `--no-boat-api-key`, `--[no-]boat-organization`,
@@ -497,8 +514,8 @@ interface SetupOptions {
 /** Parsed server configuration shared by setup and lifecycle commands. */
 export interface ServerConfig {
   /**
-   * Where an organization's new sessions run until it chooses (`MEND_SESSION_RUNTIME`). Setup writes
-   * docker or boat; a config that names host-vm reads back as it is.
+   * Where an organization's new sessions run until it chooses (`MEND_SESSION_RUNTIME`): docker,
+   * host-vm or boat.
    */
   readonly sessionRuntime?: SessionRuntime;
   /**
@@ -701,18 +718,17 @@ const remoteEndpointsOf = (input: unknown): ServerRemoteEndpoints => {
 const BOAT_NEEDS_ENDPOINTS =
   "Boat VMs reach this server at two public HTTPS addresses, one for session traffic and one for saved work. Add --session-endpoint-url https://<host>:8443 --blob-store-public-url https://<host>:10000, and forward those two origins to this machine's 127.0.0.1:13106 and 127.0.0.1:13900 with a Tailscale Funnel or your own TLS proxy (https://docs.mend.run/operate/boat/).";
 
-const sessionRuntimeOf = (input: unknown): "docker" | "boat" => {
-  if (input === "docker" || input === "boat") return input;
+const isSessionRuntime = Schema.is(SessionRuntime);
+
+const sessionRuntimeOf = (input: unknown): SessionRuntime => {
+  if (isSessionRuntime(input)) return input;
   throw setupError(
-    'Where sessions run must be "docker" or "boat". Use --session-runtime docker or --session-runtime boat.',
+    'Where sessions run must be "docker", "host-vm" or "boat". Use --session-runtime docker, --session-runtime host-vm or --session-runtime boat.',
   );
 };
 
-const isSessionRuntime = Schema.is(SessionRuntime);
-
-/** A saved default: what setup writes (docker or boat), or host-vm, set another way. */
-const savedSessionRuntimeOf = (input: unknown): SessionRuntime =>
-  input === "host-vm" ? input : sessionRuntimeOf(input);
+/** A saved default, read as the flag is. */
+const savedSessionRuntimeOf = sessionRuntimeOf;
 
 /** The saved offered list: an array of runtimes, each once; host-vm reads back too. */
 const savedSessionRuntimes = (input: unknown): ReadonlyArray<SessionRuntime> => {
@@ -724,13 +740,13 @@ const savedSessionRuntimes = (input: unknown): ReadonlyArray<SessionRuntime> => 
 };
 
 /** `docker,boat`: the runtimes a server offers, each once, in the order given. */
-const sessionRuntimesOf = (input: unknown): ReadonlyArray<"docker" | "boat"> => {
+const sessionRuntimesOf = (input: unknown): ReadonlyArray<SessionRuntime> => {
   const entries = typeof input === "string" ? input.split(",").map((entry) => entry.trim()) : [];
-  const offered: Array<"docker" | "boat"> = [];
+  const offered: Array<SessionRuntime> = [];
   for (const entry of entries) {
-    if (entry !== "docker" && entry !== "boat")
+    if (!isSessionRuntime(entry))
       throw setupError(
-        "The runtimes a server offers must be docker, boat or both. Use --session-runtimes docker,boat.",
+        "The runtimes a server offers must be among docker, host-vm and boat. Use --session-runtimes docker,boat or --session-runtimes host-vm,docker.",
       );
     if (!offered.includes(entry)) offered.push(entry);
   }
@@ -745,6 +761,71 @@ export const offeredSessionRuntimes = (settings: {
   readonly sessionRuntimes?: ReadonlyArray<SessionRuntime>;
 }): ReadonlyArray<SessionRuntime> =>
   settings.sessionRuntimes ?? [settings.sessionRuntime ?? "docker"];
+
+/**
+ * Whether setup chooses where sessions run itself: a fresh install whose flags name no runtime.
+ * An install that exists keeps what it runs on, even one that never saved a runtime: its
+ * organizations stay on Docker until an owner switches them (agent-home
+ * `workspace-isolation-architecture.md` §8.3), and an operator offers host-vm with
+ * `--session-runtimes`.
+ */
+const namesNoRuntime = (
+  options: Pick<SetupOptions, "sessionRuntime" | "sessionRuntimes">,
+  existing: Pick<ServerConfig, "sessionRuntime" | "sessionRuntimes"> | null | undefined,
+): boolean =>
+  options.sessionRuntime === undefined &&
+  options.sessionRuntimes === undefined &&
+  (existing === null || existing === undefined);
+
+/** Whether the flags name host-vm: setup checks this server can run it before it applies. */
+const flagsNameHostVm = (options: Pick<SetupOptions, "sessionRuntime" | "sessionRuntimes">) =>
+  options.sessionRuntime === "host-vm" || options.sessionRuntimes?.includes("host-vm") === true;
+
+/**
+ * The options with the runtimes setup chose itself (`settleHostVm`), when nothing names any: host-vm
+ * and Docker, new organizations on host-vm, where this server's KVM passed; Docker otherwise. The
+ * choice is saved, so a later run keeps it as any saved choice is kept.
+ */
+const withChosenRuntimes = <
+  Options extends Pick<SetupOptions, "sessionRuntime" | "sessionRuntimes">,
+>(
+  options: Options,
+  existing: Pick<ServerConfig, "sessionRuntime" | "sessionRuntimes"> | null | undefined,
+  observation: HostVmObservation | null,
+): Options =>
+  observation !== null && namesNoRuntime(options, existing)
+    ? { ...options, ...hostVmChoice(observation) }
+    : options;
+
+/**
+ * Setup's host-vm checks, when this run needs them: where flags name host-vm (a failed check
+ * refuses the run), and where nothing names a runtime and `auto` lets setup choose (the line it
+ * chose by is printed). `observed`, when given, is what the guide already observed. Null when
+ * nothing was checked.
+ */
+const settleHostVm = async (
+  runtime: ServerSetupRuntime,
+  options: SetupOptions,
+  existing: ServerConfig | null,
+  dockerHost: { readonly context: string; readonly endpoint: string },
+  auto: boolean,
+  observed: HostVmObservation | undefined,
+): Promise<HostVmObservation | null> => {
+  const forced = flagsNameHostVm(options);
+  const choosing = auto && runtime.kvmDevice !== undefined && namesNoRuntime(options, existing);
+  if (!forced && !choosing) return null;
+  const observation =
+    observed ?? (await observeHostVm(runtime, { ...dockerHost, offline: options.offline }));
+  if (forced) {
+    if (observation._tag === "unavailable")
+      throw setupError(
+        `This server cannot run host-vm sessions: ${observation.observed}. Name docker or boat instead, or fix that and run mend server setup again.`,
+      );
+    return observation;
+  }
+  if (observed === undefined) runtime.writeLine(hostVmChoiceLine(observation));
+  return observation;
+};
 
 /**
  * This run's runtimes: the flags over the saved install's. A new offered list keeps the saved
@@ -1772,8 +1853,9 @@ const settingsOf = (
 export const resolveSetupSettings = (
   existing: ServerConfig | null,
   flags: ReadonlyArray<string>,
+  hostVm: HostVmObservation | null = null,
 ): SetupSettings => {
-  const options = parseSetupOptions(flags);
+  const options = withChosenRuntimes(parseSetupOptions(flags), existing, hostVm);
   return settingsOf({
     ...validateExposure(existing, options),
     mirrors: resolveMirrors(existing?.mirrors, options),
@@ -2658,6 +2740,9 @@ const renderGarage = (secrets: ServerSecrets, config: ServerConfig): ReadonlyArr
     "MEND_GARAGE_VOLUME_NAME=mend-garage",
   ];
 };
+
+/** Postgres's volume as Compose names it: the bundle's `mend-postgres` in project `mend`. */
+const POSTGRES_VOLUME = "mend_mend-postgres";
 
 /** The volumes a generation owns: the Garage volume only where its bundle carries Garage. */
 const namespaceOf = (config: ServerConfig): ServerDockerNamespace =>
@@ -4328,6 +4413,8 @@ interface SetupRun {
    * looks nor asks again.
    */
   readonly userNamespaces?: { readonly reminder: string | null };
+  /** What the guide observed of host-vm on this server (`settleHostVm`); setup does not look again. */
+  readonly hostVm?: HostVmObservation;
 }
 
 /**
@@ -4649,13 +4736,27 @@ const guidedSetup = async (
       hostOptions.boat.deploymentId !== undefined);
   const askedFirst =
     noDockerAlready || guideMayChooseBoat ? null : { reminder: await settleKernel() };
+  // This server's KVM, before the questions: a fresh install's answers start from the runtimes
+  // it chose (said here), and every install's runtime question offers host-vm where it passed.
+  const hostVm =
+    runtime.kvmDevice === undefined
+      ? null
+      : await observeHostVm(runtime, {
+          context: context.name,
+          endpoint: context.endpoint,
+          offline: hostOptions.offline,
+        });
+  const chosen = existing === null ? hostVm : null;
+  if (chosen !== null && namesNoRuntime(hostOptions, null))
+    runtime.writeLine(hostVmChoiceLine(chosen));
   const outcome = await runGuide(io, {
     saved: existing === null ? null : resolveSetupSettings(existing.config, []),
-    defaults: resolveSetupSettings(null, []),
+    defaults: resolveSetupSettings(null, [], chosen),
     observe: guideObservations(runtime),
-    resolve: (flags) => resolveSetupSettings(existing?.config ?? null, flags),
+    resolve: (flags) => resolveSetupSettings(existing?.config ?? null, flags, chosen),
     given,
     introduced: existing === null,
+    hostVm: hostVm?._tag === "passed",
   });
   if (outcome._tag === "refused") return { _tag: "error", message: outcome.message };
   if (outcome._tag === "stopped") {
@@ -4675,6 +4776,7 @@ const guidedSetup = async (
       setupServer(args, runtime, store, {
         askedAgainst: existing?.directory ?? null,
         userNamespaces: { reminder },
+        ...(hostVm === null ? {} : { hostVm }),
       }),
     { create: true },
   );
@@ -4716,7 +4818,7 @@ const setupServer = async (
   if (runtime.platform !== "linux" && runtime.platform !== "darwin") {
     throw setupError(`mend server setup supports Linux and macOS, not ${runtime.platform}.`);
   }
-  const options = parseSetupOptions(args);
+  const flagOptions = parseSetupOptions(args);
   const existing = storeValue(readServerInstallation(store));
   if (run.askedAgainst !== undefined && (existing?.directory ?? null) !== run.askedAgainst) {
     throw setupError(
@@ -4730,18 +4832,18 @@ const setupServer = async (
   const savedSecrets = savedIdentity === null ? null : parseSecrets(savedIdentity);
   if (
     existing !== null &&
-    options.version !== undefined &&
-    options.version !== existing.config.serverVersion
+    flagOptions.version !== undefined &&
+    flagOptions.version !== existing.config.serverVersion
   ) {
     throw setupError(
-      `Setup retains Mend ${existing.config.serverVersion}. Use mend server upgrade --version ${options.version} to change the server pin.`,
+      `Setup retains Mend ${existing.config.serverVersion}. Use mend server upgrade --version ${flagOptions.version} to change the server pin.`,
     );
   }
   refuseLegacyContract(existing);
   // DOCKER_CONTEXT picks a fresh install's engine as it picks docker's own. An install stays on the
   // engine its volumes are on: only --context moves it.
   const variable = runtime.dockerContextVariable;
-  const { requested, fromVariable } = requestedDockerContext(runtime, options, existing);
+  const { requested, fromVariable } = requestedDockerContext(runtime, flagOptions, existing);
   const selectedContext = await selectDockerContext(runtime, requested);
   const operatingSystem = await checkDocker(runtime, selectedContext.name);
   runtime.writeLine(
@@ -4754,7 +4856,7 @@ const setupServer = async (
     );
   if (
     existing !== null &&
-    options.context === undefined &&
+    flagOptions.context === undefined &&
     variable !== undefined &&
     variable !== existing.config.dockerContext
   ) {
@@ -4762,6 +4864,17 @@ const setupServer = async (
       `DOCKER_CONTEXT is "${variable}"; this install runs on Docker context "${existing.config.dockerContext}", where its data is, and stays there. Running Mend in another Docker engine is a new install: mend uninstall --server removes this one, its data included, then mend server setup there.`,
     );
   }
+  // Where sessions run, when nothing names it, or a flag names host-vm: this server's KVM decides,
+  // before anything is pulled or written. A saved choice is kept as it is.
+  const hostVm = await settleHostVm(
+    runtime,
+    flagOptions,
+    existing?.config ?? null,
+    { context: selectedContext.name, endpoint: selectedContext.endpoint },
+    run.askedAgainst === undefined || existing === null,
+    run.hostVm,
+  );
+  const options = withChosenRuntimes(flagOptions, existing?.config, hostVm);
   // Previews on the tailnet take their name from Tailscale here, and setup says what tailscale
   // serve should hold for them; it looks only when they are, or were, on.
   const tailnet =
@@ -4937,12 +5050,25 @@ const setupServer = async (
   if (config.boat !== undefined && config.remoteEndpoints !== undefined)
     for (const line of await boatEndpointLines(runtime, config.remoteEndpoints))
       runtime.writeLine(line);
+  // Each workspace VM's data disk beside the server's own data (spec §5.4): a warning when one
+  // filesystem holds both. Compose has created every volume by now.
+  if (namesHostVm(config))
+    for (const line of await sharedFilesystemLines(
+      runtime,
+      config.dockerContext,
+      [
+        { volume: POSTGRES_VOLUME, holds: "Postgres" },
+        ...(config.bucket === "garage" ? [{ volume: "mend-garage", holds: "Garage" }] : []),
+      ],
+      HOST_HELPER_IMAGE,
+    ))
+      runtime.writeLine(line);
   // Said when this run touched Boat or where sessions run, not on every rerun.
   const boatTouched =
     existing === null ||
     !sameBoat(existing.config.boat, config.boat) ||
-    options.sessionRuntime !== undefined ||
-    options.sessionRuntimes !== undefined ||
+    flagOptions.sessionRuntime !== undefined ||
+    flagOptions.sessionRuntimes !== undefined ||
     options.boat.apiKeyStdin ||
     options.boat.removeKey ||
     options.boat.organization !== undefined;
@@ -6310,6 +6436,7 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
     randomBytes,
     sleep: (milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)),
     writeLine: (line) => process.stdout.write(`${redactCredentials(line)}\n`),
+    kvmDevice: () => fs.existsSync("/dev/kvm"),
     dockerDaemonFacts: hostDockerDaemonFacts,
     readLogin: (configDir) => savedLogin(configDir, environment),
     savedCliLogin: savedCliLoginHere,

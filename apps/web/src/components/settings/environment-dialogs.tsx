@@ -1,4 +1,5 @@
 import { InlineAlert } from "@mend/ui/components/banner";
+import { Segmented } from "@mend/ui/components/segmented";
 import { Button } from "@mend/ui/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@mend/ui/components/ui/field";
 import { Input } from "@mend/ui/components/ui/input";
@@ -9,6 +10,15 @@ import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useId, useReducer, useState } from "react";
 
+import {
+  brokeredBlockedLine,
+  type DeliveryDraft,
+  deliveryDraftOf,
+  deliveryNeedsOwner,
+  deliveryOf,
+  deliveryProblems,
+} from "#/lib/access-policies";
+import type { ProjectAccessPolicyDto, ProjectSecretDto } from "#/lib/api";
 import {
   composerReducer,
   composerSubmission,
@@ -43,9 +53,13 @@ export interface SecretRow {
   readonly id: string;
   readonly name: string;
   readonly revision: number;
+  readonly delivery: ProjectSecretDto["delivery"];
 }
 
-/** A write's answer from the router: saved, refused with reasons, or changed by someone else. */
+/**
+ * A write's answer from the router: saved, refused with reasons, changed by someone else, a
+ * Brokered binding that broke a rule, or a change only an Organization Owner makes.
+ */
 type Outcome<R> =
   | { readonly ok: true; readonly result: R }
   | {
@@ -53,7 +67,24 @@ type Outcome<R> =
       readonly kind: "rejected";
       readonly issues: ReadonlyArray<EnvironmentIssue>;
     }
-  | { readonly ok: false; readonly kind: "stale"; readonly currentRevision: number };
+  | { readonly ok: false; readonly kind: "stale"; readonly currentRevision: number }
+  | {
+      readonly ok: false;
+      readonly kind: "binding";
+      readonly message: string;
+      readonly problems: ReadonlyArray<string>;
+    }
+  | { readonly ok: false; readonly kind: "owners-only"; readonly message: string };
+
+/** A refusal that isn't about one field, as the form's issues: the sentence, then each problem. */
+const refusalIssues = (
+  outcome: Extract<Outcome<unknown>, { readonly kind: "binding" | "owners-only" }>,
+): ReadonlyArray<EnvironmentIssue> => [
+  { field: null, rule: outcome.kind, message: outcome.message },
+  ...(outcome.kind === "binding"
+    ? outcome.problems.map((problem) => ({ field: null, rule: "binding", message: problem }))
+    : []),
+];
 
 /** Reads both lists again after a write: a name lives in one lane, so a write can move it. */
 const useRefresh = (projectId: string) => {
@@ -109,8 +140,8 @@ export function VariableDialog({
       await refresh();
       return;
     }
-    if (outcome.kind === "rejected") setIssues(outcome.issues);
-    else setStale(true);
+    if (outcome.kind === "stale") setStale(true);
+    else setIssues(outcome.kind === "rejected" ? outcome.issues : refusalIssues(outcome));
   };
   const create = useMutation(trpc.environment.createVariable.mutationOptions());
   const update = useMutation(trpc.environment.updateVariable.mutationOptions());
@@ -243,6 +274,7 @@ export function SecretDialog({
   projectId,
   projectName,
   replacing,
+  policy,
   open,
   onOpenChange,
   finalFocus,
@@ -251,6 +283,8 @@ export function SecretDialog({
   readonly projectName: string;
   /** The secret being replaced, or null to add one. */
   readonly replacing: SecretRow | null;
+  /** The project's own Access policy, when the page could read it: whether Brokered is allowed. */
+  readonly policy: ProjectAccessPolicyDto["policy"] | null;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly finalFocus: RefObject<HTMLElement | null>;
@@ -261,6 +295,7 @@ export function SecretDialog({
   const ids = useId();
   const [name, setName] = useState(replacing?.name ?? "");
   const [value, setValue] = useState("");
+  const [delivery, setDelivery] = useState<DeliveryDraft>(() => deliveryDraftOf(null));
   const [issues, setIssues] = useState<ReadonlyArray<EnvironmentIssue>>([]);
   const [stale, setStale] = useState(false);
   const create = useMutation(trpc.environment.createSecret.mutationOptions());
@@ -275,13 +310,29 @@ export function SecretDialog({
   };
   const save = async () => {
     const trimmed = name.trim();
-    const found = clientSecretIssues({ name: trimmed, value });
+    const found = [
+      ...clientSecretIssues({ name: trimmed, value }),
+      ...(replacing === null
+        ? deliveryProblems(delivery).map((message) => ({
+            field: null,
+            rule: "binding",
+            message,
+          }))
+        : []),
+    ];
     setIssues(found);
     setStale(false);
     if (found.length > 0) return;
     const outcome: Outcome<unknown> =
       replacing === null
-        ? await create.mutateAsync({ projectId, request: { name: trimmed, value } })
+        ? await create.mutateAsync({
+            projectId,
+            // Brokered in the same write: the secret never reaches a workspace as Direct first.
+            request:
+              delivery.mode === "brokered"
+                ? { name: trimmed, value, delivery: deliveryOf(delivery) }
+                : { name: trimmed, value },
+          })
         : await update.mutateAsync({
             projectId,
             secretId: replacing.id,
@@ -295,8 +346,8 @@ export function SecretDialog({
       await refresh();
       return;
     }
-    if (outcome.kind === "rejected") setIssues(outcome.issues);
-    else setStale(true);
+    if (outcome.kind === "stale") setStale(true);
+    else setIssues(outcome.kind === "rejected" ? outcome.issues : refusalIssues(outcome));
   };
   return (
     <Overlay
@@ -379,6 +430,18 @@ export function SecretDialog({
           </FieldDescription>
           <Issues issues={issuesFor(issues, "value")} />
         </Field>
+        {replacing === null ? (
+          <DeliveryFields
+            draft={delivery}
+            projectName={projectName}
+            policy={policy}
+            size={size}
+            onChange={(next) => {
+              setDelivery(next);
+              setIssues([]);
+            }}
+          />
+        ) : null}
         <button type="submit" hidden aria-hidden tabIndex={-1} />
       </form>
       {stale && replacing !== null ? (
@@ -394,6 +457,254 @@ export function SecretDialog({
       ) : failure !== null ? (
         <InlineAlert size={size} title="It wasn't saved.">
           {failureWords(failure, "Mend didn't answer. Try again.")}
+        </InlineAlert>
+      ) : null}
+    </Overlay>
+  );
+}
+
+/**
+ * How a secret reaches the workspace: Direct, its value in the environment, or Brokered, a
+ * placeholder in the environment and the value put into one header on HTTPS requests to the
+ * bound hosts by the workspace's egress proxy. Brokered asks for the header and the hosts; methods
+ * and path prefixes narrow it further. When the project's Access policy doesn't allow Brokered
+ * secrets, it says so here, before the secret blocks every launch.
+ */
+function DeliveryFields({
+  draft,
+  projectName,
+  policy,
+  size,
+  onChange,
+}: {
+  readonly draft: DeliveryDraft;
+  readonly projectName: string;
+  readonly policy: ProjectAccessPolicyDto["policy"] | null;
+  readonly size: "touch" | "default";
+  readonly onChange: (draft: DeliveryDraft) => void;
+}) {
+  const ids = useId();
+  const blocked = draft.mode === "brokered" ? brokeredBlockedLine(projectName, policy, 1) : null;
+  const set = <K extends keyof DeliveryDraft>(key: K, value: DeliveryDraft[K]) =>
+    onChange({ ...draft, [key]: value });
+  return (
+    <>
+      <Field>
+        <FieldLabel id={`${ids}-mode`}>Delivery</FieldLabel>
+        <Segmented
+          aria-label="Delivery"
+          value={draft.mode}
+          size={size}
+          options={[
+            { value: "direct", label: "Direct" },
+            { value: "brokered", label: "Brokered" },
+          ]}
+          onValueChange={(mode) => set("mode", mode)}
+        />
+        <FieldDescription>
+          {draft.mode === "direct"
+            ? "Sessions get the value as an environment variable, where the agent and any program in the workspace can read it."
+            : "Sessions get a placeholder. The workspace's egress proxy puts the real value into one header, only on HTTPS requests to the hosts below. The value never enters the workspace."}
+        </FieldDescription>
+      </Field>
+      {draft.mode === "brokered" ? (
+        <>
+          <Field>
+            <FieldLabel htmlFor={`${ids}-header`}>Header</FieldLabel>
+            <Input
+              id={`${ids}-header`}
+              value={draft.headerName}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="Authorization"
+              className={cn("font-mono", size === "touch" && "h-11")}
+              onChange={(event) => set("headerName", event.target.value)}
+            />
+            <FieldDescription>
+              The one header that carries the value, such as Authorization or X-API-Key.
+            </FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor={`${ids}-hosts`}>Hosts</FieldLabel>
+            <Textarea
+              id={`${ids}-hosts`}
+              value={draft.bindHosts}
+              rows={2}
+              spellCheck={false}
+              placeholder="api.vercel.com"
+              className="font-mono"
+              onChange={(event) => set("bindHosts", event.target.value)}
+            />
+            <FieldDescription>
+              Each exact host name the value may go to, one per line. No wildcards, and never in a
+              URL&apos;s query.
+            </FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor={`${ids}-methods`}>Methods (optional)</FieldLabel>
+            <Input
+              id={`${ids}-methods`}
+              value={draft.methods}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="GET POST"
+              className={cn("font-mono", size === "touch" && "h-11")}
+              onChange={(event) => set("methods", event.target.value)}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor={`${ids}-paths`}>Path prefixes (optional)</FieldLabel>
+            <Textarea
+              id={`${ids}-paths`}
+              value={draft.pathPrefixes}
+              rows={2}
+              spellCheck={false}
+              placeholder="/v1/"
+              className="font-mono"
+              onChange={(event) => set("pathPrefixes", event.target.value)}
+            />
+            <FieldDescription>Left empty, every method and path on those hosts.</FieldDescription>
+          </Field>
+        </>
+      ) : null}
+      {blocked === null ? null : (
+        <InlineAlert tone="warning" size={size} title="Sessions won't start.">
+          {blocked}
+        </InlineAlert>
+      )}
+    </>
+  );
+}
+
+/**
+ * Delivery… on a secret: Direct or Brokered, and where a Brokered secret's value goes. Turning a
+ * Brokered secret back to Direct, or changing its header or hosts, takes an Organization Owner:
+ * for anyone else the dialog says so before they press Save, and Save stays off.
+ */
+export function SecretDeliveryDialog({
+  projectId,
+  projectName,
+  secret,
+  owner,
+  policy,
+  onOpenChange,
+  finalFocus,
+}: {
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly secret: SecretRow;
+  /** The viewer is an Organization Owner. */
+  readonly owner: boolean;
+  readonly policy: ProjectAccessPolicyDto["policy"] | null;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly finalFocus: RefObject<HTMLElement | null>;
+}) {
+  const trpc = useTRPC();
+  const refresh = useRefresh(projectId);
+  const phone = usePhone();
+  const size = phone ? "touch" : "default";
+  const [draft, setDraft] = useState<DeliveryDraft>(() => deliveryDraftOf(secret.delivery));
+  const [issues, setIssues] = useState<ReadonlyArray<EnvironmentIssue>>([]);
+  const [stale, setStale] = useState(false);
+  const save = useMutation(trpc.environment.setSecretDelivery.mutationOptions());
+  const gated = deliveryNeedsOwner(secret.delivery, draft) && !owner;
+  const run = async () => {
+    const found = deliveryProblems(draft).map((message) => ({
+      field: null,
+      rule: "binding",
+      message,
+    }));
+    setIssues(found);
+    setStale(false);
+    if (found.length > 0) return;
+    const outcome: Outcome<unknown> = await save.mutateAsync({
+      projectId,
+      secretId: secret.id,
+      request: { delivery: deliveryOf(draft), expectedRevision: secret.revision },
+    });
+    if (outcome.ok) {
+      toast.add({
+        description:
+          draft.mode === "direct" ? `${secret.name} is Direct.` : `${secret.name} is Brokered.`,
+      });
+      onOpenChange(false);
+      await refresh();
+      return;
+    }
+    if (outcome.kind === "stale") setStale(true);
+    else setIssues(outcome.kind === "rejected" ? outcome.issues : refusalIssues(outcome));
+  };
+  return (
+    <Overlay
+      open
+      onOpenChange={(next) => {
+        if (!save.isPending) onOpenChange(next);
+      }}
+      title={`Delivery of ${secret.name}`}
+      description="Sessions that start after you save get the secret this way. Running sessions keep how they got it until they stop."
+      size="md"
+      finalFocus={finalFocus}
+      footer={
+        <>
+          <Button
+            variant="outline"
+            size={size}
+            disabled={save.isPending}
+            onClick={() => onOpenChange(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            size={size}
+            disabled={save.isPending || gated}
+            onClick={() => void run().catch(() => undefined)}
+          >
+            {save.isPending ? "Saving…" : "Save delivery"}
+          </Button>
+        </>
+      }
+    >
+      <form
+        className="grid gap-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!gated) void run().catch(() => undefined);
+        }}
+      >
+        <DeliveryFields
+          draft={draft}
+          projectName={projectName}
+          policy={policy}
+          size={size}
+          onChange={(next) => {
+            setDraft(next);
+            setIssues([]);
+          }}
+        />
+        <button type="submit" hidden aria-hidden tabIndex={-1} />
+      </form>
+      {gated ? (
+        <InlineAlert tone="info" size={size} title="Only an owner can save this.">
+          {draft.mode === "direct"
+            ? `Turning a Brokered secret back to Direct puts ${secret.name}'s value into the workspace's environment, so only an Organization Owner can do it. Ask one to make this change.`
+            : `Changing where a Brokered secret's value goes takes an Organization Owner. ${secret.name} keeps its header and hosts until one changes them.`}
+        </InlineAlert>
+      ) : null}
+      {stale ? (
+        <InlineAlert size={size} title={`${secret.name} wasn't saved.`}>
+          {staleWords(secret.name)}
+        </InlineAlert>
+      ) : issuesFor(issues, null).length > 0 ? (
+        <InlineAlert tone="error" size={size} title="It wasn't saved.">
+          <ul className="grid list-disc gap-0.5 pl-4">
+            {issuesFor(issues, null).map((issue) => (
+              <li key={issue.message}>{issue.message}</li>
+            ))}
+          </ul>
+        </InlineAlert>
+      ) : save.error !== null ? (
+        <InlineAlert tone="error" size={size} title="It wasn't saved.">
+          {failureWords(save.error, "Mend didn't answer. Try again.")}
         </InlineAlert>
       ) : null}
     </Overlay>
@@ -420,6 +731,7 @@ export function RemoveEntryDialog({
   const refresh = useRefresh(projectId);
   const phone = usePhone();
   const [stale, setStale] = useState(false);
+  const [refused, setRefused] = useState<ReadonlyArray<EnvironmentIssue>>([]);
   const removeVariable = useMutation(trpc.environment.removeVariable.mutationOptions());
   const removeSecret = useMutation(trpc.environment.removeSecret.mutationOptions());
   const pending = removeVariable.isPending || removeSecret.isPending;
@@ -433,6 +745,7 @@ export function RemoveEntryDialog({
   const remove = async () => {
     if (entry === null) return;
     setStale(false);
+    setRefused([]);
     const request = { expectedRevision: entry.row.revision };
     const outcome: Outcome<unknown> =
       entry.lane === "variable"
@@ -442,7 +755,8 @@ export function RemoveEntryDialog({
       toast.add({ description: `Removed ${entry.row.name}.` });
       onClose();
       await refresh();
-    } else setStale(true);
+    } else if (outcome.kind === "stale") setStale(true);
+    else setRefused(outcome.kind === "rejected" ? outcome.issues : refusalIssues(outcome));
   };
   return (
     <Overlay
@@ -480,6 +794,10 @@ export function RemoveEntryDialog({
       {stale ? (
         <InlineAlert size={size} title={`${name} wasn't removed.`}>
           {staleWords(name)}
+        </InlineAlert>
+      ) : refused.length > 0 ? (
+        <InlineAlert size={size} title={`${name} wasn't removed.`}>
+          {refused.map((issue) => issue.message).join(" ")}
         </InlineAlert>
       ) : failure !== null ? (
         <InlineAlert size={size} title={`${name} wasn't removed.`}>

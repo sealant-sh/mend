@@ -1,3 +1,4 @@
+import { InlineAlert } from "@mend/ui/components/banner";
 import { Button } from "@mend/ui/components/ui/button";
 import {
   DropdownMenu,
@@ -6,12 +7,15 @@ import {
   DropdownMenuTrigger,
 } from "@mend/ui/components/ui/dropdown-menu";
 import { cn } from "@mend/ui/lib/utils";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { EllipsisIcon } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
 
+import { brokeredBlockedLine, deliveryTitle, deliveryWords } from "#/lib/access-policies";
 import { secretSetLine } from "#/lib/project-environment";
 import { readOnlyLine } from "#/lib/project-settings";
+import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 import { useProjectSettings } from "#/lib/use-project-settings";
 
@@ -20,6 +24,7 @@ import { ClusterBindingsSection } from "./cluster-bindings-section.tsx";
 import {
   ImportDialog,
   RemoveEntryDialog,
+  SecretDeliveryDialog,
   SecretDialog,
   type SecretRow,
   VariableDialog,
@@ -36,6 +41,7 @@ type Open =
   | { readonly kind: "variable"; readonly row: VariableRow | null; readonly n: number }
   | { readonly kind: "secret"; readonly row: SecretRow | null; readonly n: number }
   | { readonly kind: "import"; readonly n: number }
+  | { readonly kind: "delivery"; readonly row: SecretRow; readonly n: number }
   | null;
 
 type Removing =
@@ -62,6 +68,10 @@ export function ProjectSecretsPage({ projectId }: { readonly projectId: string }
   const manage = capabilities.manage;
   const variables = useQuery(trpc.environment.environment.queryOptions({ projectId }));
   const secrets = useQuery(trpc.environment.secrets.queryOptions({ projectId }));
+  // The project's own Access policy: whether its Brokered secrets may reach a workspace.
+  const policy = useQuery(trpc.accessPolicies.project.queryOptions({ projectId }));
+  const owner = useSuspenseQuery(signedInOptions(trpc)).data.role === "owner";
+  const projectPolicy = policy.isPending || policy.isError ? null : policy.data.policy;
   const [open, setOpen] = useState<Open>(null);
   const [removing, setRemoving] = useState<Removing>(null);
   const opened = useRef(0);
@@ -161,7 +171,7 @@ export function ProjectSecretsPage({ projectId }: { readonly projectId: string }
       </SettingSection>
       <SettingSection
         title="Secrets"
-        description="Sessions get these as environment variables. You can replace a secret, but you can't see it."
+        description="A Direct secret reaches sessions as an environment variable. A Brokered one reaches them as a placeholder, and the workspace's egress proxy puts the value into one header on requests to the hosts you choose. You can replace a secret, but you can't see it."
         action={
           manage ? (
             <Button
@@ -176,39 +186,56 @@ export function ProjectSecretsPage({ projectId }: { readonly projectId: string }
       >
         <QueryView query={secrets}>
           {(snapshot) => (
-            <EntryList
-              label="Secrets"
-              empty="No secrets yet."
-              columns={["Name", "Value", "Set"]}
-              rows={snapshot.secrets.map((secret) => ({
-                id: secret.id,
-                name: secret.name,
-                detail: (
-                  <>
-                    <span aria-label="Value hidden" className="font-mono max-lg:hidden">
-                      ••••••••
-                    </span>
-                    <span className="text-muted-foreground">{secretSetLine(secret.updatedAt)}</span>
-                  </>
-                ),
-                actions: manage
-                  ? [
-                      {
-                        label: "Replace…",
-                        run: (from: HTMLElement | null) =>
-                          openDialog({ kind: "secret", row: secret, n: 0 }, from),
-                      },
-                      {
-                        label: "Remove…",
-                        run: (from: HTMLElement | null) => {
-                          focusBack.current = from;
-                          setRemoving({ lane: "secret", row: secret });
+            <>
+              <BrokeredBlocked
+                projectId={project.id}
+                line={brokeredBlockedLine(
+                  project.name,
+                  projectPolicy,
+                  snapshot.secrets.filter((secret) => secret.delivery.mode === "brokered").length,
+                )}
+              />
+              <EntryList
+                label="Secrets"
+                empty="No secrets yet."
+                columns={["Name", "Delivery", "Set"]}
+                rows={snapshot.secrets.map((secret) => ({
+                  id: secret.id,
+                  name: secret.name,
+                  detail: (
+                    <>
+                      <span title={deliveryTitle(secret.delivery)} className="max-lg:flex-none">
+                        {deliveryWords(secret.delivery)}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {secretSetLine(secret.updatedAt)}
+                      </span>
+                    </>
+                  ),
+                  actions: manage
+                    ? [
+                        {
+                          label: "Replace…",
+                          run: (from: HTMLElement | null) =>
+                            openDialog({ kind: "secret", row: secret, n: 0 }, from),
                         },
-                      },
-                    ]
-                  : [],
-              }))}
-            />
+                        {
+                          label: "Delivery…",
+                          run: (from: HTMLElement | null) =>
+                            openDialog({ kind: "delivery", row: secret, n: 0 }, from),
+                        },
+                        {
+                          label: "Remove…",
+                          run: (from: HTMLElement | null) => {
+                            focusBack.current = from;
+                            setRemoving({ lane: "secret", row: secret });
+                          },
+                        },
+                      ]
+                    : [],
+                }))}
+              />
+            </>
           )}
         </QueryView>
         {manage ? (
@@ -244,7 +271,22 @@ export function ProjectSecretsPage({ projectId }: { readonly projectId: string }
           projectId={project.id}
           projectName={project.name}
           replacing={open.row}
+          policy={projectPolicy}
           open
+          onOpenChange={(next) => {
+            if (!next) setOpen(null);
+          }}
+          finalFocus={focusBack}
+        />
+      ) : null}
+      {open?.kind === "delivery" ? (
+        <SecretDeliveryDialog
+          key={open.n}
+          projectId={project.id}
+          projectName={project.name}
+          secret={open.row}
+          owner={owner}
+          policy={projectPolicy}
           onOpenChange={(next) => {
             if (!next) setOpen(null);
           }}
@@ -360,8 +402,34 @@ function EntryList({
   );
 }
 
-/** The desk's actions column: as wide as Replace… and Remove…, so every row's cells line up. */
-const ACTIONS = "flex w-44 flex-none justify-end gap-1";
+/** The desk's actions column: as wide as its buttons, so every row's cells line up. */
+const ACTIONS = "flex w-64 flex-none justify-end gap-1";
+
+/**
+ * A Brokered secret under a policy that doesn't allow Brokered secrets: every launch is refused
+ * until one side changes, so the page says so above the list, with where to change the policy.
+ */
+function BrokeredBlocked({
+  projectId,
+  line,
+}: {
+  readonly projectId: string;
+  readonly line: string | null;
+}) {
+  if (line === null) return null;
+  return (
+    <InlineAlert tone="warning" title="Sessions won't start." className="mt-3 mb-3 max-lg:mx-4">
+      {line}{" "}
+      <Link
+        to="/projects/$projectId/settings/workspace"
+        params={{ projectId }}
+        className="text-primary underline-offset-2 hover:underline"
+      >
+        Open Workspace
+      </Link>
+    </InlineAlert>
+  );
+}
 
 /** A row's "…" on a phone, holding the same actions as the desk's buttons. */
 function RowMenu({

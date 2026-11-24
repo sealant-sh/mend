@@ -1,13 +1,31 @@
-import { sharedWorkspaceLine } from "@mend/domain/workbench";
+import { STANDARD_ACCESS_POLICY_NAME, sharedWorkspaceLine } from "@mend/domain/workbench";
+import { Button } from "@mend/ui/components/ui/button";
 import { cn } from "@mend/ui/lib/utils";
-import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
-import type { SessionDetailDto } from "#/lib/api";
+import {
+  enforcementLead,
+  type RuleRow,
+  revocationWhat,
+  ruleRows,
+  runtimeNote,
+  runtimeWords,
+} from "#/lib/access-policies";
+import type { SessionDetailDto, WorktreeAccessPolicyDto } from "#/lib/api";
 import { observedChecks } from "#/lib/checks";
 import { conversationQuery } from "#/lib/conversation";
 import { inboxQuery } from "#/lib/inbox-live";
+import { dayOf } from "#/lib/organization";
+import { usePhone } from "#/lib/phone";
+import { failureWords } from "#/lib/refusal";
 import {
   baseWords,
   checkWords,
@@ -26,6 +44,7 @@ import { sessionDetailQuery } from "#/lib/session-queries";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 import { useMinute } from "#/lib/use-inbox";
 
+import { EnforcementList } from "../access-policy-parts.tsx";
 import { type SessionFacts, useSessionFacts } from "../session/session-facts.ts";
 import { SharedControlRow } from "../session/shared-control.tsx";
 
@@ -75,6 +94,7 @@ export function WorkspaceDetails({
           sessionsInWorkspace={workspace.rows.length}
           onShowSessions={() => sessionsHeading.current?.focus()}
         />
+        <AccessPolicyGroup worktreeId={place.worktreeId} projectId={place.projectId} />
         <ChecksGroup sessionId={place.sessionId} opens={opens} />
         <ServicesGroup place={place} opens={opens} sessionIds={workspace.ids} />
         <RepositoriesGroup facts={facts} />
@@ -286,6 +306,17 @@ function WorkspaceGroup({
     ),
   );
   const handedOffFrom = handoff.isPending || handoff.isError ? null : handoff.data;
+  // Where its workspaces run: pinned when the worktree was made, the same for every session in it.
+  const runtime = useQuery(
+    trpc.projects.detail.queryOptions(
+      { id: place.projectId },
+      {
+        select: (project) =>
+          project.worktrees.find((worktree) => worktree.id === place.worktreeId)?.sessionRuntime ??
+          null,
+      },
+    ),
+  );
   const shared = sharedWithWords(sessionsInWorkspace);
   // Another person's process live in this workspace (`shared-workspace-line`), and why it runs
   // everyone on one home when an image or runtime forced it (`layout-fallback`).
@@ -304,6 +335,20 @@ function WorkspaceGroup({
           {handedOffFrom === null ? null : <Note>handed off from {handedOffFrom}</Note>}
           {sharing === null ? null : <Note>{sharing}</Note>}
           {fallback === null ? null : <Note>{fallback}</Note>}
+        </Row>
+        <Row label="Runtime">
+          {runtime.isPending || runtime.isError ? (
+            <Unread
+              failed={runtime.isError}
+              retrying={runtime.isFetching}
+              onRetry={() => void runtime.refetch()}
+            />
+          ) : (
+            <>
+              <span>{runtimeWords(runtime.data)}</span>
+              {runtimeNote(runtime.data) === null ? null : <Note>{runtimeNote(runtime.data)}</Note>}
+            </>
+          )}
         </Row>
         <Row label="Branch">
           <Mono>{session.branch}</Mono>
@@ -519,6 +564,174 @@ function RepositoriesGroup({ facts }: { readonly facts: SessionFacts }) {
           </Row>
         ))}
       </dl>
+    </Group>
+  );
+}
+
+type Applied = Extract<
+  Awaited<ReturnType<ReturnType<typeof useApply>["mutateAsync"]>>,
+  { readonly ok: true }
+>["result"];
+
+const useApply = () => {
+  const trpc = useTRPC();
+  return useMutation(trpc.accessPolicies.applyUpdated.mutationOptions());
+};
+
+/** The pin's name and revision, or Standard for a worktree from before Access policies. */
+const pinLine = (view: WorktreeAccessPolicyDto): string =>
+  view.pin === null
+    ? `${STANDARD_ACCESS_POLICY_NAME}. This worktree is from before Access policies.`
+    : `${view.pin.source.name}, revision ${view.pin.source.revision}, pinned ${dayOf(view.pin.pinnedAt)}`;
+
+/** A rule's value and its list, as a Details row. */
+function RuleValue({ row }: { readonly row: RuleRow }) {
+  return (
+    <>
+      <span>{row.value}</span>
+      {row.list.length === 0 ? null : (
+        <span className="grid basis-full gap-0.5">
+          {row.list.map((item) => (
+            <Mono key={item}>{item}</Mono>
+          ))}
+        </span>
+      )}
+    </>
+  );
+}
+
+/**
+ * The worktree's Access policy in its Details (agent-home `workspace-isolation-architecture.md`
+ * §7.3, §8.2): the rules it pinned when it was made, what it may use now once revocations are taken
+ * off, and those revocations. When the project's own policy reads differently, "Apply updated
+ * policy" re-pins it and pushes the rules to each running workspace; a refusal is shown as the
+ * server words it (stop the sessions, apply, then start one), and each workspace's answer after.
+ */
+export function AccessPolicyGroup({
+  worktreeId,
+  projectId,
+}: {
+  readonly worktreeId: string;
+  readonly projectId: string;
+}) {
+  const trpc = useTRPC();
+  const view = useQuery(trpc.accessPolicies.worktree.queryOptions({ id: worktreeId }));
+  if (view.isPending || view.isError)
+    return (
+      <Group title="Access policy">
+        {view.isPending ? (
+          <span role="status" className="text-muted-foreground">
+            Reading…
+          </span>
+        ) : (
+          <span role="alert" className="text-muted-foreground">
+            This didn't load. {failureWords(view.error, "")}
+          </span>
+        )}
+      </Group>
+    );
+  return <PolicyGroupBody view={view.data} worktreeId={worktreeId} projectId={projectId} />;
+}
+
+function PolicyGroupBody({
+  view,
+  worktreeId,
+  projectId,
+}: {
+  readonly view: WorktreeAccessPolicyDto;
+  readonly worktreeId: string;
+  readonly projectId: string;
+}) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const phone = usePhone();
+  const apply = useApply();
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const [applied, setApplied] = useState<Applied | null>(null);
+  const rows = ruleRows(view.effective);
+  const run = async () => {
+    setRefusal(null);
+    setApplied(null);
+    const outcome = await apply.mutateAsync({ id: worktreeId });
+    if (!outcome.ok) {
+      setRefusal(outcome.message);
+      return;
+    }
+    setApplied(outcome.result);
+    await Promise.all([
+      queryClient.invalidateQueries(trpc.accessPolicies.worktree.queryFilter({ id: worktreeId })),
+      queryClient.invalidateQueries(trpc.projects.detail.queryFilter({ id: projectId })),
+    ]);
+  };
+  return (
+    <Group title="Access policy">
+      <dl className="grid gap-2">
+        <Row label="Pinned">
+          <span>{pinLine(view)}</span>
+        </Row>
+        {rows.map((row) => (
+          <Row key={row.label} label={row.label}>
+            <RuleValue row={row} />
+          </Row>
+        ))}
+        {view.revocations.length === 0 ? null : (
+          <Row label="Revoked">
+            <span className="grid basis-full gap-0.5">
+              {view.revocations.map((revocation) => (
+                <span key={revocation.id}>{revocationWhat(revocation)}</span>
+              ))}
+            </span>
+            <span className="basis-full text-meta text-muted-foreground">
+              An owner revoked these. They win over the pinned rules above, which already leave them
+              out.
+            </span>
+          </Row>
+        )}
+      </dl>
+      {view.projectPolicyDiffers || applied !== null || refusal !== null ? (
+        <div className="mt-3 grid gap-2">
+          {view.projectPolicyDiffers ? (
+            <p className="text-pretty text-muted-foreground">
+              The project&apos;s policy changed since this worktree pinned its rules. Applying it
+              re-pins this worktree and tells each running workspace.
+            </p>
+          ) : null}
+          {view.projectPolicyDiffers ? (
+            <div>
+              <Button
+                type="button"
+                variant="outline"
+                size={phone ? "touch" : "sm"}
+                disabled={apply.isPending}
+                onClick={() => void run().catch(() => undefined)}
+              >
+                {apply.isPending ? "Applying…" : "Apply updated policy"}
+              </Button>
+            </div>
+          ) : null}
+          {refusal === null ? null : (
+            <p role="alert" className="text-pretty text-destructive">
+              Not applied. {refusal}
+            </p>
+          )}
+          {apply.error === null ? null : (
+            <p role="alert" className="text-pretty text-destructive">
+              Not applied. {failureWords(apply.error, "Mend didn't answer. Try again.")}
+            </p>
+          )}
+          {applied === null ? null : (
+            <div role="status" className="grid gap-1.5">
+              <p>
+                Applied {applied.pin.source.name}, revision {applied.pin.source.revision}.{" "}
+                {enforcementLead(applied.workspaces.length)}
+              </p>
+              {applied.workspaces.length === 0 ? null : (
+                <EnforcementList workspaces={applied.workspaces} />
+              )}
+            </div>
+          )}
+        </div>
+      ) : null}
     </Group>
   );
 }

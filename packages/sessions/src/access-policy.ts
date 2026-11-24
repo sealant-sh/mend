@@ -1,6 +1,8 @@
 import { accessPolicyHash, AccessPoliciesRepo, SessionsRepo, WorktreesRepo } from "@mend/db";
 import type { SessionId, SessionRuntime } from "@mend/domain";
 import {
+  AGENT_PROVIDER_HOSTS,
+  DOPPLER_HOST,
   type AccessPolicyRules,
   type BrokeredSecretBinding,
   revocationReaches,
@@ -191,26 +193,19 @@ export const revocationsToCarry = (
 };
 
 /**
- * The hosts a Restricted worktree reaches without listing them, shown on its page: what the
- * session's agent needs to run (its model provider), Doppler when the person uses it, and the
- * hosts of the person's MCP servers (agent-home `workspace-isolation-architecture.md` §7.1).
+ * The hosts a Restricted worktree reaches without listing them: what the session's agent needs
+ * to run (its model provider), Doppler when the person uses it, and the hosts of the person's MCP
+ * servers (agent-home `workspace-isolation-architecture.md` §7.1). The lists live in the domain,
+ * so Organization → Access policies shows the same hosts a launch allows.
  */
-const PROVIDER_HOSTS: Readonly<Record<string, ReadonlyArray<string>>> = {
-  claude: ["api.anthropic.com", "claude.ai", "console.anthropic.com", "statsig.anthropic.com"],
-  codex: ["chatgpt.com", "api.openai.com", "auth.openai.com"],
-  antigravity: [
-    "cloudcode-pa.googleapis.com",
-    "generativelanguage.googleapis.com",
-    "oauth2.googleapis.com",
-  ],
-};
+const PROVIDER_HOSTS: Readonly<Record<string, ReadonlyArray<string>>> = AGENT_PROVIDER_HOSTS;
 
 const ANY_PROVIDER_HOSTS: ReadonlyArray<string> = [
-  ...(PROVIDER_HOSTS["claude"] ?? []),
-  ...(PROVIDER_HOSTS["codex"] ?? []),
+  ...AGENT_PROVIDER_HOSTS.claude,
+  ...AGENT_PROVIDER_HOSTS.codex,
 ];
 
-export const DOPPLER_HOST = "api.doppler.com";
+export { DOPPLER_HOST };
 
 /** Every model provider's hosts: what a standby, which any harness may claim, reaches. */
 export const allProviderHosts = (): ReadonlyArray<string> => [

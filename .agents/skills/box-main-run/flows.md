@@ -495,8 +495,8 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 
 ### settings.new-web-runtime
 
-- **Map:** none in a feature file (route PR 47: where the organization's new sessions run, Docker or
-  Boat, and what a switch changes; docs/adr/0025)
+- **Map:** none in a feature file (route PR 47: where the organization's new sessions run, Docker,
+  this server's KVM (`host-vm`) or Boat, and what a switch changes; docs/adr/0025)
 - **Needs:** no session; no turn; web; for a real switch, a server that offers Docker and Boat
 - **Do:** Drive the recipe `settings-runtime`: Runtime under "Everyone in <organization>" lists the
   runtimes the server offers with where new sessions run selected, Boat's line linking to the Boat
@@ -513,7 +513,34 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/settings/runtime-page.tsx`,
   `apps/web/src/routes/_inbox.settings.organization.runtime.tsx`,
-  `apps/web/src/lib/runtime-switch.ts`
+  `apps/web/src/lib/runtime-switch.ts`, `apps/web/src/lib/server-settings.ts`
+
+### organization.new-web-access-policies
+
+- **Map:** none in a feature file (W4-2, SLNT-1338: Organization → Access policies, agent-home
+  `docs/workspace-isolation-architecture.md` §7–§8, ADR 0025's 2026-11-24 amendment)
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `access-policies`: Access policies under "Everyone in <organization>"
+  lists Standard as built in with no Edit… or Remove…, the hosts Restricted egress allows without
+  listing them (each agent's provider, Doppler, the viewer's MCP servers) and the server's private
+  destinations. New policy… refuses a wildcard host before sending, says the policy is elevated once
+  Brokered secrets is on, and adds a Restricted policy; a second policy with the same name in other
+  letter case is refused in the server's words; an edit sent after someone else saved the policy is
+  refused as stale and saves when opened again; Revoke access… says the revocation lasts before
+  anything is stored, then lists each running workspace's answer, and the revocation is listed with
+  the policy it reaches; a member (rewritten read) reads everything with who can change it and no
+  buttons; the phone, light and dark; a failed read shows Try again; Remove… removes the policy.
+- **See:** each step's note in the recipe's `steps.log` and its captures; `Added <name>.`,
+  `Saved <name>.`, `Removed <name>.` toasts; "There's already a policy called", "Someone changed
+  this policy since you opened it"; the Revoked dialog; "Only an owner can change these". A page
+  that offers Edit… on Standard, saves a wildcard host, or lists no revocation after Revoked is
+  failed.
+- **Mode:** `scripted` (recipes/access-policies.mjs)
+- **Box-only:** no
+- **Areas:** `apps/web/src/components/settings/access-policies-page.tsx`,
+  `apps/web/src/components/access-policy-parts.tsx`,
+  `apps/web/src/routes/_inbox.settings.organization.access-policies.tsx`,
+  `apps/web/src/lib/access-policies.ts`, `apps/web/src/server/routers/access-policies.ts`
 
 ### organization.new-web-integrations
 
@@ -2296,6 +2323,41 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `apps/web/src/components/settings/environment-dialogs.tsx`,
   `apps/web/src/routes/_inbox.projects.$projectId_.settings.secrets.tsx`,
   `apps/web/src/lib/project-environment.ts`, `apps/web/src/lib/env-composer.ts`
+
+### project-settings.new-web-access-policy
+
+- **Map:** none in a feature file (W4-2, SLNT-1338: a project's Access policy, its Brokered secrets
+  and a worktree's pinned policy; agent-home `docs/workspace-isolation-architecture.md` §7.2, §7.3,
+  §8.2)
+- **Needs:** Docker; no turn; web and CLI; verify-fixture on a stack, `<p>` on the box (read the
+  recipe's `verify-fixture` as `<p>`); a copy without Boat, where a new worktree runs on Docker
+- **Do:** Run the CLI batch `access-policy-sessions.json` (one `sleep` session in a worktree
+  `policy-ws-<time>`, pinned to Standard), then drive the recipe `project-access-policy`: Project →
+  Workspace's Access policy section reads "A copy of Standard"; Change policy… lists every policy
+  with the elevated one marked and says worktrees keep their rules; assigning a policy that caps Git
+  shows its copy; after the policy gets a new revision the section offers Update from template,
+  which copies it; a member (rewritten read) can't pick the elevated policy and is told who can. The
+  session's Details shows its runtime as a Docker container sharing the server's kernel (never
+  "isolated"), the worktree pinned to Standard, and Apply updated policy; a refusal (rewritten
+  answer) shows the server's words, then a real Apply re-pins the worktree. On Variables and
+  secrets, Add secret… with Brokered warns that sessions won't start under a policy without Brokered
+  secrets, refuses a wildcard host, and adds the secret Brokered in one write; a member (rewritten
+  read) can't turn it back to Direct; the owner can. Phone, light and dark, for all three.
+- **See:** each step's note in the recipe's `steps.log` and its captures; the toasts
+  `<policy> is copied into this project.`, `Added VERIFY_BROKERED.`, `VERIFY_BROKERED is Direct.`;
+  the row `Brokered to api.vercel.com`; `Applied <policy>, revision 2.` or the server's refusal word
+  for word; the stored secret's delivery `brokered` straight after it was added. A runtime line that
+  says "isolated", a secret stored Direct first, or Save delivery enabled for a member turning a
+  Brokered secret back to Direct is failed.
+- **Mode:** `scripted` (recipes/project-access-policy.mjs)
+- **Box-only:** no
+- **Areas:** `apps/web/src/components/settings/project-access-policy-section.tsx`,
+  `apps/web/src/components/settings/project-workspace-page.tsx`,
+  `apps/web/src/components/settings/project-secrets-page.tsx`,
+  `apps/web/src/components/settings/environment-dialogs.tsx`,
+  `apps/web/src/components/workspace/details-view.tsx`,
+  `apps/web/src/components/access-policy-parts.tsx`, `apps/web/src/lib/access-policies.ts`,
+  `apps/web/src/server/routers/access-policies.ts`, `apps/web/src/server/routers/environment.ts`
 
 ### project-settings.new-web-cluster-bindings
 

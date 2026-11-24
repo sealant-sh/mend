@@ -60,7 +60,7 @@ it(
     expect(JSON.parse(f.files()["server.json"] ?? "{}").sessionRuntime).toBe("docker");
     expect(await serverCommand(["setup", "--session-runtime", "auto"], f.runtime)).toMatchObject({
       _tag: "error",
-      message: expect.stringContaining('must be "docker" or "boat"'),
+      message: expect.stringContaining('must be "docker", "host-vm" or "boat"'),
     });
     // SLNT-794: offering both lets each organization choose; the default stays the saved one.
     expect(
@@ -80,7 +80,7 @@ it(
 );
 
 it(
-  "reads back a server set to host-vm another way, and offers no host-vm itself",
+  "reads back a server set to host-vm another way, and refuses host-vm flags where KVM is unavailable",
   { timeout: 120_000 },
   async () => {
     const f = await fixture();
@@ -116,13 +116,16 @@ it(
       expect(JSON.parse(f.files()["server.json"] ?? "{}").sessionRuntime).toBe("host-vm");
       expect(f.files()[HOST_VM_COMPOSE_FILE]).toBe(HOST_VM_COMPOSE_OVERLAY);
     }
+    // The fixture's runtime has no /dev/kvm to look at: a flag that names host-vm is refused with
+    // what setup observed, before anything changes.
     for (const flags of [
       ["--session-runtime", "host-vm"],
       ["--session-runtimes", "docker,host-vm"],
     ]) {
       expect(await serverCommand(["setup", "--offline", ...flags], f.runtime)).toMatchObject({
         _tag: "error",
-        message: expect.stringMatching(/docker.*boat/),
+        message:
+          "This server cannot run host-vm sessions: /dev/kvm unavailable. Name docker or boat instead, or fix that and run mend server setup again.",
       });
     }
   },

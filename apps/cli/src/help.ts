@@ -2398,12 +2398,12 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "declare single or multi; a fresh install is multi, and one that never declared it stays single. Kept across reruns and upgrades. multi also requires signed capture sizes",
       },
       {
-        flag: "--session-runtime <docker|boat>",
-        text: "where an organization's new sessions run until its owner chooses; Docker by default. On a server that offers one runtime, that runtime. Saved across reruns and upgrades. Existing sessions keep their runtime. boat turns Boat on, which needs the two remote workspace endpoints and no Boat key: each organization's owner connects its own on the Boat page or with mend boat connect; unsupported environments are refused",
+        flag: "--session-runtime <docker|host-vm|boat>",
+        text: "where an organization's new sessions run until its owner chooses. Without it or --session-runtimes, a fresh install chooses by this server's KVM: host-vm and docker where the vm-runner self-test passes, new organizations on host-vm, else docker. On a server that offers one runtime, that runtime. Saved across reruns and upgrades. Existing sessions keep their runtime. host-vm runs the same checks and is refused when one fails. boat turns Boat on, which needs the two remote workspace endpoints and no Boat key: each organization's owner connects its own on the Boat page or with mend boat connect; unsupported environments are refused",
       },
       {
-        flag: "--session-runtimes <docker,boat>",
-        text: "the runtimes this server offers. With both, each organization's owner chooses where its new sessions run in Organization settings · Defaults. The default stays --session-runtime's when the list has it, else the list's first. Saved across reruns and upgrades. boat turns Boat on, as --session-runtime boat does",
+        flag: "--session-runtimes <docker,host-vm,boat>",
+        text: "the runtimes this server offers, such as docker,boat or host-vm,docker. With more than one, each organization's owner chooses where its new sessions run in Organization settings · Defaults. The default stays --session-runtime's when the list has it, else the list's first. Saved across reruns and upgrades. boat turns Boat on, as --session-runtime boat does",
       },
       {
         flag: "--boat-deployment-id <name>",

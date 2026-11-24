@@ -330,6 +330,31 @@ export const widensAccessPolicy = (
 };
 
 // ---------------------------------------------------------------------------------------------
+// What Restricted egress allows without listing it (§7.1).
+
+/**
+ * The hosts each agent's model provider needs, which a Restricted worktree reaches without its
+ * policy listing them. A launch adds the session's own agent's; a harness that can use either
+ * provider gets Claude's and Codex's.
+ */
+export const AGENT_PROVIDER_HOSTS: Readonly<{
+  readonly claude: ReadonlyArray<string>;
+  readonly codex: ReadonlyArray<string>;
+  readonly antigravity: ReadonlyArray<string>;
+}> = {
+  claude: ["api.anthropic.com", "claude.ai", "console.anthropic.com", "statsig.anthropic.com"],
+  codex: ["chatgpt.com", "api.openai.com", "auth.openai.com"],
+  antigravity: [
+    "cloudcode-pa.googleapis.com",
+    "generativelanguage.googleapis.com",
+    "oauth2.googleapis.com",
+  ],
+};
+
+/** Doppler's API, which a Restricted worktree reaches when the person starting it uses Doppler. */
+export const DOPPLER_HOST = "api.doppler.com";
+
+// ---------------------------------------------------------------------------------------------
 // Private destinations and the operator's ceiling.
 
 type Cidr = { readonly family: 4 | 6; readonly bits: bigint; readonly prefix: number };

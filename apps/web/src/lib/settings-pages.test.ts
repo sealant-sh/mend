@@ -64,6 +64,7 @@ describe("who sees which settings pages", () => {
       "o-members",
       "o-image",
       "o-runtime",
+      "o-access",
       "o-boat",
       "o-integrations",
       "o-folders",
