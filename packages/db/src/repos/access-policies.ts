@@ -14,12 +14,18 @@ import {
   STANDARD_ACCESS_POLICY_RULES,
   WorktreeAccessPolicyPin,
 } from "@mend/domain/workbench";
-import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
-import { accessPolicies, accessRevocations, projects, worktrees } from "../schema/workbench.ts";
+import {
+  accessPolicies,
+  accessRevocations,
+  projectSecrets,
+  projects,
+  worktrees,
+} from "../schema/workbench.ts";
 import { projectListed } from "./projects.ts";
 import { isUniqueViolation } from "./unique-violation.ts";
 
@@ -354,7 +360,24 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
         .select({ revocation: accessRevocations })
         .from(accessRevocations)
         .innerJoin(projects, eq(projects.organizationId, accessRevocations.organizationId))
-        .where(and(eq(projects.id, projectId), projectListed))
+        .where(
+          and(
+            eq(projects.id, projectId),
+            projectListed,
+            // A secret's revocation is its own project's alone: another project's never reaches
+            // this one's launches, nor drains its standbys.
+            or(
+              ne(accessRevocations.kind, "secret"),
+              inArray(
+                accessRevocations.target,
+                db
+                  .select({ id: projectSecrets.id })
+                  .from(projectSecrets)
+                  .where(eq(projectSecrets.projectId, projectId)),
+              ),
+            ),
+          ),
+        )
         .orderBy(asc(accessRevocations.revokedAt), asc(accessRevocations.id))
         .pipe(Effect.orDie);
       return rows.map((row) => toRevocation(row.revocation));

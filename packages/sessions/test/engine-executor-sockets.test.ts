@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  EXECUTOR_SOCKET_CHANNEL_URL,
   type ExecutorSockets,
   type ExecutorSocketsBinding,
   executorScopeOf,
@@ -38,7 +39,7 @@ const recordingSockets = (events: Array<string>) => {
 };
 
 const launchOn = (
-  runtime: "docker" | "host-vm",
+  runtime: "docker" | "host-vm" | null,
   options: { readonly sockets?: boolean; readonly refuseCreate?: boolean } = {},
 ) => {
   const created: Array<CreateOptions> = [];
@@ -108,6 +109,17 @@ describe("an executor's sockets at launch", () => {
     expect(created[0]?.controlScope).toBe(binding?.scope);
     expect(created[0]?.executorSockets).toEqual({ capture: true, session: true });
     // The workspace's processes reach the session channel through its socket.
+    expect(created[0]?.env?.["MEND_SESSION_SOCKET"]).toBe(WORKSPACE_SESSION_SOCKET);
+    // Its plan is asked over capture.sock in plain HTTP, whatever address the channel has.
+    const source = created[0]?.source;
+    expect(source?.kind === "capture" ? source.endpoint : null).toBe(EXECUTOR_SOCKET_CHANNEL_URL);
+  });
+
+  it("treats a worktree with no recorded runtime as this server's Docker", async () => {
+    const { created, binds } = await launchOn(null);
+    expect(binds).toHaveLength(1);
+    expect(created[0]?.controlScope).toBe(binds[0]?.scope);
+    expect(created[0]?.executorSockets).toEqual({ capture: true, session: true });
     expect(created[0]?.env?.["MEND_SESSION_SOCKET"]).toBe(WORKSPACE_SESSION_SOCKET);
   });
 

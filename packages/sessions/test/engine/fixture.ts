@@ -532,6 +532,8 @@ export const sealantLaunchLayer = (
     };
     /** A faithful workspace hook: sealant has created the executor but no process has started yet. */
     readonly beforeCreate?: (options: CreateOptions) => Effect.Effect<void, SealantPlatformError>;
+    /** What a running workspace's egress proxy answers `applyNetworkPolicy`; `enforced` unless said. */
+    readonly networkPolicyEnforcement?: "enforced" | "pending" | "next-start";
     /** What `workspace.runtime()` answers: the executor's control scope and launch, say. */
     readonly runtimeInfo?: () => Awaited<ReturnType<Workspace["runtime"]>>;
     /** A faithful process hook: the harness writes through HOME after relocation. */
@@ -951,7 +953,7 @@ export const sealantLaunchLayer = (
         return {
           policyHash: options.networkPolicy.policyHash,
           revocationWatermark: 0,
-          enforcement: "enforced" as const,
+          enforcement: captureOps?.networkPolicyEnforcement ?? ("enforced" as const),
         };
       }),
     revokeAccess: (target, options) =>

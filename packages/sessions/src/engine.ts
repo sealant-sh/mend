@@ -554,6 +554,7 @@ import {
 } from "./dotfiles.ts";
 import { type Continuation, type EndAuthority, makeEndOwnership } from "./end-ownership.ts";
 import {
+  EXECUTOR_SOCKET_CHANNEL_URL,
   executorScopeOf,
   LaunchExecutorSockets,
   WORKSPACE_SESSION_SOCKET,
@@ -4234,14 +4235,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const captureSourceFor = (
         sessionId: SessionId,
         secretEnv: Record<string, string>,
+        /**
+         * The executor dials Mend through its `capture.sock`: the plan's URL is plain HTTP to
+         * Mend's channel, whatever address the channel is published at, since nothing leaves the
+         * socket but what Mend relays.
+         */
+        overSocket = false,
       ): Effect.Effect<{ readonly source: WorkspaceCaptureSource } | null> =>
         Effect.gen(function* () {
           if (capture === null) return null;
-          const endpoint = deployment.sessionEndpoint;
+          const published = deployment.sessionEndpoint;
           const token = secretEnv["MEND_SESSION_TOKEN"];
-          if (endpoint === undefined || token === undefined) {
+          if (published === undefined || token === undefined) {
             return yield* Effect.die("capture mode: a launch needs the session channel token");
           }
+          const endpoint = overSocket ? { url: EXECUTOR_SOCKET_CHANNEL_URL } : published;
           const session = yield* sessions.byId(sessionId).pipe(Effect.option);
           if (Option.isNone(session)) {
             // A standby executor: no worktree yet, so none is named — the daemon takes the
@@ -14456,16 +14464,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // projects; it materialises the worktree's head capture and ships captures back. The
         // session token is the capture credential (one token, two names) and rides the create
         // request on the source, sealed by sealant into the boot env file.
-        const captureSource = yield* captureSourceFor(sessionId, channel.secretEnv);
         // The executor's own channels (§6.1, SLNT-1332): `capture.sock` and `session.sock` in a
         // control scope Mend names, bound before the executor can dial them. Where Mend serves the
         // control root and the runtime mounts one (Docker, host-vm), a capture executor reaches
         // Mend over them and not over the network, which a workspace on its own network, or
         // behind its egress proxy, cannot.
+        // A worktree with no recorded runtime (made before the choice) runs on this server's
+        // Docker, as `workspaceOnThisServersDocker` reads it; where Mend serves the control root
+        // there is no other runtime with no name.
+        const scopeRuntime = input.runtime ?? "docker";
         const executorScope =
           launchSockets !== null &&
-          captureSource !== null &&
-          (input.runtime === "docker" || input.runtime === "host-vm")
+          capture !== null &&
+          (scopeRuntime === "docker" || scopeRuntime === "host-vm")
             ? executorScopeOf(input.launchId)
             : null;
         if (launchSockets !== null && executorScope !== null) {
@@ -14481,6 +14492,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               report,
             );
         }
+        const captureSource = yield* captureSourceFor(
+          sessionId,
+          channel.secretEnv,
+          executorScope !== null,
+        );
         const unbindScope =
           launchSockets === null || executorScope === null
             ? Effect.void
@@ -14488,7 +14504,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // On Docker the workspace's processes reach the session channel through its socket
         // (a host VM's sealantd hands them a loopback endpoint of its own instead).
         const workspaceEnv =
-          executorScope !== null && input.runtime === "docker"
+          executorScope !== null && scopeRuntime === "docker"
             ? { ...env, MEND_SESSION_SOCKET: WORKSPACE_SESSION_SOCKET }
             : env;
         // The first three mounts are the store, the socket dir and the harness home — never
@@ -14601,7 +14617,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     ? {}
                     : {
                         controlScope: executorScope,
-                        ...(input.runtime === "docker"
+                        ...(scopeRuntime === "docker"
                           ? { executorSockets: { capture: true, session: true } }
                           : {}),
                       }),
@@ -32340,6 +32356,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             held.set(session.sealantWorkspaceId, session.ownerUserId);
           }
         }
+        // A workspace outlives its session while a Service runs there or a forward is open
+        // (docs/SESSION-SERVICES.md); its executor still dials its sockets.
+        const outliving = new Map<string, SessionId>();
+        for (const process of yield* processes.listLive()) {
+          outliving.set(process.sealantWorkspaceId, process.sessionId);
+        }
+        const serviceOfForward = new Map(
+          (yield* services.listAll()).flatMap((service) =>
+            service.currentForwardId === null ? [] : [[service.currentForwardId, service] as const],
+          ),
+        );
+        for (const forward of yield* serviceForwards.listOpen()) {
+          const service = serviceOfForward.get(forward.id);
+          if (service !== undefined) outliving.set(forward.sealantWorkspaceId, service.sessionId);
+        }
+        for (const [workspaceId, sessionId] of outliving) {
+          if (held.has(workspaceId)) continue;
+          const owner = yield* sessions.byId(sessionId).pipe(
+            Effect.map((session) => session.ownerUserId),
+            Effect.orElseSucceed(() => null),
+          );
+          held.set(workspaceId, owner);
+        }
         for (const entry of yield* hotWorkspaces.listAll()) {
           if (entry.sealantWorkspaceId !== null && !held.has(entry.sealantWorkspaceId)) {
             held.set(entry.sealantWorkspaceId, entry.ownerUserId);
@@ -33197,8 +33236,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       // A restarted Mend (an upgrade recreates its container) serves again the sockets of every
       // executor still running: its own executors' channels to it, which nothing else re-opens.
+      // Done before `resume`, which talks to those executors; bounded, so a control plane that does
+      // not answer delays the boot by at most a minute and the rest bind at their next claim.
       if (launchSockets !== null) {
-        yield* forkSealantBackground(rebindExecutorScopes(), scope);
+        yield* rebindExecutorScopes().pipe(
+          withSealantRequestPriority("normal"),
+          Effect.timeoutOption(Duration.minutes(1)),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("session engine: executor sockets not all served again at boot").pipe(
+              Effect.annotateLogs({ cause: String(cause) }),
+            ),
+          ),
+        );
       }
       yield* resume();
       yield* forkSealantBackground(sweepLeftovers(), scope);

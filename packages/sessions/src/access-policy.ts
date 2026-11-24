@@ -181,19 +181,13 @@ export const deliverableSecrets = <
  * needs telling. Null when nothing reaches the worktree.
  */
 export const revocationsToCarry = (
-  policy: Pick<LaunchAccessPolicy, "revokedSecretIds" | "revokedHosts" | "revokedAll">,
-):
-  | { readonly all: true }
-  | { readonly hosts?: ReadonlyArray<string>; readonly secretIds?: ReadonlyArray<string> }
-  | null => {
+  policy: Pick<LaunchAccessPolicy, "revokedHosts" | "revokedAll">,
+): { readonly all: true } | { readonly hosts: ReadonlyArray<string> } | null => {
   if (policy.revokedAll) return { all: true };
+  // A revoked secret is not carried: the launch withheld it from both the environment and the
+  // proxy, so the new workspace never held it, and a workspace with no proxy could not take it.
   const hosts = [...policy.revokedHosts];
-  const secretIds = [...policy.revokedSecretIds];
-  if (hosts.length === 0 && secretIds.length === 0) return null;
-  return {
-    ...(hosts.length === 0 ? {} : { hosts }),
-    ...(secretIds.length === 0 ? {} : { secretIds }),
-  };
+  return hosts.length === 0 ? null : { hosts };
 };
 
 /**
@@ -355,7 +349,7 @@ export const brokeredSecretsFor = (
       : { pathPrefixes: secret.binding.pathPrefixes }),
   }));
 
-/** The runtimes that run a workspace behind an egress proxy of its own, in sealant 0.40.0-next.936. */
+/** The runtimes that run a workspace behind an egress proxy of its own. */
 const PROXY_RUNTIMES: ReadonlySet<SessionRuntime> = new Set(["docker", "host-vm"]);
 
 /**

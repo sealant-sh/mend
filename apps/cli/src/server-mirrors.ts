@@ -202,8 +202,8 @@ const dockerMirrorService = (mirrors: ServerMirrors): ReadonlyArray<string> => [
 ];
 
 /**
- * What joins every workspace's own network once the mirrors run: Mend and Garage, then each mirror
- * under its service name, so `npm-mirror:4873` and `docker-mirror:5000` resolve there.
+ * What joins every workspace's own network once the mirrors run: each mirror under its service
+ * name, so `npm-mirror:4873` and `docker-mirror:5000` resolve there.
  */
 const workspaceMirrorContainers = (mirrors: ServerMirrors): string =>
   [

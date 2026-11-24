@@ -1,5 +1,5 @@
 # Mend bundle deployment contract v2. The long-running containers are Mend, official Postgres and
-# Garage. The Mend image supervises its web/API processes plus the Sealant 0.40.0-next.937 API, worker
+# Garage. The Mend image supervises its web/API processes plus the Sealant 0.40.0-next.938 API, worker
 # and SSH gateway. Sealant's job queue lives in Postgres and workspace images live in the host
 # Docker Engine. Garage is the capture store's bucket (docs/adr/0002-session-capture-store.md):
 # every session's work product ships there and the executor is disposable. Generate and persist
@@ -62,7 +62,8 @@ services:
       MEND_EXECUTOR_CALLER: mend
       MEND_EXECUTOR_CALLBACK_HOST: ${MEND_CONTAINER_NAME:-mend-mend-1}
       # The capture store (ADR-0002): the session channel executors call, and the bucket their
-      # presigned URLs name. Workspaces resolve both on their own networks, by the aliases above.
+      # presigned URLs name. A Docker or host VM executor reaches both through capture.sock and
+      # session.sock; an executor elsewhere (Boat) through the published channel.
       MEND_SESSION_ENDPOINT_LISTEN: 0.0.0.0:3106
       MEND_SESSION_ENDPOINT_URL: http://mend:3106
       MEND_BLOB_STORE: s3://mend?endpoint=http://garage:3900&region=garage

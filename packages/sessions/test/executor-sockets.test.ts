@@ -22,6 +22,7 @@ import {
   ExecutorSockets,
   executorSocketsAt,
   objectStoreEndpointOf,
+  objectStoreOfConfig,
   SESSION_SOCKET_NAME,
 } from "../src/executor-sockets.ts";
 import { SCRIPT_TRANSPORT_PRELUDE } from "../src/script-transport.ts";
@@ -795,5 +796,60 @@ describe("binding a scope again as it stands", () => {
     held.destroy();
     expect(executorScopeOf("launch-1")).toMatch(/^mend-[0-9a-f]{24}$/);
     expect(executorScopeOf("launch-1")).toBe(executorScopeOf("launch-1"));
+  });
+});
+
+const s3Target = (over: Partial<{ endpoint: string | undefined; forcePathStyle: boolean }>) => ({
+  kind: "s3" as const,
+  bucket: "Mend-Captures",
+  endpoint: undefined,
+  region: "eu-west-1",
+  forcePathStyle: false,
+  ...over,
+});
+describe("the store of a blob store configuration", () => {
+  it("is the public URL, else the endpoint, else the S3 bucket's own host over https", () => {
+    expect(
+      objectStoreOfConfig({ target: s3Target({}), publicUrl: "http://garage:3900" }),
+    ).toMatchObject({
+      hostname: "garage",
+      port: 3900,
+      protocol: "http",
+    });
+    expect(
+      objectStoreOfConfig({
+        target: s3Target({ endpoint: "https://minio.example.com" }),
+        publicUrl: undefined,
+      }),
+    ).toMatchObject({ hostname: "minio.example.com", port: 443, protocol: "https" });
+    expect(objectStoreOfConfig({ target: s3Target({}), publicUrl: undefined })).toEqual({
+      hostname: "mend-captures.s3.eu-west-1.amazonaws.com",
+      port: 443,
+      protocol: "https",
+    });
+    expect(
+      objectStoreOfConfig({ target: s3Target({ forcePathStyle: true }), publicUrl: undefined }),
+    ).toMatchObject({ hostname: "s3.eu-west-1.amazonaws.com" });
+    expect(
+      objectStoreOfConfig({ target: { kind: "dir", root: "/tmp/blobs" }, publicUrl: undefined }),
+    ).toBeNull();
+  });
+
+  it("serves a capture route by plain HTTP whatever host it names, as a plan over the socket asks", () => {
+    expect(
+      classifyCaptureSocketRequest(
+        { method: "POST", target: "/plan.get", headers: { host: "mend:3106" } },
+        objectStoreOfConfig({
+          target: {
+            kind: "s3",
+            bucket: "b",
+            endpoint: undefined,
+            region: "us-east-1",
+            forcePathStyle: false,
+          },
+          publicUrl: undefined,
+        }),
+      ),
+    ).toEqual({ kind: "capture", route: "/plan.get" });
   });
 });

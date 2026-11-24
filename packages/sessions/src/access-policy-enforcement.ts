@@ -30,8 +30,10 @@ import {
   DOPPLER_HOST,
   launchAccessPolicyOf,
   type LaunchAccessPolicy,
+  launchNeedsNetworkPolicy,
   mcpServerHost,
   networkPolicyFor,
+  pinOrStandard,
   type PolicyMirror,
   policyMirrorsOf,
   providerHostsFor,
@@ -286,24 +288,36 @@ export const AccessPolicyEnforcementLive: Layer.Layer<
         ? yield* brokeredForLaunch(sealed.secrets, policy, cipher.decrypt)
         : { secrets: [], values: {} };
       const mirrors = yield* configuredPolicyMirrors;
-      const running = yield* runningWorkspaces(worktreeId);
+      // Only an egress proxy holds network rules: rules neither side of the change needs one for
+      // (a new Git cap, Executor tools) are Mend's own, and re-pinning is all they take.
+      const before = launchAccessPolicyOf(pinOrStandard(worktree.accessPolicy), revocations);
+      const pushes =
+        launchNeedsNetworkPolicy(policy, brokered.secrets.length) ||
+        launchNeedsNetworkPolicy(before, 0);
+      const running = pushes ? yield* runningWorkspaces(worktreeId) : new Map();
       const workspaces = yield* Effect.forEach(
         [...running.entries()],
         ([workspaceId, who]) =>
           applyTo(workspaceId, policy, worktree.projectId, who, brokered, mirrors),
         { concurrency: 4 },
       );
-      // A running workspace that did not take the rules (sealant refused them, or did not answer)
-      // keeps the worktree on its old pin, so Mend never says it holds rules it does not.
-      const refused = workspaces.filter((workspace) => workspace.enforcement === "failed");
+      // A running workspace whose egress proxy did not confirm the rules (refused, not answered,
+      // or no proxy runs and they would reach it only at its next start) keeps the worktree on its
+      // old pin: Mend never says a worktree holds rules a running workspace does not.
+      const refused = workspaces.filter((workspace) => workspace.enforcement !== "enforced");
       if (refused.length > 0) {
         return yield* new AccessPolicyApplyError({
           message: `The worktree keeps the policy it had: ${refused
-            .map(
-              (workspace) =>
-                `workspace ${workspace.workspaceId} did not take the new rules (${workspace.message ?? "no answer"})`,
+            .map((workspace) =>
+              workspace.enforcement === "failed"
+                ? `workspace ${workspace.workspaceId} did not take the new rules (${workspace.message ?? "no answer"})`
+                : workspace.enforcement === "next-start"
+                  ? `workspace ${workspace.workspaceId} runs no egress proxy now, so it would take the new rules only when it starts again`
+                  : `workspace ${workspace.workspaceId}'s egress proxy has not confirmed the new rules`,
             )
-            .join("; ")}.`,
+            .join(
+              "; ",
+            )}. Stop the worktree's sessions and start one, then apply the updated policy again.`,
         });
       }
       yield* worktrees.setAccessPolicy(worktreeId, pin);

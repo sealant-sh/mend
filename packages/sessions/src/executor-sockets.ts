@@ -39,10 +39,10 @@ import type { SessionSocketApi } from "./session-socket.ts";
  *   with its `Host` kept, so the signature over it still holds. Never a tunnel, never another
  *   host: it is all a recovering executor reaches.
  * - `session.sock`: the session channel's routes (Git, MCP, `mend resource`, land, repositories,
- *   Services, pickups, agent hooks, sign-ins, Doppler), each request with a person's bearer token
- *   of this executor's launch (docs/adr/0016, decision 4: never tokenless). The launch's own token
- *   is the capture credential and is refused here; captures are not served here. A recovery boot
- *   never has one.
+ *   Services, pickups, agent hooks, sign-ins, Doppler), each request with a bearer token of this
+ *   executor's launch, a person's or the launch's own (docs/adr/0016, decision 4: never
+ *   tokenless). Captures are not served here. A recovery boot never has one, so its capture
+ *   credential reaches captures alone.
  */
 
 /** The capture relay's file name in an executor's scope. */
@@ -93,6 +93,29 @@ export const objectStoreEndpointOf = (
   publicUrl: string | undefined,
   storeEndpoint?: string,
 ): ObjectStoreEndpoint | null => endpointOfUrl(publicUrl) ?? endpointOfUrl(storeEndpoint);
+
+/**
+ * The store of a blob store configuration: its public URL, else its endpoint, else (AWS S3 with
+ * no endpoint named) the bucket's own host, virtual-hosted (`<bucket>.s3.<region>.amazonaws.com`)
+ * or path-style (`s3.<region>.amazonaws.com`), over https.
+ */
+export const objectStoreOfConfig = (config: {
+  readonly target: BlobStoreConfig["Service"]["target"];
+  readonly publicUrl: string | undefined;
+}): ObjectStoreEndpoint | null => {
+  const target = config.target;
+  const named = objectStoreEndpointOf(
+    config.publicUrl,
+    target.kind === "s3" ? target.endpoint : undefined,
+  );
+  if (named !== null || target.kind !== "s3") return named;
+  const region = target.region.trim().toLowerCase();
+  if (!/^[a-z0-9-]+$/.test(region)) return null;
+  const host = target.forcePathStyle
+    ? `s3.${region}.amazonaws.com`
+    : `${target.bucket.toLowerCase()}.s3.${region}.amazonaws.com`;
+  return { hostname: host, port: 443, protocol: "https" };
+};
 
 /** A `Host` header's host and port (null when it names none), or null when it is not one. */
 const hostHeaderOf = (
@@ -369,6 +392,13 @@ export const LaunchExecutorSockets: Context.Reference<ExecutorSockets["Service"]
     defaultValue: () => null,
   });
 
+/**
+ * The session channel's address in a capture source whose executor dials `capture.sock`: plain
+ * HTTP, since the socket is local and the relay serves the capture routes whatever host they
+ * name (sealant-capture dials plain HTTP over a local socket).
+ */
+export const EXECUTOR_SOCKET_CHANNEL_URL = "http://mend:3106";
+
 /** Where a Docker workspace's processes reach `session.sock` (its scope is at `/run/sealant`). */
 export const WORKSPACE_SESSION_SOCKET = "/run/sealant/session.sock";
 
@@ -449,11 +479,7 @@ const makeExecutorSockets = (
   Effect.gen(function* () {
     const registry = yield* SessionChannelRegistry;
     const tokens = yield* SessionChannelTokensRepo;
-    const blobStore = yield* BlobStoreConfig;
-    const store = objectStoreEndpointOf(
-      blobStore.publicUrl,
-      blobStore.target.kind === "s3" ? blobStore.target.endpoint : undefined,
-    );
+    const store = objectStoreOfConfig(yield* BlobStoreConfig);
     const bound = new Map<string, ReadonlyArray<net.Server>>();
     /** What each scope serves now: whose launch, and whether it boots to recover. */
     const bindings = new Map<

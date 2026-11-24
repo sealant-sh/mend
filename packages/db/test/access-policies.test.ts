@@ -492,4 +492,48 @@ describe.skipIf(postgres.skip)("Access policies in Postgres", () => {
     const after = await run(Effect.flatMap(ProjectSecretsRepo, (repo) => repo.snapshot(project)));
     expect(after.secrets.map((secret) => secret.name)).toEqual(["VERCEL_TOKEN"]);
   });
+
+  it("reads a secret's revocation only for the project that holds the secret", async () => {
+    const holder = await newProject(ORG_A);
+    const neighbour = await newProject(ORG_A);
+    const secret = await run(
+      Effect.flatMap(ProjectSecretsRepo, (repo) =>
+        repo.create(holder, { name: "DEPLOY_TOKEN", sealedValue: "sealed:deploy" }),
+      ),
+    );
+    await run(
+      Effect.flatMap(AccessPoliciesRepo, (repo) =>
+        Effect.all([
+          repo.revoke({
+            organizationId: ORG_A,
+            policyId: null,
+            kind: "secret",
+            target: secret.secret.id,
+            revokedByUserId: "owner",
+          }),
+          repo.revoke({
+            organizationId: ORG_A,
+            policyId: null,
+            kind: "host",
+            target: "revoked-for-both.example.com",
+            revokedByUserId: "owner",
+          }),
+        ]),
+      ),
+    );
+    const kinds = (project: typeof holder) =>
+      run(Effect.flatMap(AccessPoliciesRepo, (repo) => repo.revocationsForProject(project))).then(
+        (revocations) =>
+          revocations
+            .filter(
+              (revocation) =>
+                revocation.target === secret.secret.id ||
+                revocation.target === "revoked-for-both.example.com",
+            )
+            .map((revocation) => revocation.kind)
+            .toSorted(),
+      );
+    expect(await kinds(holder)).toEqual(["host", "secret"]);
+    expect(await kinds(neighbour)).toEqual(["host"]);
+  });
 });

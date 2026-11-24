@@ -1,10 +1,11 @@
 import { AccessPoliciesRepo, accessPolicyPin, DopplerRepo } from "@mend/db";
-import { AccessPolicyId, OrganizationId } from "@mend/domain";
+import { AccessPolicyId, OrganizationId, SealantWorkspaceId } from "@mend/domain";
 import {
   type AccessPolicyRules,
   type ProjectAccessPolicy,
   AccessRevocation,
   STANDARD_ACCESS_POLICY_RULES,
+  Session,
   STANDARD_PROJECT_ACCESS_POLICY,
   Worktree,
 } from "@mend/domain/workbench";
@@ -52,7 +53,7 @@ const storeOf = (
   revocationsForProject: () => Effect.succeed(revocations),
 });
 
-const revocationOf = (kind: "host" | "all", target: string | null) =>
+const revocationOf = (kind: "host" | "secret" | "all", target: string | null) =>
   new AccessRevocation({
     id: `arv_${kind}`,
     organizationId: OrganizationId.make("org-fixture"),
@@ -227,6 +228,20 @@ describe("a launch under an Access policy", () => {
     expect(accessRevokes.map((entry) => entry.options)).toEqual([{ hosts: ["api.vercel.com"] }]);
   });
 
+  it("runs a Standard Docker launch after a secret's revocation, which it withholds and need not carry", async () => {
+    const { created, accessRevokes, session } = await launchUnder(policy({}), {
+      sessionRuntime: "docker",
+      revocations: [revocationOf("secret", "secret-VERCEL_TOKEN")],
+    });
+    expect(session?.summary ?? "").not.toContain("launch failed");
+    expect(created).toHaveLength(1);
+    // The revoked (Brokered) secret goes nowhere, the Direct one as before, and nothing is told.
+    expect(created[0]?.secretEnv).toEqual({ DATABASE_URL: "postgres://u:p@h/db" });
+    expect(created[0]?.brokeredSecrets).toBeUndefined();
+    expect(created[0]?.networkPolicy).toBeUndefined();
+    expect(accessRevokes).toEqual([]);
+  });
+
   it("refuses a Standard launch on this server's Docker that could not refuse a revoked host", async () => {
     const { created, session } = await launchUnder(policy({}), {
       sessionRuntime: "docker",
@@ -238,7 +253,14 @@ describe("a launch under an Access policy", () => {
 });
 
 describe("Apply updated policy", () => {
-  const applyUnder = (runtime: "docker" | "host-vm") =>
+  const applyUnder = (
+    runtime: "docker" | "host-vm",
+    options: {
+      readonly rules?: Partial<AccessPolicyRules>;
+      /** A workspace of the worktree runs, its proxy answering this. */
+      readonly running?: "enforced" | "pending" | "next-start";
+    } = {},
+  ) =>
     withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -263,6 +285,19 @@ describe("Apply updated policy", () => {
             worktree.id,
             new Worktree({ ...worktree, sessionRuntime: runtime, accessPolicy: before }),
           );
+          if (options.running !== undefined) {
+            const current = world.sessions.get(session.id);
+            if (current !== undefined) {
+              world.sessions.set(
+                session.id,
+                new Session({
+                  ...current,
+                  status: "running",
+                  sealantWorkspaceId: SealantWorkspaceId.make("ws-running"),
+                }),
+              );
+            }
+          }
           const outcome = yield* Effect.gen(function* () {
             const enforcement = yield* AccessPolicyEnforcement;
             return yield* enforcement.applyUpdatedPolicy(worktree.id);
@@ -279,12 +314,30 @@ describe("Apply updated policy", () => {
                     mcpServersLayerOf(),
                     Layer.mock(DopplerRepo, { mappings: () => Effect.succeed([]) }),
                     Layer.mock(AccessPoliciesRepo, {}),
-                    sealantLaunchLayer([]),
+                    sealantLaunchLayer(
+                      [],
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
+                      options.running === undefined
+                        ? undefined
+                        : { networkPolicyEnforcement: options.running },
+                    ),
                   ),
                 ),
               ),
             ),
-            Effect.provideService(AccessPolicyStore, storeOf(policy({ requireVmIsolation: true }))),
+            Effect.provideService(
+              AccessPolicyStore,
+              storeOf(policy(options.rules ?? { requireVmIsolation: true })),
+            ),
             Effect.result,
           );
           return { outcome, before, after: world.worktrees.get(worktree.id)?.accessPolicy };
@@ -304,5 +357,33 @@ describe("Apply updated policy", () => {
     expect(outcome._tag).toBe("Success");
     expect(after?.policyHash).not.toBe(before.policyHash);
     expect(after?.rules.requireVmIsolation).toBe(true);
+  });
+
+  it("keeps the pin it had when a running workspace would take the rules only at its next start", async () => {
+    const { outcome, before, after } = await applyUnder("host-vm", {
+      rules: { mode: "restricted", allowHosts: [{ host: "github.com" }] },
+      running: "next-start",
+    });
+    expect(outcome._tag).toBe("Failure");
+    expect(JSON.stringify(outcome)).toContain("only when it starts again");
+    expect(after?.policyHash).toBe(before.policyHash);
+  });
+
+  it("re-pins once every running workspace's proxy confirmed the rules", async () => {
+    const { outcome, after } = await applyUnder("host-vm", {
+      rules: { mode: "restricted", allowHosts: [{ host: "github.com" }] },
+      running: "enforced",
+    });
+    expect(outcome._tag).toBe("Success");
+    expect(after?.rules.mode).toBe("restricted");
+  });
+
+  it("re-pins rules only Mend enforces without asking a workspace that runs no proxy", async () => {
+    const { outcome, after } = await applyUnder("docker", {
+      rules: { gitTransport: "read-only" },
+      running: "next-start",
+    });
+    expect(outcome._tag).toBe("Success");
+    expect(after?.rules.gitTransport).toBe("read-only");
   });
 });
