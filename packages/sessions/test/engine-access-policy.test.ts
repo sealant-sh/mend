@@ -366,6 +366,10 @@ describe("Apply updated policy", () => {
     });
     expect(outcome._tag).toBe("Failure");
     expect(JSON.stringify(outcome)).toContain("only when it starts again");
+    // Stopping first: a session started before the re-pin would start under the old rules.
+    expect(JSON.stringify(outcome)).toContain(
+      "Stop the worktree's sessions, apply the updated policy, then start one.",
+    );
     expect(after?.policyHash).toBe(before.policyHash);
   });
 
@@ -385,5 +389,16 @@ describe("Apply updated policy", () => {
     });
     expect(outcome._tag).toBe("Success");
     expect(after?.rules.gitTransport).toBe("read-only");
+  });
+
+  it("asks to try again when a running workspace's proxy has not confirmed the rules yet", async () => {
+    const { outcome, before, after } = await applyUnder("host-vm", {
+      rules: { mode: "restricted", allowHosts: [{ host: "github.com" }] },
+      running: "pending",
+    });
+    expect(outcome._tag).toBe("Failure");
+    expect(JSON.stringify(outcome)).toContain("has not confirmed the new rules");
+    expect(JSON.stringify(outcome)).toContain("Try again once its workspace answers");
+    expect(after?.policyHash).toBe(before.policyHash);
   });
 });

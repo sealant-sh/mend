@@ -7,7 +7,7 @@ import * as path from "node:path";
 
 import { SessionChannelTokensRepo } from "@mend/db";
 import { SessionId } from "@mend/domain";
-import { BlobStoreConfig } from "@mend/store";
+import { BlobStoreConfig, presignedObjectOrigin } from "@mend/store";
 import { Config, Effect, Layer, Option, Schema, type Scope } from "effect";
 import * as Context from "effect/Context";
 
@@ -95,27 +95,24 @@ export const objectStoreEndpointOf = (
 ): ObjectStoreEndpoint | null => endpointOfUrl(publicUrl) ?? endpointOfUrl(storeEndpoint);
 
 /**
- * The store of a blob store configuration: its public URL, else its endpoint, else (AWS S3 with
- * no endpoint named) the bucket's own host, virtual-hosted (`<bucket>.s3.<region>.amazonaws.com`)
- * or path-style (`s3.<region>.amazonaws.com`), over https.
+ * The store of a blob store configuration: the origin of the URLs its presigner mints for
+ * executors (`presignedObjectOrigin`, the SDK's own rules for the public endpoint, the endpoint,
+ * the region and the path style), else a public URL or endpoint read as it is.
  */
 export const objectStoreOfConfig = (config: {
   readonly target: BlobStoreConfig["Service"]["target"];
   readonly publicUrl: string | undefined;
-}): ObjectStoreEndpoint | null => {
-  const target = config.target;
-  const named = objectStoreEndpointOf(
-    config.publicUrl,
-    target.kind === "s3" ? target.endpoint : undefined,
+}): Effect.Effect<ObjectStoreEndpoint | null> =>
+  presignedObjectOrigin(config).pipe(
+    Effect.map(
+      (origin) =>
+        origin ??
+        objectStoreEndpointOf(
+          config.publicUrl,
+          config.target.kind === "s3" ? config.target.endpoint : undefined,
+        ),
+    ),
   );
-  if (named !== null || target.kind !== "s3") return named;
-  const region = target.region.trim().toLowerCase();
-  if (!/^[a-z0-9-]+$/.test(region)) return null;
-  const host = target.forcePathStyle
-    ? `s3.${region}.amazonaws.com`
-    : `${target.bucket.toLowerCase()}.s3.${region}.amazonaws.com`;
-  return { hostname: host, port: 443, protocol: "https" };
-};
 
 /** A `Host` header's host and port (null when it names none), or null when it is not one. */
 const hostHeaderOf = (
@@ -479,7 +476,7 @@ const makeExecutorSockets = (
   Effect.gen(function* () {
     const registry = yield* SessionChannelRegistry;
     const tokens = yield* SessionChannelTokensRepo;
-    const store = objectStoreOfConfig(yield* BlobStoreConfig);
+    const store = yield* objectStoreOfConfig(yield* BlobStoreConfig);
     const bound = new Map<string, ReadonlyArray<net.Server>>();
     /** What each scope serves now: whose launch, and whether it boots to recover. */
     const bindings = new Map<

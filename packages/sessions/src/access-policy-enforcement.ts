@@ -315,9 +315,13 @@ export const AccessPolicyEnforcementLive: Layer.Layer<
                   ? `workspace ${workspace.workspaceId} runs no egress proxy now, so it would take the new rules only when it starts again`
                   : `workspace ${workspace.workspaceId}'s egress proxy has not confirmed the new rules`,
             )
-            .join(
-              "; ",
-            )}. Stop the worktree's sessions and start one, then apply the updated policy again.`,
+            .join("; ")}. ${
+            // A workspace with no proxy takes the rules only when it starts, and a session started
+            // before the re-pin starts under the old ones: stop, apply, then start.
+            refused.some((workspace) => workspace.enforcement === "next-start")
+              ? "Stop the worktree's sessions, apply the updated policy, then start one."
+              : "Try again once its workspace answers, or stop the worktree's sessions and apply the updated policy then."
+          }`,
         });
       }
       yield* worktrees.setAccessPolicy(worktreeId, pin);

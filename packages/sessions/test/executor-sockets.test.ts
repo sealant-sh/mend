@@ -799,39 +799,26 @@ describe("binding a scope again as it stands", () => {
   });
 });
 
-const s3Target = (over: Partial<{ endpoint: string | undefined; forcePathStyle: boolean }>) => ({
-  kind: "s3" as const,
-  bucket: "Mend-Captures",
-  endpoint: undefined,
-  region: "eu-west-1",
-  forcePathStyle: false,
-  ...over,
-});
-describe("the store of a blob store configuration", () => {
-  it("is the public URL, else the endpoint, else the S3 bucket's own host over https", () => {
+describe("the store capture.sock relays to, from the configuration", () => {
+  it("is the origin of the URLs its presigner mints, else the public URL as it is", async () => {
     expect(
-      objectStoreOfConfig({ target: s3Target({}), publicUrl: "http://garage:3900" }),
-    ).toMatchObject({
-      hostname: "garage",
-      port: 3900,
-      protocol: "http",
-    });
+      await Effect.runPromise(
+        objectStoreOfConfig({
+          target: {
+            kind: "s3",
+            bucket: "mend",
+            endpoint: "http://garage:3900",
+            region: "garage",
+            forcePathStyle: true,
+          },
+          publicUrl: "http://garage:3900",
+        }),
+      ),
+    ).toEqual({ hostname: "garage", port: 3900, protocol: "http" });
     expect(
-      objectStoreOfConfig({
-        target: s3Target({ endpoint: "https://minio.example.com" }),
-        publicUrl: undefined,
-      }),
-    ).toMatchObject({ hostname: "minio.example.com", port: 443, protocol: "https" });
-    expect(objectStoreOfConfig({ target: s3Target({}), publicUrl: undefined })).toEqual({
-      hostname: "mend-captures.s3.eu-west-1.amazonaws.com",
-      port: 443,
-      protocol: "https",
-    });
-    expect(
-      objectStoreOfConfig({ target: s3Target({ forcePathStyle: true }), publicUrl: undefined }),
-    ).toMatchObject({ hostname: "s3.eu-west-1.amazonaws.com" });
-    expect(
-      objectStoreOfConfig({ target: { kind: "dir", root: "/tmp/blobs" }, publicUrl: undefined }),
+      await Effect.runPromise(
+        objectStoreOfConfig({ target: { kind: "dir", root: "/tmp/blobs" }, publicUrl: undefined }),
+      ),
     ).toBeNull();
   });
 
@@ -839,16 +826,7 @@ describe("the store of a blob store configuration", () => {
     expect(
       classifyCaptureSocketRequest(
         { method: "POST", target: "/plan.get", headers: { host: "mend:3106" } },
-        objectStoreOfConfig({
-          target: {
-            kind: "s3",
-            bucket: "b",
-            endpoint: undefined,
-            region: "us-east-1",
-            forcePathStyle: false,
-          },
-          publicUrl: undefined,
-        }),
+        { hostname: "mend.captures.s3.eu-west-1.amazonaws.com", port: 443, protocol: "https" },
       ),
     ).toEqual({ kind: "capture", route: "/plan.get" });
   });

@@ -1396,6 +1396,52 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
 export const BlobStoreS3Live = (options: S3BlobStoreOptions): Layer.Layer<BlobStore> =>
   Layer.effect(BlobStore, makeS3BlobStore(options));
 
+/**
+ * The host, port and scheme of the URLs this store presigns for executors, read off a URL the
+ * SDK presigns with the very options `BlobStoreS3Live` mints them with (the public endpoint, else
+ * the endpoint; the same region and path style), so what an executor's request names is what the
+ * capture relay expects: a dotted bucket on AWS comes back path-style, a custom endpoint without
+ * path style comes back `<bucket>.<endpoint>`. Null for a directory store, or one with no URL.
+ */
+export const presignedObjectOrigin = (config: {
+  readonly target: BlobStoreTarget;
+  readonly publicUrl: string | undefined;
+}): Effect.Effect<{
+  readonly hostname: string;
+  readonly port: number;
+  readonly protocol: "http" | "https";
+} | null> => {
+  const target = config.target;
+  if (target.kind !== "s3") return Effect.succeed(null);
+  const endpoint = config.publicUrl ?? target.endpoint;
+  const client = new S3Client({
+    region: target.region,
+    forcePathStyle: target.forcePathStyle,
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED",
+    // Signing only: no request is sent, so no real credential is read.
+    credentials: { accessKeyId: "presign-probe", secretAccessKey: "presign-probe" },
+    ...(endpoint === undefined ? {} : { endpoint }),
+  });
+  return Effect.tryPromise(() =>
+    getSignedUrl(client, new GetObjectCommand({ Bucket: target.bucket, Key: "presign-probe" }), {
+      expiresIn: 60,
+    }),
+  ).pipe(
+    Effect.map((signed) => {
+      const url = new URL(signed);
+      const protocol = url.protocol === "https:" ? ("https" as const) : ("http" as const);
+      return {
+        hostname: url.hostname.replace(/^\[|\]$/g, "").toLowerCase(),
+        port: url.port === "" ? (protocol === "https" ? 443 : 80) : Number(url.port),
+        protocol,
+      };
+    }),
+    Effect.orElseSucceed(() => null),
+    Effect.ensuring(Effect.sync(() => client.destroy())),
+  );
+};
+
 /** The configured store: `dir://` → the directory implementation, `s3://` → the bucket. */
 export const BlobStoreLive: Layer.Layer<BlobStore, never, BlobStoreConfig> = Layer.unwrap(
   Effect.gen(function* () {
