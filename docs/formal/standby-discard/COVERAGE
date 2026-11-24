@@ -141,7 +141,7 @@
 # repository or one the session holds, read through `sessionRepositoryOrigins`). None touches
 # drainHotWorkspace, the hot pool, claimHotSession, a claimed standby's adoption or
 # HotWorkspacesRepo, so no action models it. --quick tlx run at 696d5e14ad35: every row as expected.
-# __SYNC__ is the SLNT-1331 branch on main at 920f191281. SLNT-1331 changed engine.ts inside
+# 3b2ab9e9d7 is the SLNT-1331 branch on main at 920f191281. SLNT-1331 changed engine.ts inside
 # claimHotSession and provisionHotWorkspace's create only in what they compute, not in what they
 # call: claimHotSession's fingerprint inputs add the claiming worktree's Access policy hash and
 # whether Brokered secrets ride the standby (`hotInputsFor`'s pin), still one
@@ -150,7 +150,7 @@
 # `hotWorkspaces.setFailed` (RProvFailed). The rest of the launch (the network policy and Brokered
 # secrets on the create) makes no hot-pool, claim, retire, drain or session-process call, so no
 # action models it. --quick tlx run at 920f191281 plus this tree: every row as expected.
-sync __SYNC__
+sync 3b2ab9e9d70ae423fbc4a98b50d0c372be3031e6
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

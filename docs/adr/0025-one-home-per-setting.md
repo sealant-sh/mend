@@ -184,13 +184,13 @@ bindings, never the cap.
 A project secret is **Direct** (its value reaches the workspace's environment, as before) or
 **Brokered** (the workspace holds a placeholder, and only its egress proxy puts the value in one
 named header on requests to the secret's bind hosts). Both live in **Project → Variables and
-secrets**; the project owns the binding, and no template names a project's secret. A Brokered
-secret reaches a workspace only when the project's policy allows Brokered secrets, which makes the
-policy elevated: assigning it takes an Organization Owner, and so does turning a Brokered secret
-back to Direct. A launch never falls back to putting a Brokered secret's value in the environment.
+secrets**; the project owns the binding, and no template names a project's secret. A Brokered secret
+reaches a workspace only when the project's policy allows Brokered secrets, which makes the policy
+elevated: assigning it takes an Organization Owner, and so does turning a Brokered secret back to
+Direct. A launch never falls back to putting a Brokered secret's value in the environment.
 
 ### A4. Revocations are kept, and win
 
-An Organization Owner can revoke a host, a secret or everything, for one template's worktrees or
-for all of them. The revocation is stored first, then sent to every running workspace it reaches,
-and it holds over every pin, every "Apply updated policy" and every later launch.
+An Organization Owner can revoke a host, a secret or everything, for one template's worktrees or for
+all of them. The revocation is stored first, then sent to every running workspace it reaches, and it
+holds over every pin, every "Apply updated policy" and every later launch.
