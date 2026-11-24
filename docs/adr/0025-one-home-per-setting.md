@@ -1,12 +1,13 @@
 # Settings: one home per setting, and nothing inherits
 
-Status: accepted 2026-11-16, for the new web app; not built. Yiannis decided it with the redesign
-plan ("Mend redesign: the plan, step by step", Linear project "Web redesign"), and the Settings
-pages on the Doop canvas "Mend" (page "7 · Settings") are drawn to it. The new app's settings routes
-build it, last in the rebuild's list of PRs (Linear document "Mend web rebuild: the list of PRs").
-Read against Mend `732269db61`. Changes [ADR 0003](0003-organizations-and-tenancy.md) (what an
-organization's values mean for its projects) and withdraws decision 2 of
-[ADR 0018](0018-api-key-logins-and-organization-keys.md) (organization keys, never built).
+Status: accepted 2026-11-16, for the new web app; not built. Amended 2026-11-24 for Access policies
+(below). Yiannis decided it with the redesign plan ("Mend redesign: the plan, step by step", Linear
+project "Web redesign"), and the Settings pages on the Doop canvas "Mend" (page "7 · Settings") are
+drawn to it. The new app's settings routes build it, last in the rebuild's list of PRs (Linear
+document "Mend web rebuild: the list of PRs"). Read against Mend `732269db61`. Changes
+[ADR 0003](0003-organizations-and-tenancy.md) (what an organization's values mean for its projects)
+and withdraws decision 2 of [ADR 0018](0018-api-key-logins-and-organization-keys.md) (organization
+keys, never built).
 
 ## Context
 
@@ -134,3 +135,45 @@ Your automation without Inherit and copying the starting image.
 
 - How each server change turns a stored Inherit (a null) into a plain value. Each server ticket
   decides it for its values.
+
+## Amendment, 2026-11-24: Access policies
+
+Workspace isolation (agent-home `docs/workspace-isolation-architecture.md`, §8.1; Linear SLNT-1314)
+adds worktree Access policies, and needs two homes this ADR did not have. Both keep its rule: one
+home per value, nothing inherits.
+
+### A1. Organization → Access policies holds templates of rules
+
+A new home, **Organization → Access policies**, changed by Owners. It holds reusable policy
+templates: the built-in `Standard`, and templates owners create, such as `Restricted egress` or an
+elevated policy for production work. A template holds rules only: allowed hosts, whether Executor
+tools may be called (`allowExecutorTools`), the Git transport cap (A2). It never holds a secret
+value; secrets stay in **Project → Variables and secrets**, so decision 2's removal of
+organization-wide secrets stands.
+
+A template is copied, never inherited, as the starting image is (decision 5). A new project gets a
+copy of `Standard` as its own policy, under **Project → Workspace**. Assigning a template copies its
+rules into the project; the project records which template and revision it came from only so a
+revocation reaches it and the page can say a newer revision exists. Editing a template never changes
+a project or a running worktree. A worktree keeps the rules it started with until someone applies
+the newer ones to it, and a revocation always applies.
+
+### A2. A policy caps Mend's Git signer
+
+An Access policy may carry a `gitTransport` cap: `disabled`, `read-only` or `read-write` (the
+default). It caps whether Mend's Git signer fetches and pushes for that worktree: `read-only` signs
+fetches and archives, never a push; `disabled` signs nothing. It is not a second Git access mode.
+The person's own Git access mode, under You (decision 1), still chooses how they sign, with the Mend
+key or through the bridge. The cap covers Mend's signer only: a credential the person brings into
+the workspace themselves does not pass through it.
+
+### What Mend does until policies are stored
+
+Mend's Git signer and its MCP dispatcher each read a session's worktree policy from one place
+(`AccessPolicies` in `@mend/sessions`). Until Access policies are stored, every worktree reads
+`Standard`: the signer signs fetches and pushes, and Executor tools may be called. Whatever the cap,
+the signer pushes only to the project's own repository, by its canonical path, and refuses a push
+for a project whose origin is missing or ambiguous; it fetches from any repository on the origin's
+host, which submodules and other repositories of a session need. An operator who turns the origin
+binding off on a machine they alone use (`MEND_GIT_TRANSPORT_BIND_ORIGIN=false`) lifts both
+bindings, never the cap.

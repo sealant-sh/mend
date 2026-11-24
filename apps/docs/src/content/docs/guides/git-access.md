@@ -134,8 +134,13 @@ own home. No SSH credential enters the container. The socket carries Git's own r
 The shim signs only for the project's own origin host. A fetch or push to another host is refused
 with
 `this session's Git access is bound to <origin host>; pushes and fetches to <host> run without Mend's signer`.
-An operator on a machine they alone use can set `MEND_GIT_TRANSPORT_BIND_ORIGIN=false` to let the
-shim sign for any host, for mirrors and forks.
+A fetch may name any repository on the origin's host, so submodules and private dependencies there
+still fetch. A push must name the project's own repository, or another repository the session holds;
+a push to any other repository on the same host is refused with
+`Mend's Git signer pushes only to this project's own repository (<path>)`, and a project with no
+origin pushes nowhere through the signer. An operator on a machine they alone use can set
+`MEND_GIT_TRANSPORT_BIND_ORIGIN=false` to let the shim sign for any host and repository, for mirrors
+and forks.
 
 In a captured workspace (the default store) the repository is built from captures and has no remote
 of its own. Mend names the project's `origin` for the workspace, with any login or token in an HTTPS

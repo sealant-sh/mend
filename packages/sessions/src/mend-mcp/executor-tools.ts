@@ -1,8 +1,13 @@
 import { Context, Effect, Layer, Schema } from "effect";
 import { McpSchema, McpServer } from "effect/ai";
 
+import { AccessPolicies } from "../access-policy.ts";
 import { OrganizationExecutor } from "../executor/executor.ts";
 import { asCaller } from "./caller.ts";
+
+/** What an Executor tool answers when the session's worktree policy turns Executor tools off. */
+export const EXECUTOR_TOOLS_OFF_MESSAGE =
+  "This worktree's Access policy turns off Executor tools (allowExecutorTools: false). Mend did not ask Executor.";
 
 const Call = Schema.Struct({ path: Schema.String, input: Schema.Json });
 /** Executor v2's six discovery/call tools, with Mend owning the approval response. */
@@ -61,6 +66,7 @@ export const ExecutorToolsLive: Layer.Layer<never, never, OrganizationExecutor> 
     Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
       const executor = yield* OrganizationExecutor;
+      const policies = yield* AccessPolicies;
       for (const entry of EXECUTOR_MCP_TOOLS) {
         const json = Schema.toJsonSchemaDocument(entry.schema);
         const inputSchema = Schema.decodeUnknownSync(McpSchema.ToolJson)(
@@ -83,10 +89,25 @@ export const ExecutorToolsLive: Layer.Layer<never, never, OrganizationExecutor> 
           // Keep resume's raw response field visible here so an agent's attempted approval is refused,
           // rather than stripped by decoding into the collector-only advertised schema.
           handle: asCaller((input: unknown, caller) =>
-            Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.Unknown))(input).pipe(
-              Effect.mapError((error) => new McpSchema.InvalidParams({ message: error.message })),
-              Effect.flatMap((params) => executor.relay(caller, entry.name, params)),
-            ),
+            Effect.gen(function* () {
+              // Executor runs inside Mend, outside any workspace's egress proxy, so the worktree
+              // policy is enforced here, before anything reaches Executor or its call log.
+              const policy = yield* policies.forSession(caller.sessionId);
+              if (!policy.allowExecutorTools) {
+                return new McpSchema.CallToolResult({
+                  content: [
+                    { type: "text", text: JSON.stringify({ message: EXECUTOR_TOOLS_OFF_MESSAGE }) },
+                  ],
+                  isError: true,
+                });
+              }
+              const params = yield* Schema.decodeUnknownEffect(
+                Schema.Record(Schema.String, Schema.Unknown),
+              )(input).pipe(
+                Effect.mapError((error) => new McpSchema.InvalidParams({ message: error.message })),
+              );
+              return yield* executor.relay(caller, entry.name, params);
+            }),
           ),
         });
       }

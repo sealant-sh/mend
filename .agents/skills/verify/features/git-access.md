@@ -25,6 +25,13 @@ observed: the key to add, and whether a signer is connected.
   while the mode is `bridge`) and shows `signer connected · <machine>`.
 - `project-override` sets one project's mode on its Setup page (`mend key`, `bridge`).
 - `adopt-auth` picks the mode for one adoption (`mend adopt --auth`).
+- `workspace-push` is what Mend's signer opens for `git` over SSH inside a session: a fetch of any
+  repository on the origin's host, a push only to the project's own repository (or another the
+  session holds), refused with
+  `mend: Mend's Git signer pushes only to this project's own repository (<path>); "<path>" is another`;
+  another host is refused with `mend: this session's Git access is bound to <origin host>; …`. A
+  worktree's Access policy can cap it (`gitTransport` `read-only` or `disabled`); until policies are
+  stored every worktree is `read-write`.
 
 ## How to get to it (user POV)
 
@@ -100,6 +107,16 @@ Preconditions:
   exit `1`.
 - **Second view.** Run `mend projects`; the adopted projects are listed. Reload the Setup page of
   `<project>-key`: `mend key` is the chosen mode and the key card shows the same public key.
+- **Push from a session.** In `mend shell <id8>`, in `/workspace/repo`, run
+  `git push --dry-run git@<origin host>:<another owner>/<another repo>.git HEAD:refs/heads/<scratch>`.
+  Stderr ends
+  `mend: Mend's Git signer pushes only to this project's own repository (<path>); "<another owner>/<another repo>.git" is another`,
+  exit not `0`, and nothing reaches the remote.
+  `git ls-remote git@<origin host>:<another owner>/<another repo>.git HEAD` is not refused by Mend
+  (it lists the ref, or the host's own `Permission denied (publickey)`). The same push to another
+  host is refused with `mend: this session's Git access is bound to <origin host>; …`. Needs an
+  SSH-reachable origin host; a project whose origin is HTTPS still uses the shim for an SSH URL
+  typed in the command.
 - **Proof.** Save `await page.locator("body").ariaSnapshot()` and a screenshot of Settings → Git
   access in each mode, and of the project's Setup `Git access` card. Keep the `mend keys`,
   `mend keys share` and `mend adopt` transcripts with exit codes. Restore the noted modes.

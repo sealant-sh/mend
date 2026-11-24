@@ -488,11 +488,11 @@ const STOP_HOOK = new AgentHookReport({
   providerSessionId: null,
 });
 
-/** A push to the project's own origin, as git asks the shim for it. */
+/** A push to the project's own origin (the fixture's `git://…/origin`), as git asks the shim. */
 const push = (origin: string) => ({
   host: origin,
   port: null,
-  command: "git-receive-pack 'fixture.git'",
+  command: "git-receive-pack 'origin'",
 });
 
 describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => {

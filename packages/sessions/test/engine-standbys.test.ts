@@ -43,6 +43,7 @@ import type {
 import { Deferred, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
+import { type GitTransportCeiling, STANDARD_ACCESS_POLICY } from "../src/access-policy.ts";
 import { REMOTE_SSH_ROOT_WORDS } from "../src/harness-layout-steps.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import {
@@ -1336,6 +1337,71 @@ describe("SessionEngine capture mode", () => {
           expect(keysAsked).toEqual(["user-fixture", "user-fixture"]);
         }),
       { sealantLayer: sealantLaunchLayer(created), mendKeysLayer: perAccountKeys(keysAsked) },
+    );
+  });
+
+  it("a workspace push reaches only the project's own repository, and the worktree policy caps the signer", async () => {
+    const created: Array<CreateOptions> = [];
+    const keysAsked: Array<string> = [];
+    const policies = new Map<string, GitTransportCeiling>();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const api = servedSocketApis.get(session.id);
+          if (api === undefined) throw new Error("the session serves no socket api");
+          // The fixture's origin is git://127.0.0.1:<port>/origin.
+          const origin = new URL(project.originUrl ?? "");
+          const transport = (command: string) =>
+            api
+              .gitTransport({ host: origin.hostname, port: Number(origin.port), command })
+              .pipe(Effect.exit);
+          keysAsked.length = 0;
+          const own = yield* transport("git-receive-pack '/Origin.git'");
+          if (!Exit.isSuccess(own)) throw new Error(failureText(own));
+          expect(own.value.kind).toBe("push");
+          const other = yield* transport("git-receive-pack 'acme/other.git'");
+          expect(failureText(other)).toContain("pushes only to this project's own repository");
+          const climbing = yield* transport("git-receive-pack 'origin/../acme/other.git'");
+          expect(failureText(climbing)).toContain("pushes only to this project's own repository");
+          // A fetch of another repository on the same host still runs: submodules, dependencies.
+          const fetch = yield* transport("git-upload-pack 'acme/other.git'");
+          if (!Exit.isSuccess(fetch)) throw new Error(failureText(fetch));
+          expect(keysAsked).toEqual(["user-fixture", "user-fixture"]);
+
+          policies.set(session.id, "read-only");
+          expect(Exit.isSuccess(yield* transport("git-upload-pack 'origin'"))).toBe(true);
+          expect(failureText(yield* transport("git-receive-pack 'origin'"))).toContain(
+            "gitTransport: read-only",
+          );
+          policies.set(session.id, "disabled");
+          expect(failureText(yield* transport("git-upload-pack 'origin'"))).toContain(
+            "gitTransport: disabled",
+          );
+          // Refused before the signer: no key was asked for any refusal.
+          expect(keysAsked).toEqual(["user-fixture", "user-fixture", "user-fixture"]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        mendKeysLayer: perAccountKeys(keysAsked),
+        accessPolicies: {
+          forSession: (sessionId) =>
+            Effect.succeed({
+              ...STANDARD_ACCESS_POLICY,
+              gitTransport: policies.get(sessionId) ?? "read-write",
+            }),
+        },
+      },
     );
   });
 

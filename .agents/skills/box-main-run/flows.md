@@ -138,8 +138,8 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
    last: its turns run in boat-run's worktree, which the flows before it read as boat-run left it
 5. `start-session.docker-run`
 6. `start-session.boat-live`, `attach-resume.attach-detach`, `attach-resume.terminal-and-web`,
-   `session-shell.live-shell`, `shared-control.refuse-script`, `services.cli-run`,
-   `capture-and-save.live-stop`
+   `session-shell.live-shell`, `git-access.workspace-push`, `shared-control.refuse-script`,
+   `services.cli-run`, `capture-and-save.live-stop`
 7. `worktrees.web-create-remove`, `handoff.held`, `now-and-sessions.inbox-settle`,
    `now-and-sessions.cli-lists`
 8. Reads of a person's and a project's setup, in any order: `sign-in.fresh-browser`,
@@ -2600,6 +2600,30 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 - **Mode:** `agent`
 - **Box-only:** `boat`
 - **Areas:** `apps/cli/src/`, `packages/sessions/`, `apps/api/src/`
+
+### git-access.workspace-push
+
+- **Map:** git-access.md `workspace-push`
+- **Needs:** Boat; no turn; CLI in tmux; `start-session.boat-live` (its session `<id8>`); `<p>`'s
+  origin on GitHub
+- **Do:** `M shell <id8>` in a second tmux session; in `/workspace/repo` run, each followed by
+  `echo exit=$?`:
+  `git push --dry-run git@github.com:octocat/Spoon-Knife.git HEAD:refs/heads/main-run-<sha8>`,
+  `git ls-remote git@github.com:octocat/Spoon-Knife.git HEAD`, and
+  `git push --dry-run git@gitlab.com:octocat/Spoon-Knife.git HEAD:refs/heads/main-run-<sha8>`; then
+  `exit` that shell. Nothing is pushed: each push is a dry run, and the first and last are refused
+  before ssh starts.
+- **See:** the first push ends
+  `mend: Mend's Git signer pushes only to this project's own repository (<owner>/<repo> of <p>'s origin); "octocat/Spoon-Knife.git" is another`,
+  `exit=` not `0`; the `ls-remote` is not refused by Mend: it prints a `HEAD` line, or GitHub's own
+  `Permission denied (publickey)` when the account's key is not on GitHub (record which), and never
+  a `mend:` refusal line; the last push ends
+  `mend: this session's Git access is bound to github.com; pushes and fetches to git@gitlab.com run without Mend's signer`,
+  `exit=` not `0`.
+- **Mode:** `agent`
+- **Box-only:** `boat`
+- **Areas:** `packages/sessions/src/git-policy.ts`, `packages/sessions/src/git-transport.ts`,
+  `packages/sessions/src/access-policy.ts`
 
 ### capture-and-save.live-stop
 

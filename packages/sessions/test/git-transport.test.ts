@@ -15,12 +15,28 @@ import {
 
 describe("parseGitRemoteCommand", () => {
   it("names the three git transport verbs", () => {
-    expect(parseGitRemoteCommand("git-upload-pack '/srv/repo.git'")).toEqual({ kind: "fetch" });
-    expect(parseGitRemoteCommand("git-receive-pack '/srv/repo.git'")).toEqual({ kind: "push" });
+    const repository = "/srv/repo.git";
+    expect(parseGitRemoteCommand("git-upload-pack '/srv/repo.git'")).toEqual({
+      kind: "fetch",
+      repository,
+    });
+    expect(parseGitRemoteCommand("git-receive-pack '/srv/repo.git'")).toEqual({
+      kind: "push",
+      repository,
+    });
     expect(parseGitRemoteCommand("git-upload-archive '/srv/repo.git'")).toEqual({
       kind: "archive",
+      repository,
     });
-    expect(parseGitRemoteCommand("git upload-pack '/srv/repo.git'")).toEqual({ kind: "fetch" });
+    expect(parseGitRemoteCommand("git upload-pack '/srv/repo.git'")).toEqual({
+      kind: "fetch",
+      repository,
+    });
+    // Git quotes an apostrophe as '\'' between quoted segments: the path is read unquoted.
+    expect(parseGitRemoteCommand("git-receive-pack 'acme/it'\\''s.git'")).toEqual({
+      kind: "push",
+      repository: "acme/it's.git",
+    });
   });
 
   it("refuses everything that is not git transport", () => {
@@ -69,7 +85,7 @@ describe("parseGitRemoteCommand", () => {
     "git-upload-pack '~developer/repo.git'",
     "git-upload-pack '=git'",
   ])("keeps literal repository arguments: %j", (command) => {
-    expect(parseGitRemoteCommand(command)).toEqual({ kind: "fetch" });
+    expect(parseGitRemoteCommand(command)).toMatchObject({ kind: "fetch" });
   });
 
   it("accepts the quoting emitted by real Git without opening a connection", () => {
@@ -118,7 +134,7 @@ describe("parseGitRemoteCommand", () => {
         if (!Array.isArray(argv)) throw new Error("Git did not call the SSH recorder");
         const command: unknown = argv.at(-1);
         if (typeof command !== "string") throw new Error("Git sent no remote command");
-        expect(parseGitRemoteCommand(command), command).toEqual({ kind: "fetch" });
+        expect(parseGitRemoteCommand(command), command).toMatchObject({ kind: "fetch" });
       }
     } finally {
       rmSync(scratch, { recursive: true, force: true });
@@ -142,7 +158,9 @@ describe("parseGitRemoteCommand", () => {
           "$(echo injected)",
         ),
         (path, suffix) => {
-          expect(parseGitRemoteCommand(`git-upload-pack '${path}'`)).toEqual({ kind: "fetch" });
+          expect(parseGitRemoteCommand(`git-upload-pack '${path}'`)).toMatchObject({
+            kind: "fetch",
+          });
           expect(parseGitRemoteCommand(`git-upload-pack '${path}'${suffix}`)).toBeNull();
         },
       ),
