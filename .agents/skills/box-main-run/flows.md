@@ -1220,16 +1220,20 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 - **Do:** On `/`, write `Reply with the single word ready and change nothing.` and press Enter;
   while the session starts, send `Then reply with the word again.` from its composer, and the moment
   the address moves to the session's id send `And say done.`; then, while it still reads Starting,
-  go to Projects and wait there a minute before coming back. Then, on `<p>`'s Worktrees tab, open a
-  worktree's "…", New session in this worktree, Codex, and once it has started send `hi` from its
-  composer, wait a minute, then send `tell me a joke`. Drive the recipe `instant-start` for the same
-  steps against a stack, with a refused start and the phone width.
+  go to Projects. Wait there until the session's row under Running in the sidebar no longer reads
+  Starting, then one minute more, and come back; note how long it read Starting, counted from the
+  first send. A Boat session took 51 to 57 s to start on 24 Nov (SLNT-1323), and the minute is for
+  the three messages, not the start. If it still reads Starting three minutes after the first send,
+  come back then and report that. Then, on `<p>`'s Worktrees tab, open a worktree's "…", New session
+  in this worktree, Codex, and once it has started send `hi` from its composer, wait a minute, then
+  send `tell me a joke`. Drive the recipe `instant-start` for the same steps against a stack, with a
+  refused start and the phone width.
 - **See:** the session's page opens at once at `/sessions/starting-…` with the message,
   `Getting the session ready`, and a Starting row under Running; the composer is open and reads
   `Codex is starting. What you send now goes to it once it's ready.`, never `runs in a terminal`;
   the address moves to the session's id in place; the second and third messages wait
-  (`Waits for Codex to start.`) and both are sent after the opening turn, in order, while you are on
-  Projects (back on the session, Codex has answered all three and nothing reads
+  (`Waits for Codex to start.`) and both are sent after the opening turn, in order, within the
+  minute after the start (back on the session, Codex has answered all three and nothing reads
   `Waits for Codex to start.` or `Not sent`); the menu's start opens its page at once and shows no
   red line while it starts; nothing on the page reads `per-person users` or `takes one person`. The
   session started from the worktree's menu, with no message, reads `New session` in its row, its tab
@@ -2393,10 +2397,15 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 
 - **Map:** now-and-sessions.md `now-menus`, `rail`; adopt-project.md `projects-directory`
 - **Needs:** either; no turn; CLI and web; a session that keeps running
-- **Do:** Drive the recipe `polish` (after its CLI batch `polish-sessions.json`): the sheet's edge
-  beside the sidebar, open, pointed at and folded; a session row's focus ring and its right-click
-  and "…" menus; Open project from them and from the phone's row sheet; a click on a Projects row
-  and a project's Sessions row away from the name; the session header's and Settings' breadcrumbs.
+- **Do:** Run the CLI batch `polish-sessions.json` step by step with its `--name` suffixed `-<sha8>`
+  (one `sleep` session in the worktree `polish-running-<sha8>`), then drive the recipe `polish` with
+  `POLISH_SUFFIX=-<sha8>`. The data holds a Boat worktree `polish-running`, which a copy without
+  Boat refuses to start in, and Mend refuses a name it has seen, even after the worktree is removed
+  (SLNT-1326). The recipe finds the session's rows by its link, since they read `New session`. Then
+  `M stop` the batch's session. The recipe `polish`: the sheet's edge beside the sidebar, open,
+  pointed at and folded; a session row's focus ring and its right-click and "…" menus; Open project
+  from them and from the phone's row sheet; a click on a Projects row and a project's Sessions row
+  away from the name; the session header's and Settings' breadcrumbs.
 - **See:** no line on the sidebar's edge at rest, in light or dark, and a short handle while pointed
   at; every focus ring in both sidebars and the two tables whole; `Open project` first in a session
   row's menus and no `Open session` (a click on the row opens it), opening the project; each row
@@ -2836,16 +2845,24 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 
 - **Map:** organization.md `visibility`, `who-sees-what`, `members-cli` (the member's row);
   land-change.md Gotchas (a non-owner's `Landing →` and `only the change's owner lands it`)
-- **Needs:** no session; no turn; CLI (`M` and `M2`) and web, one browser at a time;
-  `land-change.web-push` (something landed in `<land>`)
-- **Do:** `M2 members`; `M2 projects`; in the second browser, `/projects`. In the owner's browser,
-  on `<land>`'s Settings · General, choose `Everyone in Default` in `Visible to`. `M2 projects`
-  again; in the second browser, `/projects`, then go straight to
-  `<web>/sessions/<land session id>/change`, choose `What landed` and read its dialog. In the
+- **Needs:** no session; no turn; CLI (`M` and `M2`) and web, one browser at a time; `<land>`. It
+  lands a session of its own first, so it needs nothing from `land-change.web-push`, which runs on
+  another lane (SLNT-1326).
+- **Do:** First, as the owner,
+  `M run --project <land> --name main-run-visible-<sha8> -- sh -c 'printf "visible\n" > VISIBLE.md'`,
+  record its session id as `<visible session id>`, then
+  `M land main-run-visible-<sha8> --project <land>`. Its worktree goes with lane C's copy; when the
+  flow runs on lane A, add `<land>/main-run-visible-<sha8>` to the ledger's `worktrees`. Then
+  `M2 members`; `M2 projects`; in the second browser, `/projects`. In the owner's browser, on
+  `<land>`'s Settings · General, choose `Everyone in Default` in `Visible to`. `M2 projects` again;
+  in the second browser, `/projects`, then go straight to
+  `<web>/sessions/<visible session id>/change`, choose `What landed` and read its dialog. In the
   owner's browser choose `Only you`, which restores it in the same flow; `M2 projects` once more.
-- **See:** `M2 members` has `Default · 2 members` with the `▸` row the second account's, `member`;
-  before, `M2 projects` prints `no adopted projects — …` and the second browser's `/projects` reads
-  `No projects yet`; after sharing, the owner's `Visible to` has `Everyone in Default` pressed with
+- **See:** `M land` prints `✓ pushed · mend/main-run-visible-<sha8> · <sha>` and
+  `pushed · mend/main-run-visible-<sha8> · <sha> · observed`; `M2 members` has `Default · 2 members`
+  with the `▸` row the second account's, `member`; before, `M2 projects` prints
+  `no adopted projects — …` and the second browser's `/projects` reads `No projects yet`; after
+  sharing, the owner's `Visible to` has `Everyone in Default` pressed with
   `Everyone in Default can see its sessions and start their own. …`, `M2 projects` lists `<land>`
   (not `<second>`), and the second browser's `Projects` table has the `<land>` row with
   `Everyone in Default`; the member's change toolbar has no `Land…` or `Land again…`, and its

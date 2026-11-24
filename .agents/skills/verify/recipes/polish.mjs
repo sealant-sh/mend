@@ -9,9 +9,16 @@
 // With MEND_VERIFY_POLISH_BEFORE=1 it only captures and notes what it finds (for pictures of the
 // app before the change); otherwise each check throws when the app doesn't do it. It changes no
 // server state.
+//
+// On a server whose data already holds the batch's worktree (a check VM copy of the daily run's
+// data), run the batch with its `--name` suffixed and pass the suffix: POLISH_SUFFIX=-<sha8>. Mend
+// refuses a worktree name it has seen, even after that worktree is removed, and the saved one is a
+// Boat worktree, which starts nothing on a copy without Boat (SLNT-1326).
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
-const SESSION = "polish-running";
+/** The batch's worktree. Its session's rows read `New session` (an unnamed `mend run`, SLNT-1230),
+ * so the recipe finds them by the session's link, read from the project's Sessions table. */
+const SESSION = `polish-running${process.env.POLISH_SUFFIX ?? ""}`;
 const PROJECT = "verify-fixture";
 const BEFORE = process.env.MEND_VERIFY_POLISH_BEFORE === "1";
 
@@ -134,9 +141,17 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     await settled();
   };
   const inbox = () => page.getByRole("navigation", { name: "Inbox" }).filter({ visible: true });
-  const sessionRow = () =>
-    inbox()
-      .getByRole("link", { name: new RegExp(`^${SESSION}`) })
+  /** The session's id, read from the project's Sessions table (step 10) before any row is used. */
+  let sessionId = "";
+  const sessionLink = () => `a[href="/sessions/${sessionId}"]`;
+  const sessionRow = () => inbox().locator(sessionLink()).first();
+  /** The list item holding the session's row link, and its "…" button beside it. */
+  const sessionActions = (within) =>
+    within
+      .getByRole("listitem")
+      .filter({ has: page.locator(sessionLink()) })
+      .getByRole("button", { name: /^Actions for / })
+      .filter({ visible: true })
       .first();
   /** Opens the inbox's Running group (folded by default), where the session's row is. */
   const showRunning = async () => {
@@ -260,10 +275,14 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // 10. A project's sessions: the whole row opens the session.
   await open(`/projects/${projectId}`);
   const sessionsTable = page.getByRole("table", { name: "Sessions" });
-  const projectSessionRow = sessionsTable.getByRole("row").filter({ hasText: SESSION }).first();
+  const projectSessionRow = sessionsTable
+    .getByRole("row")
+    .filter({ has: page.getByRole("cell", { name: SESSION, exact: true }) })
+    .filter({ has: page.getByRole("cell", { name: "Running", exact: true }) })
+    .first();
   await projectSessionRow.waitFor();
   const sessionHref = await projectSessionRow.getByRole("link").first().getAttribute("href");
-  const sessionId = sessionHref?.split("/")[2] ?? "";
+  sessionId = sessionHref?.split("/")[2] ?? "";
   note(`session ${SESSION} is ${sessionId}`);
   await projectSessionRow.hover();
   await settled();
@@ -324,9 +343,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await open("/projects");
   await showRunning();
   await sessionRow().hover();
-  await inbox()
-    .getByRole("button", { name: `Actions for ${SESSION}` })
-    .click();
+  await sessionActions(inbox()).click();
   await page.getByRole("menuitem", { name: /^Open project/ }).waitFor();
   expect(
     !(await menuNames()).some((name) => name.startsWith("Open session")),
@@ -375,13 +392,11 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // 8 on a phone: the row's sheet has Open project.
   await page.setViewportSize(PHONE);
   await open("/");
-  const phoneActions = page
-    .getByRole("button", { name: `Actions for ${SESSION}` })
-    .filter({ visible: true })
-    .first();
+  const phoneActions = sessionActions(page);
   await phoneActions.waitFor();
+  const sheetName = (await phoneActions.getAttribute("aria-label")) ?? "";
   await phoneActions.click();
-  const sheet = page.getByRole("menu", { name: `Actions for ${SESSION}` });
+  const sheet = page.getByRole("menu", { name: sheetName, exact: true });
   await sheet.waitFor();
   await settled();
   const sheetItems = await sheet
