@@ -36,8 +36,15 @@ export const RUNTIME_LABELS: Readonly<Record<SessionRuntime, string>> = {
   boat: "Boat",
 };
 
-/** The order the page lists runtimes in, as the frame draws them. host-vm is not listed yet. */
-const RUNTIME_ORDER: ReadonlyArray<SessionRuntime> = ["docker", "boat"];
+/** A runtime's name where it starts a line on its own, as a choice's label: "This server's KVM". */
+export const RUNTIME_CHOICE_LABELS: Readonly<Record<SessionRuntime, string>> = {
+  docker: "Docker",
+  "host-vm": "This server's KVM",
+  boat: "Boat",
+};
+
+/** The order the page lists runtimes in: this server's two, then Boat. */
+const RUNTIME_ORDER: ReadonlyArray<SessionRuntime> = ["docker", "host-vm", "boat"];
 
 /** What the Session runtime section shows. */
 export type RuntimeChoices =

@@ -43,6 +43,7 @@ import {
 } from "#/lib/workspace-image";
 
 import { Overlay } from "../projects/overlay.tsx";
+import { ProjectAccessPolicySection } from "./project-access-policy-section.tsx";
 import { SettingRow, SettingSection } from "./setting-row.tsx";
 import { SettingsPage } from "./settings-page.tsx";
 
@@ -73,6 +74,11 @@ export function ProjectWorkspacePage({ projectId }: { readonly projectId: string
       }
     >
       <ImageSection project={project} people={people} manage={capabilities.manage} />
+      <ProjectAccessPolicySection
+        projectId={project.id}
+        projectName={project.name}
+        manage={capabilities.manage}
+      />
       <DependenciesSection
         project={project}
         manage={capabilities.manage}

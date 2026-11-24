@@ -671,6 +671,8 @@ export interface GuideContext {
   readonly given?: ReadonlyArray<string>;
   /** Setup already opened with `GUIDE_INTRO`, before the Docker engine and the host's kernel. */
   readonly introduced?: boolean;
+  /** This server's KVM passed setup's host-vm checks: the runtime question offers host-vm. */
+  readonly hostVm?: boolean;
 }
 
 export type GuideOutcome =
@@ -1633,22 +1635,56 @@ const askOrigins = async (asked: Asked, settings: SetupSettings): Promise<SetupS
   }
 };
 
-/** What the guide can answer to "where can sessions run?": one runtime, or both and a default. */
-type RuntimeAnswer = "docker" | "boat" | "both-docker" | "both-boat";
+/**
+ * What the guide can answer to "where can sessions run?": one runtime, Docker and Boat with a
+ * default, host-vm and Docker with host-vm the default, or what the server runs now, kept as it is
+ * where it is none of those (host-vm alone; Docker and host-vm with Docker the default).
+ */
+type RuntimeAnswer = "keep" | "docker" | "boat" | "both-docker" | "both-boat" | "host-vm-docker";
 
+/** Where each answer but "keep" lets sessions run, and where new organizations start. */
+const ANSWER_RUNTIMES: ReadonlyArray<{
+  readonly answer: Exclude<RuntimeAnswer, "keep">;
+  readonly sessionRuntime: SessionRuntime;
+  readonly offered: ReadonlyArray<SessionRuntime>;
+}> = [
+  { answer: "docker", sessionRuntime: "docker", offered: ["docker"] },
+  { answer: "boat", sessionRuntime: "boat", offered: ["boat"] },
+  { answer: "both-docker", sessionRuntime: "docker", offered: ["docker", "boat"] },
+  { answer: "both-boat", sessionRuntime: "boat", offered: ["docker", "boat"] },
+  { answer: "host-vm-docker", sessionRuntime: "host-vm", offered: ["host-vm", "docker"] },
+];
+
+/** The answer that is exactly what `settings` run, or "keep" when no other answer is. */
 const answerOf = (settings: SetupSettings): RuntimeAnswer => {
   const runtime = settings.sessionRuntime ?? "docker";
-  // The guide offers no host-vm yet: a server set to it is asked from Docker.
-  if (offeredOf(settings).length < 2) return runtime === "host-vm" ? "docker" : runtime;
-  return runtime === "boat" ? "both-boat" : "both-docker";
+  const offered = offeredOf(settings);
+  return (
+    ANSWER_RUNTIMES.find(
+      (each) => each.sessionRuntime === runtime && sameSet(each.offered, offered),
+    )?.answer ?? "keep"
+  );
 };
 
 const askSessionRuntime = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
-  const answers: ReadonlyArray<RuntimeAnswer> = ["docker", "boat", "both-docker", "both-boat"];
+  // host-vm is offered where this server's KVM passed setup's checks, or the server offers it now.
+  const hostVm = asked.context.hostVm === true || offeredOf(settings).includes("host-vm");
+  const current = answerOf(settings);
+  const answers: ReadonlyArray<RuntimeAnswer> = [
+    ...(current === "keep" ? (["keep"] as const) : []),
+    "docker",
+    "boat",
+    "both-docker",
+    "both-boat",
+    ...(hostVm ? (["host-vm-docker"] as const) : []),
+  ];
   const picked = await choose<RuntimeAnswer>(
     asked.io,
     "Where can sessions run?",
     [
+      ...(current === "keep"
+        ? [{ label: "As it is", detail: sessionsRunOf(settings), value: "keep" as const }]
+        : []),
       { label: "Docker", detail: "on this server", value: "docker" },
       {
         label: "Boat",
@@ -1665,9 +1701,27 @@ const askSessionRuntime = async (asked: Asked, settings: SetupSettings): Promise
         detail: "each organization's owner chooses; new organizations start on Boat",
         value: "both-boat",
       },
+      ...(hostVm
+        ? [
+            {
+              label: "This server's KVM or Docker",
+              detail:
+                "each organization's owner chooses; new organizations start on host-vm, a virtual machine of its own per workspace",
+              value: "host-vm-docker" as const,
+            },
+          ]
+        : []),
     ],
-    answers.indexOf(answerOf(settings)),
+    answers.indexOf(current),
   );
+  // The answer that is what the server runs now changes nothing, its offered list's order included.
+  if (picked === current) return settings;
+  if (picked === "host-vm-docker") {
+    asked.io.write(
+      "Existing sessions keep where they run. Owners choose in Organization settings · Defaults. Existing worktrees keep where they run.",
+    );
+    return { ...settings, sessionRuntime: "host-vm", sessionRuntimes: ["host-vm", "docker"] };
+  }
   // Picking Boat on a server without it sets Boat up here; a Boat key is never asked for.
   const next =
     picked !== "docker" && settings.boat === undefined ? await askBoat(asked, settings) : settings;

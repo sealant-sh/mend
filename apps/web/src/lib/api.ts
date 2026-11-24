@@ -205,6 +205,14 @@ export type CreatedAccessKeyDto = Outputs["accessKeys"]["create"];
 
 export type McpServerDto = Outputs["mcpServers"]["list"]["servers"][number];
 
+export type AccessPoliciesDto = Outputs["accessPolicies"]["list"];
+export type AccessPolicyDto = AccessPoliciesDto["policies"][number];
+export type AccessRevocationDto = AccessPoliciesDto["revocations"][number];
+export type AccessRevokedDto = Extract<Outputs["accessPolicies"]["revoke"], { ok: true }>["result"];
+export type ProjectAccessPolicyDto = Outputs["accessPolicies"]["project"];
+export type WorktreeAccessPolicyDto = Outputs["accessPolicies"]["worktree"];
+export type ProjectSecretDto = Outputs["environment"]["secrets"]["secrets"][number];
+
 /** The SSE payloads from /api/events — pointers, never data (outside the typed contract). */
 export type MendEventDto =
   | { readonly type: "issue"; readonly issueId: string }

@@ -1,0 +1,10 @@
+[
+  {
+    "name": "01-session",
+    "run": [
+      "sh",
+      "-c",
+      "mend run --project verify-fixture --name \"policy-ws-$(date +%s)\" --detach --json -- sleep 7243"
+    ]
+  }
+]

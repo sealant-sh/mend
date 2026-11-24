@@ -1,4 +1,6 @@
 import {
+  AccessPolicyOwnersOnly,
+  AccessPolicyRejected,
   ClusterBindingDuplicate,
   ClusterBindingRejected,
   ClusterBindingRequest,
@@ -9,6 +11,7 @@ import {
   ProjectEnvironmentVariableRemoveRequest,
   ProjectEnvironmentVariableRequest,
   ProjectEnvironmentVariableUpdateRequest,
+  ProjectSecretDeliveryRequest,
   ProjectSecretRemoveRequest,
   ProjectSecretRequest,
   ProjectSecretUpdateRequest,
@@ -32,7 +35,12 @@ const byProject = input(Schema.Struct({ projectId: ProjectId }));
  * a rejection, so writes return a discriminated union — the contract's own
  * typed failures caught by tag, never a status code parsed by hand.
  */
-const outcome = <A, E>(effect: Effect.Effect<A, E | EnvironmentRejected | EnvironmentStaleWrite>) =>
+const outcome = <A, E>(
+  effect: Effect.Effect<
+    A,
+    E | EnvironmentRejected | EnvironmentStaleWrite | AccessPolicyRejected | AccessPolicyOwnersOnly
+  >,
+) =>
   effect.pipe(
     Effect.map((result) => ({ ok: true as const, result })),
     Effect.catchIf(
@@ -47,6 +55,27 @@ const outcome = <A, E>(effect: Effect.Effect<A, E | EnvironmentRejected | Enviro
           ok: false as const,
           kind: "stale" as const,
           currentRevision: stale.currentRevision,
+        }),
+    ),
+    // A Brokered secret's header or bind hosts broke a rule: every problem, beside the fields.
+    Effect.catchIf(
+      (error): error is AccessPolicyRejected => error instanceof AccessPolicyRejected,
+      (rejected) =>
+        Effect.succeed({
+          ok: false as const,
+          kind: "binding" as const,
+          message: rejected.message,
+          problems: rejected.problems,
+        }),
+    ),
+    // Turning a Brokered secret back to Direct, or moving where its value goes, is an owner's.
+    Effect.catchIf(
+      (error): error is AccessPolicyOwnersOnly => error instanceof AccessPolicyOwnersOnly,
+      (refused) =>
+        Effect.succeed({
+          ok: false as const,
+          kind: "owners-only" as const,
+          message: refused.message,
         }),
     ),
   );
@@ -181,6 +210,27 @@ export const environmentRouter = router({
       run(ctx, (api) =>
         outcome(
           api.projectSecrets.remove({
+            params: { id: i.projectId, secretId: i.secretId },
+            payload: i.request,
+          }),
+        ),
+      ),
+    ),
+  /** Direct or Brokered: where the secret's value goes from the next launch on. */
+  setSecretDelivery: procedure
+    .input(
+      input(
+        Schema.Struct({
+          projectId: ProjectId,
+          secretId: ProjectSecretId,
+          request: ProjectSecretDeliveryRequest,
+        }),
+      ),
+    )
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        outcome(
+          api.projectSecrets.setDelivery({
             params: { id: i.projectId, secretId: i.secretId },
             payload: i.request,
           }),

@@ -1360,6 +1360,48 @@ describe("where sessions run", () => {
     expect(flagsOf(boatFirst.outcome)).toEqual(["--session-runtime", "boat"]);
   });
 
+  it("keeps a saved host-vm offer it has no answer for when Enter takes the current one", async () => {
+    // change · where sessions run (8) · Enter · nothing else · apply
+    const hostVmOnly = {
+      ...BOX,
+      sessionRuntime: "host-vm" as const,
+      sessionRuntimes: ["host-vm"] as const,
+    };
+    const alone = await converse(["2", "8", "", "", ""], hostVmOnly);
+    expect(flagsOf(alone.outcome), alone.transcript).toEqual([]);
+    expect(alone.transcript).toContain("  1. As it is · this server's KVM");
+    expect(alone.transcript).toContain(
+      "Nothing changes: setup checks this install and starts it as it is.",
+    );
+    const dockerFirst = {
+      ...BOX,
+      sessionRuntime: "docker" as const,
+      sessionRuntimes: ["docker", "host-vm"] as const,
+    };
+    const both = await converse(["2", "8", "", "", ""], dockerFirst);
+    expect(flagsOf(both.outcome), both.transcript).toEqual([]);
+    expect(both.transcript).toContain(
+      "  1. As it is · Docker or this server's KVM, each organization chooses (new organizations: Docker)",
+    );
+    expect(both.transcript).toContain(
+      "Nothing changes: setup checks this install and starts it as it is.",
+    );
+    // Picking the host-vm answer still moves new organizations to host-vm.
+    const moved = await converse(["2", "8", "6", "", ""], dockerFirst);
+    expect(flagsOf(moved.outcome)).toEqual(["--session-runtime", "host-vm"]);
+  });
+
+  it("changes nothing when Enter takes the host-vm answer a server runs", async () => {
+    const hostVmFirst = {
+      ...BOX,
+      sessionRuntime: "host-vm" as const,
+      sessionRuntimes: ["docker", "host-vm"] as const,
+    };
+    const { outcome, transcript } = await converse(["2", "8", "", "", ""], hostVmFirst);
+    expect(flagsOf(outcome), transcript).toEqual([]);
+    expect(transcript).not.toContain("As it is");
+  });
+
   it("declares the offered runtimes and the default with flags, keeping --session-runtime", () => {
     const saved = { ...BOX, ...BOAT_SET_UP };
     // A server set up the old way stays that way: one runtime, no list.
@@ -1392,7 +1434,7 @@ describe("where sessions run", () => {
       resolveSetupSettings({ ...both, sessionRuntimes: ["docker"] }, ["--session-runtime", "boat"]),
     ).toThrow(/does not offer \(docker\)\. Offer it with --session-runtimes docker,boat/);
     expect(() => resolveSetupSettings(saved, ["--session-runtimes", "docker,vm"])).toThrow(
-      /docker, boat or both/,
+      /among docker, host-vm and boat/,
     );
   });
 

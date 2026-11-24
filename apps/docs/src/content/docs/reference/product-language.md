@@ -72,7 +72,7 @@ Inherit choice.
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | **Account**      | Profile, Agent logins and Git, Devices and access keys, Dotfiles, MCP servers, Notifications, Your automation, Connected apps |
 | **This device**  | Appearance                                                                                                                    |
-| **Organization** | General, Members, Workspace image, Runtime, Boat, Integrations, Folders and references, Projects, Audit log                   |
+| **Organization** | General, Members, Workspace image, Runtime, Access policies, Boat, Integrations, Folders and references, Projects, Audit log  |
 | **Project**      | General, Workspace, Services, Variables and secrets, Folders and references, Only you                                         |
 | **Server**       | Server, for its operators only                                                                                                |
 
@@ -97,6 +97,33 @@ Executor and Doppler; **Integrations** is the organization's Slack app and Execu
 Write "per-person workspace" and "a workspace that shares one home", as the product does. A
 per-person workspace is not isolation: everyone in it has passwordless `sudo`. Do not call it
 private, sandboxed or isolated. See [Per-person workspaces](/operate/per-person-workspaces/).
+
+## Access policies and runtimes
+
+| Term                              | Meaning                                                                                                                                                                                                                                                           |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Access policy**                 | An organization's set of rules for what a workspace may reach and what Mend may do for it: its network mode, allowed hosts, private destinations, how far the Git signer goes, Executor tools, Brokered secrets, and whether it needs a VM of its own. Rules only |
+| **Standard**                      | The built-in Access policy: the public internet, with private networks, cloud metadata and the server's own addresses blocked. Every project starts with a copy of it. It can't be edited or removed                                                              |
+| **Restricted egress**             | The network mode that reaches only the hosts a policy lists, plus what each session needs to run: its agent's model provider, Doppler, and the MCP servers of the person who started it                                                                           |
+| **Elevated**                      | An Access policy that lets Brokered secrets reach workspaces or opens private destinations. Only an Organization Owner assigns one to a project                                                                                                                   |
+| **Project's policy**              | The copy of an Access policy a project holds. Editing the organization's policy changes no project until someone updates the project from it                                                                                                                      |
+| **Pinned policy**                 | The rules a worktree started with, shared by every session in it. **Apply updated policy** pins the project's policy in their place                                                                                                                               |
+| **Revocation**                    | An Organization Owner taking back a host, a project secret or everything a policy granted. It lasts, and wins over every worktree's pinned policy at once                                                                                                         |
+| **Direct secret**                 | A project secret whose value reaches the workspace's environment, where the agent can read it                                                                                                                                                                     |
+| **Brokered secret**               | A project secret the workspace holds only as a placeholder. The workspace's egress proxy puts the value into one named header, only on HTTPS requests to the hosts it is bound to                                                                                 |
+| **Agent logins**                  | A person's own sign-ins and API keys for their agents (Claude, Codex and others), under Account → Agent logins and Git. They are not project secrets, and they are never brokered                                                                                 |
+| **Docker** (runtime)              | Each workspace runs as a container on the server. Containers share the server's Linux kernel                                                                                                                                                                      |
+| **This server's KVM** (`host-vm`) | Each workspace runs in a virtual machine of its own, with its own Linux kernel and disks, on the server's KVM                                                                                                                                                     |
+
+Write "Access policy", never "profile" (Profile is a page under Account) or "sandbox". Assigning a
+policy copies it: say "copied" or "assigned", never "inherited" or "linked". Project secrets live in
+one place, Project → Variables and secrets, each Direct or Brokered. Agent logins are a person's own
+and stay under Account.
+
+A Docker workspace shares the server's kernel. Never call it isolated, sandboxed, VM-isolated or
+private; say "a container on this server". Only a runtime that gives each workspace its own kernel
+(this server's KVM, Boat) is a VM of its own, and even there say what it is ("a virtual machine of
+its own") rather than "isolated". See [Server environment](/reference/server-environment/).
 
 ## Organizations
 

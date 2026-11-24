@@ -14,6 +14,7 @@ import { failureWords } from "#/lib/refusal";
 import {
   type ImpactRow,
   offerLine,
+  RUNTIME_CHOICE_LABELS,
   RUNTIME_LABELS,
   runtimeChoices,
   runtimeIntro,
@@ -172,9 +173,10 @@ export function RuntimePage() {
 }
 
 const DESCRIPTIONS: Readonly<Record<SessionRuntime, (organization: string) => ReactNode>> = {
-  docker: () => "Workspaces run as containers on this server. They stop when the server stops.",
+  docker: () =>
+    "Workspaces run as containers on this server and share its Linux kernel, so they are not kept apart from the server the way a VM is. They stop when the server stops.",
   "host-vm": () =>
-    "Each workspace runs in a virtual machine of its own on this server's KVM. They stop when the server stops.",
+    "Each workspace runs in a virtual machine of its own, with its own Linux kernel, on this server's KVM. They stop when the server stops.",
   boat: (organization) => (
     <>
       Workspaces run as virtual machines on Boat, away from this server. {organization} pays for
@@ -226,7 +228,7 @@ export function RuntimeList({
           />
           <div className="grid min-w-0 gap-1">
             <label htmlFor={`${id}-${runtime}`} className="font-semibold text-foreground">
-              {RUNTIME_LABELS[runtime]}
+              {RUNTIME_CHOICE_LABELS[runtime]}
             </label>
             <p id={`${id}-${runtime}-about`} className="text-row text-pretty text-muted-foreground">
               {DESCRIPTIONS[runtime](organization)}

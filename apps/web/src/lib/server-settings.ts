@@ -948,16 +948,24 @@ export const sealantNeedsYou = (
 // ---------------------------------------------------------------------------------------------
 // Where sessions run
 
-/** The runtimes this page lists. The server may also offer host-vm, which it does not list yet. */
-export type Runtime = "docker" | "boat";
+/** The runtimes this page lists: every one an organization can be offered. */
+export type Runtime = SessionRuntime;
 
-export const RUNTIMES: ReadonlyArray<Runtime> = ["docker", "boat"];
+export const RUNTIMES: ReadonlyArray<Runtime> = ["docker", "host-vm", "boat"];
 
-export const RUNTIME_NAMES: Readonly<Record<Runtime, string>> = { docker: "Docker", boat: "Boat" };
+export const RUNTIME_NAMES: Readonly<Record<Runtime, string>> = {
+  docker: "Docker",
+  "host-vm": "This server's KVM",
+  boat: "Boat",
+};
 
-/** Where a runtime's workspaces run. */
+/**
+ * Where a runtime's workspaces run. A container shares the server's kernel, so Docker is never
+ * called isolated.
+ */
 export const RUNTIME_PLACES: Readonly<Record<Runtime, string>> = {
-  docker: "Workspaces run as containers on this server.",
+  docker: "Workspaces run as containers on this server, sharing its Linux kernel.",
+  "host-vm": "Each workspace runs in a virtual machine of its own on this server's KVM.",
   boat: "Workspaces run as virtual machines on Boat, through Sealant.",
 };
 

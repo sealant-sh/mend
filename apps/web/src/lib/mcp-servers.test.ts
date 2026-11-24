@@ -7,6 +7,7 @@ import {
   buildWrite,
   draftOf,
   keepsSealedUrl,
+  mcpServerHosts,
   secretsLine,
   stateWords,
   targetLine,
@@ -164,5 +165,23 @@ describe("the add and edit form", () => {
     });
     expect(keepsSealedUrl(draftOf(sealed), sealed)).toBe(true);
     expect(keepsSealedUrl({ ...draftOf(sealed), url: "https://a.dev/mcp" }, sealed)).toBe(false);
+  });
+});
+
+describe("the hosts Restricted egress reaches for a person's MCP servers", () => {
+  it("names each enabled HTTP or SSE server's host once, and never a stdio or disabled one", () => {
+    const sentry = server({
+      name: McpServerName.make("sentry"),
+      transport: { _tag: "sse", url: McpServerUrl.make("https://MCP.sentry.dev/sse") },
+    });
+    const off = server({
+      name: McpServerName.make("notion"),
+      enabled: false,
+      transport: { _tag: "http", url: McpServerUrl.make("https://mcp.notion.com/mcp") },
+    });
+    expect(mcpServerHosts([github, linear, sentry, off, linear])).toEqual([
+      "mcp.linear.app",
+      "mcp.sentry.dev",
+    ]);
   });
 });

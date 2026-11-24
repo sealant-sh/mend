@@ -22,6 +22,7 @@ export type SettingsPageId =
   | "o-members"
   | "o-image"
   | "o-runtime"
+  | "o-access"
   | "o-boat"
   | "o-integrations"
   | "o-folders"
@@ -86,6 +87,7 @@ export const SETTINGS_PAGES: ReadonlyArray<SettingsPage> = [
   entry("o-members", "organization", "Members", "organization/members"),
   entry("o-image", "organization", "Workspace image", "organization/workspace-image"),
   entry("o-runtime", "organization", "Runtime", "organization/runtime"),
+  entry("o-access", "organization", "Access policies", "organization/access-policies"),
   entry("o-boat", "organization", "Boat", "organization/boat"),
   entry("o-integrations", "organization", "Integrations", "organization/integrations"),
   entry("o-folders", "organization", "Folders and references", "organization/folders"),

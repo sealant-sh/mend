@@ -18,6 +18,7 @@ import {
   ScrollTextIcon,
   ServerCogIcon,
   ServerIcon,
+  ShieldCheckIcon,
   SlidersHorizontalIcon,
   SquareTerminalIcon,
   SunMoonIcon,
@@ -61,6 +62,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
       return { to: "/settings/organization/workspace-image" };
     case "o-runtime":
       return { to: "/settings/organization/runtime" };
+    case "o-access":
+      return { to: "/settings/organization/access-policies" };
     case "o-boat":
       return { to: "/settings/organization/boat" };
     case "o-folders":
@@ -126,6 +129,7 @@ export const SETTINGS_ICONS: Partial<Record<SettingsPageId, ReactNode>> = {
   "o-members": <UsersIcon />,
   "o-image": <LayersIcon />,
   "o-runtime": <ContainerIcon />,
+  "o-access": <ShieldCheckIcon />,
   "o-boat": <SailboatIcon />,
   "o-integrations": <BlocksIcon />,
   "o-folders": <FolderIcon />,
