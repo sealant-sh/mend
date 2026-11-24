@@ -165,7 +165,12 @@
 # confirmed (DEnded); the boot pass that binds running executors' scopes again runs before
 # `resume` and reads only. None is a hot-pool, claim, retire, drain or discard call, so no action
 # changes. tlx run at c5d5e3bcf8: every row as expected.
-sync c5d5e3bcf88a89d16ef93f729f308b3a22672634
+# fb43876304 is the same branch after its R2 fixes. In the covered functions: the boot pass that
+# binds running executors' scopes again now also reads Service processes and open forwards and
+# ends before `resume` (reads and Mend's own sockets only); provisionWorkspace names the capture
+# plan's URL over the socket. No hot-pool, claim, retire, drain or discard call changes, so no
+# action changes. tlx run at fb43876304: every row as expected.
+sync fb43876304800ffd084827b6adaf34cbcfe86029
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
