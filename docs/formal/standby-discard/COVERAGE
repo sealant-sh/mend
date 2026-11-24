@@ -150,7 +150,15 @@
 # `hotWorkspaces.setFailed` (RProvFailed). The rest of the launch (the network policy and Brokered
 # secrets on the create) makes no hot-pool, claim, retire, drain or session-process call, so no
 # action models it. --quick tlx run at 920f191281 plus this tree: every row as expected.
-sync 3b2ab9e9d70ae423fbc4a98b50d0c372be3031e6
+# 007f727ba2 is the same branch after its R1 fixes. claimHotSession's fingerprint inputs now name
+# the delivered Brokered secrets and the revocations that reach the worktree (still one
+# `hotWorkspaces.claim`: CScan, CTake, CNone). provisionWorkspace tells a new executor the
+# organization's revocations right after its create; when that fails it stops the executor
+# without `discardUnsaved` (or hands it to the caller's `abandon`) and fails the launch, which
+# for a standby ends in the existing `hotWorkspaces.setFailed` (RProvFailed). No new hot-pool,
+# claim, retire, drain or discard call, so no action changes. tlx run at 007f727ba2: every row
+# as expected.
+sync 007f727ba223e4f4311de2ffc60ccac46e81eb5d
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
