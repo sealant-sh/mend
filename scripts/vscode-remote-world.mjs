@@ -17,7 +17,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { pullImages } from "./ci-images.mjs";
+import { PULL_BACKOFF_MS, pullImages } from "./ci-images.mjs";
 import { describeHealthProbes, describeServerState } from "./vscode-acceptance-evidence.mjs";
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -240,10 +240,9 @@ export const startDind = async ({ name, scratch, home, context, clientEnv, log =
   await run("docker", ["context", "create", context, "--docker", `host=unix://${socket}`], {
     env: clientEnv,
   });
-  const inner = async (args, options = {}) =>
-    (
-      await run("docker", ["--context", context, ...args], { env: clientEnv, ...options })
-    ).stdout.trim();
+  const innerRun = (args, options = {}) =>
+    run("docker", ["--context", context, ...args], { env: clientEnv, ...options });
+  const inner = async (args, options = {}) => (await innerRun(args, options)).stdout.trim();
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const info = await run("docker", ["--context", context, "info"], {
       env: clientEnv,
@@ -252,7 +251,42 @@ export const startDind = async ({ name, scratch, home, context, clientEnv, log =
     if (info.status === 0) break;
     await sleep(500);
   }
-  return { dind, host, socket, inner };
+  return { dind, host, socket, inner, innerRun };
+};
+
+/** The registry mirror's own errors among dockerd's log lines: what each failed pull tried first. */
+export const mirrorErrors = (daemonLog) =>
+  lines(daemonLog)
+    .map((line) => /msg="Attempting next endpoint for pull after error: (.*)"\s*$/.exec(line)?.[1])
+    .filter((error) => error !== undefined && error.includes(new URL(DIND_REGISTRY_MIRROR).host))
+    .map((error) => error.replaceAll('\\"', '"'));
+
+/**
+ * A pull inside the world's daemon by digest, which only its registry mirror can serve (a
+ * `docker tag` cannot make a digest reference), with the tries and waits every ci-images pull
+ * gets. dockerd falls back from the mirror to Docker Hub, which CI refuses, and its error names
+ * only Hub, so each failed try also reports what the mirror answered, read from dockerd's log
+ * (SLNT-1341). `pull` and `daemonLog(since)` run against the daemon; tests pass their own.
+ */
+export const pullInDaemon = async (
+  reference,
+  { pull, daemonLog, log = () => {}, waits = PULL_BACKOFF_MS },
+) => {
+  const failures = [];
+  for (const [index, wait] of waits.entries()) {
+    if (wait > 0) await sleep(wait);
+    const since = new Date().toISOString();
+    const pulled = await pull(reference);
+    if (pulled.status === 0) return;
+    const mirror = mirrorErrors(await daemonLog(since));
+    const failure = [
+      `try ${index + 1} of ${waits.length}: ${(pulled.stderr || pulled.stdout).trim()}`,
+      ...mirror.map((error) => `  tried first: ${error}`),
+    ].join("\n");
+    failures.push(failure);
+    log(`${reference}: ${failure}`);
+  }
+  throw new Error(`${reference} could not be pulled in the daemon:\n${failures.join("\n")}`);
 };
 
 /**
@@ -260,8 +294,10 @@ export const startDind = async ({ name, scratch, home, context, clientEnv, log =
  * there (pinned by digest; `docker load` into a classic image store drops repo digests), and the
  * workspace base built: node with sudo and acl, so the image can take a person per Linux user
  * (ADR 0016, the 0.36 default) and Remote-SSH lands as the person. All before the first request.
+ * `daemon` is what startDind returned.
  */
-export const prepareDaemon = async ({ inner, scratch, serverImage, baseTag, log }) => {
+export const prepareDaemon = async ({ daemon, scratch, serverImage, baseTag, log }) => {
+  const { inner, innerRun, dind } = daemon;
   log("copying the server's images into its daemon");
   const saved = path.join(scratch, "images.tar");
   await docker(["save", "-o", saved, serverImage, ...SERVER_SUPPORT_IMAGES, WORKSPACE_BASE_IMAGE], {
@@ -276,7 +312,16 @@ export const prepareDaemon = async ({ inner, scratch, serverImage, baseTag, log 
     "--format",
     '{{index .Config.Labels "dev.sealant.mend.network-guard-image"}}',
   ]);
-  if (guardImage !== "") await inner(["pull", "-q", guardImage], { timeout: 300_000 });
+  if (guardImage !== "")
+    await pullInDaemon(guardImage, {
+      pull: (reference) =>
+        innerRun(["pull", "-q", reference], { timeout: 300_000, allowFailure: true }),
+      daemonLog: async (since) => {
+        const logs = await run("docker", ["logs", "--since", since, dind], { allowFailure: true });
+        return `${logs.stdout}\n${logs.stderr}`;
+      },
+      log,
+    });
   const baseContext = path.join(scratch, "base");
   fs.mkdirSync(baseContext);
   fs.writeFileSync(

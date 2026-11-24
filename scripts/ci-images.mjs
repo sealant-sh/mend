@@ -113,7 +113,7 @@ export const CI_IMAGES = {
 };
 
 // CI_IMAGES_PULL_WAITS_MS (comma-separated) shortens the waits for a test that fakes a refusal.
-const PULL_BACKOFF_MS = process.env.CI_IMAGES_PULL_WAITS_MS
+export const PULL_BACKOFF_MS = process.env.CI_IMAGES_PULL_WAITS_MS
   ? process.env.CI_IMAGES_PULL_WAITS_MS.split(",").map(Number)
   : [0, 10_000, 30_000];
 // A copy that is not on GHCR yet (a digest changed in this PR, before ci-images.yml ran on main).

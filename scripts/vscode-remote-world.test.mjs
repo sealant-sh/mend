@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { metadataResolvers } from "./vscode-remote-world.mjs";
+import { metadataResolvers, mirrorErrors, pullInDaemon } from "./vscode-remote-world.mjs";
 
 test("finds Azure's WireServer among the resolvers Docker hands a container", () => {
   // A Docker-written resolv.conf on an Azure host whose systemd-resolved forwards to WireServer.
@@ -27,4 +27,56 @@ test("keeps a machine whose resolvers are not metadata addresses, comments inclu
     "options edns0 trust-ad",
   ].join("\n");
   assert.deepEqual(metadataResolvers(office), []);
+});
+
+// dockerd's log of one pull of the guard image whose mirror was down, as a docker:27.5.1-dind
+// daemon wrote it with mirror.gcr.io unreachable and Docker Hub at 0.0.0.0 (SLNT-1341).
+const mirrorDownLog = [
+  'time="2026-11-24T17:36:35.574636734Z" level=warning msg="Error getting v2 registry: Get \\"https://mirror.gcr.io/v2/\\": dial tcp 0.0.0.0:443: connect: connection refused"',
+  'time="2026-11-24T17:36:35.574659427Z" level=info msg="Attempting next endpoint for pull after error: Get \\"https://mirror.gcr.io/v2/\\": dial tcp 0.0.0.0:443: connect: connection refused"',
+  'time="2026-11-24T17:36:35.574766528Z" level=info msg="Attempting next endpoint for pull after error: Get \\"https://registry-1.docker.io/v2/\\": dial tcp 0.0.0.0:443: connect: connection refused"',
+].join("\n");
+const hubRefused =
+  'Error response from daemon: Get "https://registry-1.docker.io/v2/": dial tcp 0.0.0.0:443: connect: connection refused';
+const guard =
+  "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
+
+/** A daemon whose pulls answer from a script, in order, with the log a failed pull leaves. */
+const scriptedDaemon = (outcomes) => {
+  const pulls = [];
+  return {
+    pulls,
+    pull: async (reference) => {
+      pulls.push(reference);
+      return outcomes.shift() === "ok"
+        ? { status: 0, stdout: "", stderr: "" }
+        : { status: 1, stdout: "", stderr: hubRefused };
+    },
+    daemonLog: async () => mirrorDownLog,
+  };
+};
+
+test("names the mirror's error that dockerd's Docker Hub fallback hides", () => {
+  assert.deepEqual(mirrorErrors(mirrorDownLog), [
+    'Get "https://mirror.gcr.io/v2/": dial tcp 0.0.0.0:443: connect: connection refused',
+  ]);
+});
+
+test("a guard pull the mirror refuses once is tried again, and lands", async () => {
+  const daemon = scriptedDaemon(["refused", "ok"]);
+  const logged = [];
+  await pullInDaemon(guard, { ...daemon, waits: [0, 0, 0], log: (line) => logged.push(line) });
+  assert.deepEqual(daemon.pulls, [guard, guard]);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /try 1 of 3: .*registry-1\.docker\.io/);
+  assert.match(logged[0], /tried first: Get "https:\/\/mirror\.gcr\.io\/v2\/"/);
+});
+
+test("a guard pull the mirror never serves fails naming the mirror's error on every try", async () => {
+  const daemon = scriptedDaemon([]);
+  await assert.rejects(pullInDaemon(guard, { ...daemon, waits: [0, 0, 0] }), (error) => {
+    assert.equal(daemon.pulls.length, 3);
+    assert.equal(error.message.match(/tried first: Get "https:\/\/mirror\.gcr\.io/g)?.length, 3);
+    return true;
+  });
 });

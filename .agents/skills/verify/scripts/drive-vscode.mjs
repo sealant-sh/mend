@@ -303,7 +303,7 @@ const up = async () => {
   const sshPort = 2222;
   const origin = `http://${daemon.host}:${port}`;
   const baseTag = `${names.world}-base:latest`;
-  await world.prepareDaemon({ inner: daemon.inner, scratch, serverImage, baseTag, log: say });
+  await world.prepareDaemon({ daemon, scratch, serverImage, baseTag, log: say });
   if (serverImage !== `ghcr.io/sealant-sh/mend:${version}`)
     await daemon.inner(["tag", serverImage, `ghcr.io/sealant-sh/mend:${version}`]);
   say(`server setup on ${origin} · workspace SSH on ${daemon.host}:${sshPort}`);
