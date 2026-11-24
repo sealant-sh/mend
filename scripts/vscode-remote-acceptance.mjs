@@ -136,7 +136,7 @@ const main = async () => {
   const { host, inner } = daemon;
   const origin = `http://${host}:${port}`;
   const workspaceBase = `${id}-base:latest`;
-  await prepareDaemon({ inner, scratch, serverImage: image, baseTag: workspaceBase, log });
+  await prepareDaemon({ daemon, scratch, serverImage: image, baseTag: workspaceBase, log });
 
   log(`server setup on ${origin}, workspace SSH on ${host}:${sshPort}`);
   await installServer({ version, context, origin, port, sshPort, clientEnv, inner, log });
