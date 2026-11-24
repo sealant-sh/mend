@@ -136,7 +136,7 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
    `start-session.web-answer`, `review-change.web-comments`, `land-change.panel-read`,
    `pull-change.boat-run`, `attach-resume.rename-web`, then `start-session.antigravity-conversation`
    last: its turns run in boat-run's worktree, which the flows before it read as boat-run left it
-5. `start-session.docker-run`
+5. `start-session.docker-run`, then `session-shell.docker-isolation`
 6. `start-session.boat-live`, `attach-resume.attach-detach`, `attach-resume.terminal-and-web`,
    `session-shell.live-shell`, `git-access.workspace-push`, `shared-control.refuse-script`,
    `services.cli-run`, `capture-and-save.live-stop`
@@ -1351,6 +1351,35 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 - **Box-only:** no
 - **Sample:** yes
 - **Areas:** `packages/sessions/`, `apps/api/src/`, `apps/cli/src/`
+
+### session-shell.docker-isolation
+
+- **Map:** session-shell.md `shell-cli`, `shell-holds`; capture-and-save.md `capture-stop-line`,
+  `capture-sessions`; start-session.md `session-stop`
+- **Needs:** Docker; no turn; CLI in tmux; a copy without Boat (lane B), where a new worktree runs on
+  Docker, upgraded from the run's data (its install from before workspaces left `mend_default`)
+- **Do:** Read Postgres's address on the box:
+  `docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' mend-postgres-1`
+  over `MEND_VERIFY_BOX_SSH` (`<pg ip>`, its first address). In tmux, start a session that stays up:
+  `M run --project <p> --name main-run-isolation-<sha8> -- sleep 900`; read its `<id8>` from
+  `M sessions`; then `M shell <id8>` in a second tmux session. In the shell, each followed by
+  `echo exit=$?`: `getent hosts postgres garage mend`,
+  `curl -sS -m 5 -o /dev/null http://garage:3900/`,
+  `curl -sS -m 5 -o /dev/null telnet://<pg ip>:5432`,
+  `curl -sS -m 10 -o /dev/null -w '%{http_code}\n' https://example.com/`; then
+  `date -u > /workspace/repo/ISOLATION.md` and `exit`. Last, `M stop <id8>` and read
+  `M sessions --project <p> --all --json` until it settles.
+- **See:** `getent` prints nothing and `exit=2`: none of the server's names resolves in the workspace;
+  the Garage request fails to resolve `garage` (curl `exit=6`); the Postgres address is refused or
+  unreachable (curl `exit=7` or `28`), never connected; `example.com` answers `200` with `exit=0`.
+  The session settles with a `capture` object with `"notSaved": false`: its work was saved over the
+  executor's own `capture.sock`, with Mend off the workspace's network. A name that resolves, a
+  connection to Postgres, or a settled session with `"notSaved": true` or no `capture` is failed.
+- **Mode:** `agent`
+- **Box-only:** `upgrade-real-data`
+- **Areas:** `deploy/docker/compose.v2.yaml`, `deploy/docker/compose.mirrors.yaml`,
+  `scripts/bundle-supervisor.mjs`, `packages/sessions/src/executor-sockets.ts`,
+  `packages/sessions/src/script-transport.ts`, `apps/cli/src/server-mirrors.ts`
 
 ### start-session.boat-live
 
