@@ -1356,8 +1356,8 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 
 - **Map:** session-shell.md `shell-cli`, `shell-holds`; capture-and-save.md `capture-stop-line`,
   `capture-sessions`; start-session.md `session-stop`
-- **Needs:** Docker; no turn; CLI in tmux; a copy without Boat (lane B), where a new worktree runs on
-  Docker, upgraded from the run's data (its install from before workspaces left `mend_default`)
+- **Needs:** Docker; no turn; CLI in tmux; a copy without Boat (lane B), where a new worktree runs
+  on Docker, upgraded from the run's data (its install from before workspaces left `mend_default`)
 - **Do:** Read Postgres's address on the box:
   `docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' mend-postgres-1`
   over `MEND_VERIFY_BOX_SSH` (`<pg ip>`, its first address). In tmux, start a session that stays up:
@@ -1369,12 +1369,13 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `curl -sS -m 10 -o /dev/null -w '%{http_code}\n' https://example.com/`; then
   `date -u > /workspace/repo/ISOLATION.md` and `exit`. Last, `M stop <id8>` and read
   `M sessions --project <p> --all --json` until it settles.
-- **See:** `getent` prints nothing and `exit=2`: none of the server's names resolves in the workspace;
-  the Garage request fails to resolve `garage` (curl `exit=6`); the Postgres address is refused or
-  unreachable (curl `exit=7` or `28`), never connected; `example.com` answers `200` with `exit=0`.
-  The session settles with a `capture` object with `"notSaved": false`: its work was saved over the
-  executor's own `capture.sock`, with Mend off the workspace's network. A name that resolves, a
-  connection to Postgres, or a settled session with `"notSaved": true` or no `capture` is failed.
+- **See:** `getent` prints nothing and `exit=2`: none of the server's names resolves in the
+  workspace; the Garage request fails to resolve `garage` (curl `exit=6`); the Postgres address is
+  refused or unreachable (curl `exit=7` or `28`), never connected; `example.com` answers `200` with
+  `exit=0`. The session settles with a `capture` object with `"notSaved": false`: its work was saved
+  over the executor's own `capture.sock`, with Mend off the workspace's network. A name that
+  resolves, a connection to Postgres, or a settled session with `"notSaved": true` or no `capture`
+  is failed.
 - **Mode:** `agent`
 - **Box-only:** `upgrade-real-data`
 - **Areas:** `deploy/docker/compose.v2.yaml`, `deploy/docker/compose.mirrors.yaml`,
