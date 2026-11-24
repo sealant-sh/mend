@@ -6,6 +6,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { SessionRuntime } from "@mend/domain";
 import {
   HOST_USER_NAMESPACE_FILES,
   HOST_USER_NAMESPACE_SYSCTL_FILE,
@@ -404,7 +405,10 @@ const reportServer = (
 };
 
 interface SetupOptions {
-  /** `--session-runtime`: where an organization's new sessions run until it chooses. */
+  /**
+   * `--session-runtime`: where an organization's new sessions run until it chooses. Setup offers
+   * docker and boat only; host-vm is not one of its choices yet.
+   */
   readonly sessionRuntime?: "docker" | "boat";
   /** `--session-runtimes`: the runtimes organizations may choose among. */
   readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
@@ -491,13 +495,16 @@ interface SetupOptions {
 
 /** Parsed server configuration shared by setup and lifecycle commands. */
 export interface ServerConfig {
-  /** Where an organization's new sessions run until it chooses (`MEND_SESSION_RUNTIME`). */
-  readonly sessionRuntime?: "docker" | "boat";
+  /**
+   * Where an organization's new sessions run until it chooses (`MEND_SESSION_RUNTIME`). Setup writes
+   * docker or boat; a config that names host-vm reads back as it is.
+   */
+  readonly sessionRuntime?: SessionRuntime;
   /**
    * The runtimes organizations may choose among (`MEND_SESSION_RUNTIMES`). Absent on a server set
    * up before organizations chose: it offers `sessionRuntime` alone.
    */
-  readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
+  readonly sessionRuntimes?: ReadonlyArray<SessionRuntime>;
   /** Remote workspaces use HTTPS through the operator's proxy; absent keeps Docker-network URLs. */
   readonly remoteEndpoints?: ServerRemoteEndpoints;
   /** Boat sessions' deployment and resources (server-boat.ts); the server's own key is in server.env only. */
@@ -700,11 +707,19 @@ const sessionRuntimeOf = (input: unknown): "docker" | "boat" => {
   );
 };
 
-/** The saved offered list: an array of runtimes, each once. */
-const savedSessionRuntimesOf = (input: unknown): ReadonlyArray<"docker" | "boat"> => {
-  if (!Array.isArray(input) || input.length === 0)
-    throw setupError("Server config is corrupt: sessionRuntimes must list docker, boat or both.");
-  return sessionRuntimesOf(input.join(","));
+const isSessionRuntime = Schema.is(SessionRuntime);
+
+/** A saved default: what setup writes (docker or boat), or host-vm, set another way. */
+const savedSessionRuntimeOf = (input: unknown): SessionRuntime =>
+  input === "host-vm" ? input : sessionRuntimeOf(input);
+
+/** The saved offered list: an array of runtimes, each once; host-vm reads back too. */
+const savedSessionRuntimes = (input: unknown): ReadonlyArray<SessionRuntime> => {
+  if (!Array.isArray(input) || input.length === 0 || !input.every(isSessionRuntime))
+    throw setupError(
+      "Server config is corrupt: sessionRuntimes must list docker, host-vm or boat, each once.",
+    );
+  return [...new Set(input)];
 };
 
 /** `docker,boat`: the runtimes a server offers, each once, in the order given. */
@@ -725,9 +740,9 @@ const sessionRuntimesOf = (input: unknown): ReadonlyArray<"docker" | "boat"> => 
 
 /** Where this server lets sessions run: its offered list, else its one runtime (Docker unset). */
 export const offeredSessionRuntimes = (settings: {
-  readonly sessionRuntime?: "docker" | "boat";
-  readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
-}): ReadonlyArray<"docker" | "boat"> =>
+  readonly sessionRuntime?: SessionRuntime;
+  readonly sessionRuntimes?: ReadonlyArray<SessionRuntime>;
+}): ReadonlyArray<SessionRuntime> =>
   settings.sessionRuntimes ?? [settings.sessionRuntime ?? "docker"];
 
 /**
@@ -761,7 +776,7 @@ const withoutBoat = (
 ): Pick<ServerConfig, "sessionRuntime" | "sessionRuntimes"> => {
   if (runtimes.sessionRuntimes === undefined)
     return runtimes.sessionRuntime === "boat" ? {} : runtimes;
-  const offered: ReadonlyArray<"docker" | "boat"> = runtimes.sessionRuntimes.filter(
+  const offered: ReadonlyArray<SessionRuntime> = runtimes.sessionRuntimes.filter(
     (runtime) => runtime !== "boat",
   );
   if (offered.length === 0) return {};
@@ -1844,10 +1859,10 @@ const parseServerConfig = (raw: string): ServerConfig => {
     );
   const config: ServerConfig = {
     ...(fields.has("sessionRuntime")
-      ? { sessionRuntime: sessionRuntimeOf(fields.get("sessionRuntime")) }
+      ? { sessionRuntime: savedSessionRuntimeOf(fields.get("sessionRuntime")) }
       : {}),
     ...(fields.has("sessionRuntimes")
-      ? { sessionRuntimes: savedSessionRuntimesOf(fields.get("sessionRuntimes")) }
+      ? { sessionRuntimes: savedSessionRuntimes(fields.get("sessionRuntimes")) }
       : {}),
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     ...(boat === undefined ? {} : { boat }),

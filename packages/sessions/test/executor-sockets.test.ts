@@ -451,3 +451,139 @@ describe("a recovery boot", () => {
     expect(fs.existsSync(path.join(root, "..", "escape"))).toBe(false);
   });
 });
+
+describe("the object store capture.sock relays to", () => {
+  it("is MEND_BLOB_STORE_PUBLIC_URL's, else MEND_BLOB_STORE's endpoint, scheme kept", () => {
+    expect(objectStoreEndpointOf("http://garage:3900", "https://s3.example.com")).toEqual({
+      hostname: "garage",
+      port: 3900,
+      protocol: "http",
+    });
+    expect(objectStoreEndpointOf(undefined, "http://garage:3900")).toEqual({
+      hostname: "garage",
+      port: 3900,
+      protocol: "http",
+    });
+    expect(objectStoreEndpointOf(undefined, "https://s3.example.com")).toEqual({
+      hostname: "s3.example.com",
+      port: 443,
+      protocol: "https",
+    });
+    expect(objectStoreEndpointOf(undefined, undefined)).toBeNull();
+  });
+
+  it("takes a Host without a port for an https store's default port", () => {
+    const s3 = objectStoreEndpointOf(undefined, "https://s3.example.com");
+    const put = (host: string) =>
+      classifyCaptureSocketRequest(
+        { method: "PUT", target: `/mend/k?${SIGNED_QUERY}`, headers: { host } },
+        s3,
+      );
+    expect(put("s3.example.com")).toEqual({ kind: "object" });
+    expect(put("s3.example.com:443")).toEqual({ kind: "object" });
+    expect(put("s3.example.com:80")).toMatchObject({ status: 403 });
+  });
+});
+
+describe("capture.sock and more than one Host", () => {
+  it("answers 400 to a request naming Host twice, and goes on serving", async () => {
+    const answer = await exchange(
+      capturePath,
+      `PUT /mend/k?${SIGNED_QUERY} HTTP/1.1\r\nHost: 127.0.0.1:${storePort}\r\n` +
+        `Host: garage:3903\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`,
+    );
+    expect(statusOf(answer)).toBe(400);
+    expect(
+      classifyCaptureSocketRequest(
+        {
+          method: "PUT",
+          target: `/k?${SIGNED_QUERY}`,
+          headers: { host: "garage:3900" },
+          rawHeaders: ["Host", "garage:3900", "host", "garage:3903"],
+        },
+        objectStoreEndpointOf("http://garage:3900"),
+      ),
+    ).toMatchObject({ status: 400 });
+    const heartbeat = await post(capturePath, "/lease.heartbeat", launchToken, {
+      worktree_id: "wt",
+      epoch: 1,
+    });
+    expect(statusOf(heartbeat)).toBe(200);
+  });
+});
+
+describe("binding one scope", () => {
+  it("binds one call at a time: the last asked is what the scope serves", async () => {
+    const scope = "sealant-run-3";
+    const dir = path.join(root, scope);
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const sockets = yield* ExecutorSockets;
+        yield* Effect.all(
+          [
+            sockets.bind({ scope, launchId: LAUNCH, mode: "normal" }),
+            sockets.bind({ scope, launchId: LAUNCH, mode: "recover" }),
+            sockets.bind({ scope, launchId: LAUNCH, mode: "normal" }),
+            sockets.bind({ scope, launchId: LAUNCH, mode: "recover" }),
+          ],
+          { concurrency: "unbounded" },
+        );
+      }),
+    );
+    expect(fs.readdirSync(dir)).toEqual([CAPTURE_SOCKET_NAME]);
+    const heartbeat = await post(
+      path.join(dir, CAPTURE_SOCKET_NAME),
+      "/lease.heartbeat",
+      launchToken,
+      {
+        worktree_id: "wt",
+        epoch: 1,
+      },
+    );
+    expect(statusOf(heartbeat)).toBe(200);
+  });
+
+  it("closes a Git tunnel the session socket handed over when the scope turns to recovery", async () => {
+    const scope = "sealant-run-4";
+    const session = SessionId.make("sess-executor-sockets-tunnel");
+    const launch = "launch-executor-4";
+    const holding: SessionSocketApi = {
+      ...sessionApi,
+      capture: undefined,
+      captureAs: undefined,
+      // The tunnel waits on Mend's signer, as one whose remote is slow to answer does.
+      gitTransport: () => Effect.never,
+      channelFor: () => Effect.succeed({ ok: true, api: holding }),
+    };
+    const person = await runtime.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* SessionChannelRegistry;
+        const tokens = yield* SessionChannelTokensRepo;
+        registry.register(session, holding);
+        const token = yield* tokens.issuePerson(launch, "account-anna");
+        yield* tokens.issue(session, launch);
+        const sockets = yield* ExecutorSockets;
+        yield* sockets.bind({ scope, launchId: launch, mode: "normal" });
+        return token;
+      }),
+    );
+    const tunnel = net.createConnection(path.join(root, scope, SESSION_SOCKET_NAME));
+    const closed = new Promise<void>((resolve) => tunnel.on("close", () => resolve()));
+    tunnel.on("error", () => undefined);
+    tunnel.write(
+      `CONNECT /git/transport HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${person}\r\n` +
+        `x-mend-session-id: ${session}\r\nx-mend-git-host: github.com\r\n` +
+        `x-mend-git-command: git-upload-pack 'acme/api.git'\r\n\r\n`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(tunnel.destroyed).toBe(false);
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const sockets = yield* ExecutorSockets;
+        yield* sockets.bind({ scope, launchId: launch, mode: "recover" });
+      }),
+    );
+    await closed;
+    expect(fs.readdirSync(path.join(root, scope))).toEqual([CAPTURE_SOCKET_NAME]);
+  });
+});

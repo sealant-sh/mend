@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as http from "node:http";
+import * as https from "node:https";
 import type * as net from "node:net";
 import * as path from "node:path";
 
@@ -55,33 +56,45 @@ export interface ObjectStoreEndpoint {
   /** Lowercase, without brackets for an IPv6 literal. */
   readonly hostname: string;
   readonly port: number;
+  /**
+   * How the relay reaches the store: as configured, so an https store is never dialled in plain
+   * http. The executor's side of the socket is always plain HTTP: the relay reads each `Host`.
+   */
+  readonly protocol: "http" | "https";
 }
 
-/**
- * The store `capture.sock` relays presigned requests to: the host and port of
- * `MEND_BLOB_STORE_PUBLIC_URL`, the one executors' URLs are minted against. Null when there is
- * none, or when it is https: sealantd dials an https URL over TLS through the socket, which a
- * relay that reads each request's `Host` cannot read.
- */
-export const objectStoreEndpointOf = (
-  publicUrl: string | undefined,
-): ObjectStoreEndpoint | null => {
-  if (publicUrl === undefined) return null;
+const endpointOfUrl = (raw: string | undefined): ObjectStoreEndpoint | null => {
+  if (raw === undefined || raw.trim() === "") return null;
   let url: URL;
   try {
-    url = new URL(publicUrl);
+    url = new URL(raw);
   } catch {
     return null;
   }
-  if (url.protocol !== "http:" || url.hostname === "") return null;
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.hostname === "") return null;
+  const protocol = url.protocol === "https:" ? "https" : "http";
   return {
     hostname: url.hostname.replace(/^\[|\]$/g, "").toLowerCase(),
-    port: url.port === "" ? 80 : Number(url.port),
+    port: url.port === "" ? (protocol === "https" ? 443 : 80) : Number(url.port),
+    protocol,
   };
 };
 
-/** A `Host` header's host and port (80 when it names none), or null when it is not one. */
-const hostHeaderOf = (value: string): ObjectStoreEndpoint | null => {
+/**
+ * The store `capture.sock` relays presigned requests to: the host and port of
+ * `MEND_BLOB_STORE_PUBLIC_URL`, the one executors' URLs are minted against, else the endpoint
+ * `MEND_BLOB_STORE` names (`s3://…?endpoint=…`), which is what URLs are minted against then. Its
+ * scheme is kept: an https store is relayed to over TLS. Null when neither names one.
+ */
+export const objectStoreEndpointOf = (
+  publicUrl: string | undefined,
+  storeEndpoint?: string,
+): ObjectStoreEndpoint | null => endpointOfUrl(publicUrl) ?? endpointOfUrl(storeEndpoint);
+
+/** A `Host` header's host and port (null when it names none), or null when it is not one. */
+const hostHeaderOf = (
+  value: string,
+): { readonly hostname: string; readonly port: number | null } | null => {
   if (value === "" || /[\s/\\?#@]/.test(value)) return null;
   let url: URL;
   try {
@@ -90,10 +103,29 @@ const hostHeaderOf = (value: string): ObjectStoreEndpoint | null => {
     return null;
   }
   if (url.hostname === "") return null;
+  // `URL` drops a port that is its scheme's default, so read the port from the header itself.
+  const explicitPort = /:(\d+)$/.exec(value);
   return {
     hostname: url.hostname.replace(/^\[|\]$/g, "").toLowerCase(),
-    port: url.port === "" ? 80 : Number(url.port),
+    port: explicitPort === null || value.endsWith("]") ? null : Number(explicitPort[1]),
   };
+};
+
+/** Whether a request's `Host` names the store: its host, and its port or the scheme's default. */
+const namesStore = (
+  host: { readonly hostname: string; readonly port: number | null },
+  store: ObjectStoreEndpoint,
+): boolean =>
+  host.hostname === store.hostname &&
+  (host.port ?? (store.protocol === "https" ? 443 : 80)) === store.port;
+
+/** How many `Host` headers a request carries, from its raw headers. */
+const hostHeaderCount = (rawHeaders: ReadonlyArray<string>): number => {
+  let count = 0;
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    if ((rawHeaders[index] ?? "").toLowerCase() === "host") count += 1;
+  }
+  return count;
 };
 
 /** What `capture.sock` does with one request, decided before any credential is read. */
@@ -123,6 +155,8 @@ export const classifyCaptureSocketRequest = (
     readonly method: string;
     readonly target: string;
     readonly headers: http.IncomingHttpHeaders;
+    /** The headers as they came, every repeat kept (`IncomingMessage.rawHeaders`). */
+    readonly rawHeaders?: ReadonlyArray<string>;
   },
   store: ObjectStoreEndpoint | null,
 ): CaptureSocketRequest => {
@@ -138,6 +172,10 @@ export const classifyCaptureSocketRequest = (
   if (request.target.startsWith("//")) {
     return refuse(400, "capture.sock reads a request target that starts with one /");
   }
+  // Node keeps the first of several `Host` headers; a relay and a store may each read another.
+  if (request.rawHeaders !== undefined && hostHeaderCount(request.rawHeaders) > 1) {
+    return refuse(400, "a request to capture.sock names one Host");
+  }
   const hostHeader = request.headers.host;
   const host = typeof hostHeader === "string" ? hostHeaderOf(hostHeader) : null;
   if (host === null) return refuse(400, "a request to capture.sock names its Host");
@@ -147,7 +185,7 @@ export const classifyCaptureSocketRequest = (
   } catch {
     return refuse(400, "capture.sock cannot read this request target");
   }
-  if (store !== null && host.hostname === store.hostname && host.port === store.port) {
+  if (store !== null && namesStore(host, store)) {
     if (!OBJECT_METHODS.has(request.method)) {
       return refuse(405, "capture.sock relays GET, HEAD and PUT to the object store");
     }
@@ -196,7 +234,7 @@ const relayObjectRequest = (
   request: http.IncomingMessage,
   response: http.ServerResponse,
 ): void => {
-  const upstream = http.request({
+  const options = {
     host: store.hostname,
     port: store.port,
     method: request.method ?? "GET",
@@ -204,7 +242,11 @@ const relayObjectRequest = (
     headers: rawHeadersBeyondHop(request.rawHeaders),
     setHost: false,
     agent: false,
-  });
+  } as const;
+  const upstream =
+    store.protocol === "https"
+      ? https.request({ ...options, servername: store.hostname })
+      : http.request(options);
   upstream.on("response", (answer) => {
     response.writeHead(answer.statusCode ?? 502, rawHeadersBeyondHop(answer.rawHeaders));
     answer.pipe(response);
@@ -335,8 +377,19 @@ const makeExecutorSockets = (
   Effect.gen(function* () {
     const registry = yield* SessionChannelRegistry;
     const tokens = yield* SessionChannelTokensRepo;
-    const store = objectStoreEndpointOf((yield* BlobStoreConfig).publicUrl);
+    const blobStore = yield* BlobStoreConfig;
+    const store = objectStoreEndpointOf(
+      blobStore.publicUrl,
+      blobStore.target.kind === "s3" ? blobStore.target.endpoint : undefined,
+    );
     const bound = new Map<string, ReadonlyArray<http.Server>>();
+    /**
+     * Each scope's upgraded connections (a Git tunnel, an `Upgrade`): once handed over they are
+     * no longer the server's, so `closeAllConnections` would leave them open past their scope.
+     */
+    const upgraded = new Map<string, Set<net.Socket>>();
+    /** Each scope's last bind or unbind: the next one waits for it, so two never interleave. */
+    const pending = new Map<string, Promise<unknown>>();
 
     const close = (scope: string): void => {
       for (const server of bound.get(scope) ?? []) {
@@ -344,6 +397,24 @@ const makeExecutorSockets = (
         server.closeAllConnections();
       }
       bound.delete(scope);
+      for (const socket of upgraded.get(scope) ?? []) socket.destroy();
+      upgraded.delete(scope);
+    };
+
+    /** Run `work` for `scope` after every bind or unbind of it already asked for has ended. */
+    const inTurn = <A>(scope: string, work: () => Promise<A>): Promise<A> => {
+      const before = pending.get(scope) ?? Promise.resolve();
+      const turn = before.then(work, work);
+      const settled = turn.then(
+        () => undefined,
+        () => undefined,
+      );
+      pending.set(scope, settled);
+      void settled.then(() => {
+        if (pending.get(scope) === settled) pending.delete(scope);
+        return undefined;
+      });
+      return turn;
     };
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
@@ -364,7 +435,12 @@ const makeExecutorSockets = (
       });
       const serveCapture = (request: http.IncomingMessage, response: http.ServerResponse) => {
         const sorted = classifyCaptureSocketRequest(
-          { method: request.method ?? "", target: request.url ?? "", headers: request.headers },
+          {
+            method: request.method ?? "",
+            target: request.url ?? "",
+            headers: request.headers,
+            rawHeaders: request.rawHeaders,
+          },
           store,
         );
         if (sorted.kind === "refused") {
@@ -403,7 +479,7 @@ const makeExecutorSockets = (
       return server;
     };
 
-    const sessionServer = (launchId: string): http.Server => {
+    const sessionServer = (scope: string, launchId: string): http.Server => {
       // A person's token only (docs/adr/0016, decision 4): the launch's own token is the capture
       // credential, which reaches capture.sock and nothing else. Captures travel over
       // capture.sock: the routes this socket serves carry none.
@@ -417,9 +493,21 @@ const makeExecutorSockets = (
         const api: SessionSocketApi = { ...auth.api, capture: undefined, captureAs: undefined };
         return { ...auth, api };
       }, registry);
+      const held = (socket: net.Socket) => {
+        const sockets = upgraded.get(scope) ?? new Set<net.Socket>();
+        sockets.add(socket);
+        upgraded.set(scope, sockets);
+        socket.once("close", () => sockets.delete(socket));
+      };
       const server = http.createServer(handlers.onRequest);
-      server.on("connect", handlers.onConnect);
-      server.on("upgrade", handlers.onUpgrade);
+      server.on("connect", (request: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
+        held(socket);
+        handlers.onConnect(request, socket, head);
+      });
+      server.on("upgrade", (request: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
+        held(socket);
+        handlers.onUpgrade(request, socket, head);
+      });
       server.maxHeadersCount = 64;
       server.headersTimeout = 10_000;
       return server;
@@ -439,7 +527,7 @@ const makeExecutorSockets = (
         { server: captureServer(binding.launchId), path: capturePath },
         ...(binding.mode === "recover"
           ? []
-          : [{ server: sessionServer(binding.launchId), path: sessionPath }]),
+          : [{ server: sessionServer(binding.scope, binding.launchId), path: sessionPath }]),
       ];
       try {
         for (const entry of servers) {
@@ -467,9 +555,14 @@ const makeExecutorSockets = (
           message: `not an executor scope: ${JSON.stringify(binding.scope)}`,
         });
       }
-      close(binding.scope);
       return yield* Effect.tryPromise({
-        try: () => bindIn(path.join(root, binding.scope), binding),
+        // A re-bind closes what the scope served first, tunnels included: a scope that turns to
+        // recovery keeps no session connection open.
+        try: () =>
+          inTurn(binding.scope, () => {
+            close(binding.scope);
+            return bindIn(path.join(root, binding.scope), binding);
+          }),
         catch: (cause) =>
           new ExecutorScopeError({
             message: `could not bind ${binding.scope}'s sockets: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -479,11 +572,13 @@ const makeExecutorSockets = (
 
     const unbind = Effect.fn("ExecutorSockets.unbind")(function* (scope: string) {
       if (!SCOPE_SHAPE.test(scope)) return;
-      yield* Effect.sync(() => {
-        close(scope);
-        fs.rmSync(path.join(root, scope, CAPTURE_SOCKET_NAME), { force: true });
-        fs.rmSync(path.join(root, scope, SESSION_SOCKET_NAME), { force: true });
-      });
+      yield* Effect.promise(() =>
+        inTurn(scope, async () => {
+          close(scope);
+          fs.rmSync(path.join(root, scope, CAPTURE_SOCKET_NAME), { force: true });
+          fs.rmSync(path.join(root, scope, SESSION_SOCKET_NAME), { force: true });
+        }),
+      );
     });
 
     return ExecutorSockets.of({ bind, unbind });

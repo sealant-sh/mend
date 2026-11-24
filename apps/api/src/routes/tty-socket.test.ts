@@ -126,6 +126,9 @@ const platformWorkspace = (id: string): Workspace => ({
   expire: unused,
   sshAsRoot: unused,
   forward: unused,
+  applyNetworkPolicy: unused,
+  revokeAccess: unused,
+  networkPolicy: unused,
 });
 const wait = (signal: Deferred.Deferred<void>) =>
   Effect.runPromise(Deferred.await(signal).pipe(Effect.timeout("3 seconds")));

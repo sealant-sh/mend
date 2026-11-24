@@ -259,7 +259,8 @@ What the overlay does, and what it states on your behalf:
   `MEND_EDGE_SUBNET` when that range is already routed where the host lives, and the trusted range
   follows it.
 - `MEND_EXECUTOR_NETWORK=private`: workspaces reach the session channel and Garage over plain HTTP
-  on the Compose network, which never leaves the host. Mend reports this as declared.
+  on their own networks, which Mend and Garage join and which never leave the host. Mend reports
+  this as declared.
 - `MEND_EXPOSURE` (default `private`), `MEND_URL_BEARERS` (default `accept`),
   `MEND_EXPOSURE_REASSESSED` and `MEND_EXPOSURE_DECLARED` pass through from your `.env`. On the
   Docker install, `--exposure` writes the first two.

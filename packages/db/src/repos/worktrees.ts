@@ -1,6 +1,16 @@
+import { createHash } from "node:crypto";
+
 import { PgClient } from "@effect/sql-pg";
 import { SessionId, WorktreeId, type ProjectId, type Sha } from "@mend/domain";
-import { Worktree, WorktreeHandoff } from "@mend/domain/workbench";
+import {
+  type AccessPolicySource,
+  type AccessPolicyRules,
+  canonicalAccessPolicyJson,
+  ProjectAccessPolicy,
+  Worktree,
+  WorktreeAccessPolicyPin,
+  WorktreeHandoff,
+} from "@mend/domain/workbench";
 import { and, asc, desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -24,7 +34,12 @@ export interface NewWorktreeRow {
   readonly projectId: ProjectId;
   readonly name: string;
   /** Fixed when the worktree is created; omitted preserves the pre-choice runtime path. */
-  readonly sessionRuntime?: "docker" | "boat" | null;
+  readonly sessionRuntime?: "docker" | "host-vm" | "boat" | null;
+  /**
+   * The Access policy the worktree pins. Omitted, it pins a copy of its project's own policy as
+   * the insert reads it.
+   */
+  readonly accessPolicy?: WorktreeAccessPolicyPin;
   readonly directory: string;
   readonly branch: string;
   readonly baseSha: Sha;
@@ -64,6 +79,11 @@ export class WorktreesRepo extends Context.Service<
     readonly listForProject: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<Worktree>>;
     /** The named worktrees, by their key. */
     readonly listByIds: (ids: ReadonlyArray<WorktreeId>) => Effect.Effect<ReadonlyArray<Worktree>>;
+    /**
+     * "Apply updated policy": re-pin the worktree to new rules. Revocations still apply on top;
+     * nothing here widens what a revocation took away.
+     */
+    readonly setAccessPolicy: (id: WorktreeId, pin: WorktreeAccessPolicyPin) => Effect.Effect<void>;
     /** Hot-claim reset: the pooled worktree re-bases to what the claim asked for. */
     readonly setBase: (id: WorktreeId, baseSha: Sha, baseRef: string | null) => Effect.Effect<void>;
     /** Display identity rename (name + branch); the directory never moves. */
@@ -92,6 +112,20 @@ export class WorktreesRepo extends Context.Service<
 >()("@mend/db/WorktreesRepo") {}
 
 const decodeHandoff = Schema.decodeUnknownSync(WorktreeHandoff);
+const decodePin = Schema.decodeUnknownSync(WorktreeAccessPolicyPin);
+const encodePin = Schema.encodeSync(WorktreeAccessPolicyPin);
+const decodeProjectPolicy = Schema.decodeUnknownSync(ProjectAccessPolicy);
+
+/** The canonical hash of a policy's rules: what a worktree pins and the hot pool compares. */
+export const accessPolicyHash = (rules: AccessPolicyRules): string =>
+  `sha256:${createHash("sha256").update(canonicalAccessPolicyJson(rules)).digest("hex")}`;
+
+/** A pin of `rules` from `source`, taken now. */
+export const accessPolicyPin = (
+  rules: AccessPolicyRules,
+  source: AccessPolicySource,
+  pinnedAt: Date,
+): WorktreeAccessPolicyPin => ({ rules, source, policyHash: accessPolicyHash(rules), pinnedAt });
 
 const toWorktree = ({
   removalPhase: _phase,
@@ -100,7 +134,11 @@ const toWorktree = ({
   changeOwnerRecorded: _recorded,
   ...row
 }: typeof worktrees.$inferSelect): Worktree =>
-  new Worktree({ ...row, handoff: row.handoff === null ? null : decodeHandoff(row.handoff) });
+  new Worktree({
+    ...row,
+    handoff: row.handoff === null ? null : decodeHandoff(row.handoff),
+    accessPolicy: row.accessPolicy === null ? null : decodePin(row.accessPolicy),
+  });
 
 // Compile-time seam tripwire (same discipline as SessionsRepo): a column added
 // to `worktrees` must land in @mend/domain's Worktree in the same change. A removal's mark and
@@ -125,13 +163,29 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
 
       const create = Effect.fn("WorktreesRepo.create")(function* (worktree: NewWorktreeRow) {
         const [project] = yield* db
-          .select({ uses: projects.newWorktreesUseProjectResources })
+          .select({
+            uses: projects.newWorktreesUseProjectResources,
+            accessPolicy: projects.accessPolicy,
+          })
           .from(projects)
           .where(and(eq(projects.id, worktree.projectId), projectListed))
           .pipe(Effect.orDie);
+        const now = yield* DateTime.nowAsDate;
+        const pin =
+          worktree.accessPolicy ??
+          (project === undefined
+            ? null
+            : (() => {
+                const policy = decodeProjectPolicy(project.accessPolicy);
+                return accessPolicyPin(policy.rules, policy.source, now);
+              })());
         const [row] = yield* db
           .insert(worktrees)
-          .values({ ...worktree, usesProjectResources: project?.uses ?? true })
+          .values({
+            ...worktree,
+            accessPolicy: pin === null ? null : encodePin(pin),
+            usesProjectResources: project?.uses ?? true,
+          })
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* Effect.die("worktree insert returned no row");
@@ -250,6 +304,21 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
           .set({ baseSha, baseRef, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(worktrees.id, id))
           .pipe(Effect.orDie);
+      });
+
+      const setAccessPolicy = Effect.fn("WorktreesRepo.setAccessPolicy")(function* (
+        id: WorktreeId,
+        pin: WorktreeAccessPolicyPin,
+      ) {
+        const [row] = yield* db
+          .update(worktrees)
+          .set({ accessPolicy: encodePin(pin), updatedAt: yield* DateTime.nowAsDate })
+          .where(eq(worktrees.id, id))
+          .returning({ projectId: worktrees.projectId })
+          .pipe(Effect.orDie);
+        if (row !== undefined) {
+          yield* notifyEvent(pg, { type: "worktree", worktreeId: id, projectId: row.projectId });
+        }
       });
 
       const rename = Effect.fn("WorktreesRepo.rename")(function* (
@@ -376,6 +445,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         listForProject,
         listByIds,
         setBase,
+        setAccessPolicy,
         rename,
         remove,
         changeOwnerOf,

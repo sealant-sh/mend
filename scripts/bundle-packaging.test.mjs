@@ -12,15 +12,14 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const composeDirectory = path.join(root, "deploy/docker");
 const composeFixtureDirectory = path.join(root, "apps/cli/test-fixtures/docker");
 
-const renderCompose = (file = path.join(composeDirectory, "compose.v2.yaml")) => {
+const renderCompose = (file = path.join(composeDirectory, "compose.v2.yaml"), before = []) => {
   const result = spawnSync(
     "docker",
     [
       "compose",
       "--project-directory",
       path.dirname(file),
-      "-f",
-      file,
+      ...[...before, file].flatMap((each) => ["-f", each]),
       "config",
       "--format",
       "json",
@@ -45,10 +44,14 @@ const renderCompose = (file = path.join(composeDirectory, "compose.v2.yaml")) =>
         MEND_STORE_VOLUME_NAME: "mend-test-store",
         MEND_CONTROL_VOLUME_NAME: "mend-test-control",
         MEND_GARAGE_VOLUME_NAME: "mend-test-garage",
+        MEND_VM_IMAGES_VOLUME_NAME: "mend-test-vm-images",
+        MEND_VM_DATA_VOLUME_NAME: "mend-test-vm-data",
         MEND_GARAGE_RPC_SECRET: "0".repeat(64),
         MEND_GARAGE_ADMIN_TOKEN: "1".repeat(64),
         MEND_GARAGE_KEY_ID: "GK000000000000000000000000",
         MEND_GARAGE_KEY_SECRET: "2".repeat(64),
+        MEND_NPM_MIRROR_MAX_SIZE: "10g",
+        MEND_DOCKER_MIRROR_MAX_SIZE: "20g",
       },
     },
   );
@@ -62,7 +65,8 @@ test("the rendered deployment has Mend, official Postgres and the Garage bucket"
   assert.equal(compose.services.mend.image, "example.invalid/mend:1.2.3");
   assert.equal(compose.services.postgres.image, "postgres:17-alpine");
   assert.equal(compose.services.garage.image, "dxflrs/garage:v2.4.1");
-  // Garage publishes nothing; Mend reaches it and executors reach both on the Compose network.
+  // Garage publishes nothing; Mend reaches it on the Compose network, and each workspace reaches
+  // both on its own network, where sealant joins them under their aliases.
   assert.equal(compose.services.garage.ports, undefined);
   const mend = compose.services.mend.environment;
   assert.equal(mend.MEND_BLOB_STORE, "s3://mend?endpoint=http://garage:3900&region=garage");
@@ -70,7 +74,7 @@ test("the rendered deployment has Mend, official Postgres and the Garage bucket"
   assert.equal(mend.MEND_SESSION_ENDPOINT_URL, "http://mend:3106");
   assert.equal(mend.MEND_SESSION_ENDPOINT_LISTEN, "0.0.0.0:3106");
   assert.equal(mend.AWS_ACCESS_KEY_ID, "GK000000000000000000000000");
-  assert.equal(mend.SEALANT_DOCKER_WORKSPACE_NETWORK, "mend_default");
+  assert.equal(mend.SEALANT_DOCKER_WORKSPACE_NETWORK, undefined);
   assert.equal(mend.MEND_SESSION_STORE, undefined);
   assert.equal(compose.services.garage.environment.GARAGE_RPC_SECRET, "0".repeat(64));
   assert.match(compose.configs["garage-config"].content, /replication_factor = 1/);
@@ -83,6 +87,37 @@ test("the rendered deployment has Mend, official Postgres and the Garage bucket"
       ["127.0.0.1", 42222, 2222],
     ],
   );
+});
+
+test("each workspace gets a network of its own, which Mend and Garage join, never mend_default", () => {
+  const compose = renderCompose();
+  const mend = compose.services.mend.environment;
+  assert.equal(mend.SEALANT_DOCKER_WORKSPACE_NETWORK, undefined);
+  assert.ok(!Object.values(mend).includes("mend_default"));
+  assert.equal(mend.SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS, "10.233.0.0/16");
+  assert.equal(
+    mend.SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS,
+    "mend-mend-1:mend,mend-garage-1:garage",
+  );
+  // The names that list joins are the containers' own.
+  assert.equal(compose.services.mend.container_name, "mend-mend-1");
+  assert.equal(compose.services.garage.container_name, "mend-garage-1");
+  // The guard's settings reach the bundle under Mend's names, empty by default; the supervisor
+  // hands the worker only what is set.
+  assert.equal(mend.MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS, "");
+  assert.equal(mend.MEND_HOST_PUBLIC_IPS, "");
+  assert.equal(mend.SEALANT_OPERATOR_ALLOWED_PRIVATE_EGRESS, undefined);
+  assert.equal(mend.SEALANT_HOST_PUBLIC_IPS, undefined);
+
+  const mirrors = renderCompose(path.join(composeDirectory, "compose.mirrors.yaml"), [
+    path.join(composeDirectory, "compose.v2.yaml"),
+  ]);
+  assert.equal(
+    mirrors.services.mend.environment.SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS,
+    "mend-mend-1:mend,mend-garage-1:garage,mend-npm-mirror:npm-mirror,mend-docker-mirror:docker-mirror",
+  );
+  assert.equal(mirrors.services["npm-mirror"].container_name, "mend-npm-mirror");
+  assert.equal(mirrors.services["docker-mirror"].container_name, "mend-docker-mirror");
 });
 
 test("the root Compose entry point uses the same deployment and project name", () => {
@@ -98,8 +133,15 @@ test("named-volume lowering and persistence paths stay aligned", () => {
   assert.deepEqual(JSON.parse(mend.environment.SEALANT_DOCKER_VOLUME_MAPPINGS), [
     { logicalRoot: "/var/lib/mend/store", volumeName: "mend-test-store" },
     { logicalRoot: "/run/sealant/sockets", volumeName: "mend-test-control" },
+    { logicalRoot: "/var/lib/mend/vm-images", volumeName: "mend-test-vm-images" },
+    { logicalRoot: "/var/lib/mend/vm-data", volumeName: "mend-test-vm-data" },
   ]);
   assert.equal(mend.environment.SEALANT_MOUNT_ALLOWED_STORE_ROOTS, "/var/lib/mend/store");
+  // Compose's own volumes, named as the mapping names them, so sealant mounts the same disks.
+  assert.equal(compose.volumes["mend-vm-images"].name, "mend-test-vm-images");
+  assert.equal(compose.volumes["mend-vm-data"].name, "mend-test-vm-data");
+  assert.equal(compose.volumes["mend-vm-images"].external, undefined);
+  assert.equal(compose.volumes["mend-vm-data"].external, undefined);
   assert.equal(compose.volumes["mend-store"].name, "mend-test-store");
   assert.equal(compose.volumes["mend-control"].name, "mend-test-control");
   assert.equal(compose.volumes["mend-garage"].name, "mend-test-garage");
@@ -116,6 +158,8 @@ test("named-volume lowering and persistence paths stay aligned", () => {
   assert.equal(mounts.get("/run/sealant/sockets"), "mend-control");
   assert.equal(mounts.get("/var/lib/mend/config"), "mend-config");
   assert.equal(mounts.get("/var/lib/mend/ssh"), "mend-ssh");
+  assert.equal(mounts.get("/var/lib/mend/vm-images"), "mend-vm-images");
+  assert.equal(mounts.get("/var/lib/mend/vm-data"), "mend-vm-data");
   assert.equal(mounts.has("/var/lib/rabbitmq"), false);
   assert.equal(mounts.has("/var/lib/registry"), false);
   assert.equal(compose.volumes["mend-rabbitmq"], undefined);
@@ -579,5 +623,137 @@ test("refuses a gateway with no image pinned, or no route to the Docker host", a
         null,
       ),
     /no default route/,
+  );
+});
+
+// The workspace networks, the guard's settings and the host VM runtime, as the supervisor hands them
+// to sealant.
+
+const STORE = { logicalRoot: "/var/lib/mend/store", volumeName: "mend-store" };
+const CONTROL = { logicalRoot: "/run/sealant/sockets", volumeName: "mend-control" };
+const VM_IMAGES = { logicalRoot: "/var/lib/mend/vm-images", volumeName: "mend-vm-images" };
+const VM_DATA = { logicalRoot: "/var/lib/mend/vm-data", volumeName: "mend-vm-data" };
+
+test("maps the store and control roots, and both VM roots or neither", async () => {
+  const { volumeMappingRoots } = await import("./bundle-supervisor.mjs");
+  const roots = (...mappings) => volumeMappingRoots(JSON.stringify(mappings));
+  assert.deepEqual(roots(STORE, CONTROL), { vmRoots: false });
+  assert.deepEqual(roots(CONTROL, STORE), { vmRoots: false });
+  assert.deepEqual(roots(STORE, CONTROL, VM_IMAGES, VM_DATA), { vmRoots: true });
+  assert.deepEqual(roots(VM_DATA, STORE, VM_IMAGES, CONTROL), { vmRoots: true });
+  for (const refused of [
+    [STORE],
+    [STORE, CONTROL, VM_IMAGES],
+    [STORE, CONTROL, VM_DATA],
+    [STORE, CONTROL, CONTROL],
+    [STORE, CONTROL, VM_IMAGES, VM_IMAGES],
+    [STORE, { ...CONTROL, volumeName: "" }],
+    [STORE, CONTROL, { logicalRoot: "/var/lib/other", volumeName: "other" }],
+  ]) {
+    assert.throws(
+      () => roots(...refused),
+      /must map \/var\/lib\/mend\/store and \/run\/sealant\/sockets to named volumes, and nothing else but both \/var\/lib\/mend\/vm-images and \/var\/lib\/mend\/vm-data \(never one of them alone\)/,
+      JSON.stringify(refused),
+    );
+  }
+  assert.throws(() => volumeMappingRoots("{"), /must be valid JSON/);
+  assert.throws(() => volumeMappingRoots("{}"), /must map/);
+});
+
+test("the Sealant API and worker both reach the control sockets' directory", async () => {
+  const supervisor = await readFile(path.join(root, "scripts/bundle-supervisor.mjs"), "utf8");
+  const api = supervisor.slice(
+    supervisor.indexOf('baseSpecification("sealant-api"'),
+    supervisor.indexOf('baseSpecification("sealant-worker"'),
+  );
+  const worker = supervisor.slice(
+    supervisor.indexOf('baseSpecification("sealant-worker"'),
+    supervisor.indexOf('waitFor("Sealant API"'),
+  );
+  assert.match(api, /WORKSPACE_CONTROL_SOCKET_HOST_DIR: SOCKET_ROOT,/);
+  assert.match(worker, /WORKSPACE_CONTROL_SOCKET_HOST_DIR: SOCKET_ROOT,/);
+  assert.match(worker, /\.\.\.workspaceEgressEnvironment\(process\.env\),/);
+  assert.match(worker, /\.\.\.hostVmEnvironment\(process\.env, configuration\.vmRoots\),/);
+  assert.doesNotMatch(api, /workspaceEgressEnvironment|hostVmEnvironment/);
+});
+
+test("hands the worker the guard's settings under sealant's names, only when set and with workspace networks", async () => {
+  const { workspaceEgressEnvironment } = await import("./bundle-supervisor.mjs");
+  const subnets = { SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS: "10.233.0.0/16" };
+  assert.deepEqual(workspaceEgressEnvironment(subnets), {});
+  assert.deepEqual(
+    workspaceEgressEnvironment({
+      ...subnets,
+      MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS: "",
+      MEND_HOST_PUBLIC_IPS: "  ",
+    }),
+    {},
+  );
+  assert.deepEqual(
+    workspaceEgressEnvironment({
+      ...subnets,
+      MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS: " 192.168.10.0/24,100.101.102.103 ",
+      MEND_HOST_PUBLIC_IPS: "auto,203.0.113.7",
+    }),
+    {
+      SEALANT_OPERATOR_ALLOWED_PRIVATE_EGRESS: "192.168.10.0/24,100.101.102.103",
+      SEALANT_HOST_PUBLIC_IPS: "auto,203.0.113.7",
+    },
+  );
+  // sealant refuses either without workspace networks, so neither is handed over then.
+  assert.deepEqual(
+    workspaceEgressEnvironment({
+      MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS: "192.168.10.0/24",
+      MEND_HOST_PUBLIC_IPS: "auto",
+    }),
+    {},
+  );
+  assert.deepEqual(
+    workspaceEgressEnvironment({
+      SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS: "",
+      MEND_HOST_PUBLIC_IPS: "auto",
+    }),
+    {},
+  );
+});
+
+test("hands the worker the host VM directories only when Mend names host-vm", async () => {
+  const { hostVmEnvironment, namesHostVm } = await import("./bundle-supervisor.mjs");
+  const subnets = { SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS: "10.233.0.0/16" };
+  const dirs = {
+    SEALANT_HOST_VM_IMAGE_DIR: "/var/lib/mend/vm-images",
+    SEALANT_HOST_VM_DATA_DIR: "/var/lib/mend/vm-data",
+  };
+  // An existing install stays on Docker: the volumes are mapped, but nothing names host-vm.
+  assert.deepEqual(hostVmEnvironment(subnets, true), {});
+  assert.deepEqual(
+    hostVmEnvironment({ ...subnets, MEND_SESSION_RUNTIMES: "docker,boat" }, true),
+    {},
+  );
+  assert.deepEqual(hostVmEnvironment({ MEND_SESSION_RUNTIME: "docker" }, false), {});
+  assert.equal(namesHostVm({ MEND_SESSION_RUNTIMES: "docker, host-vm" }), true);
+  assert.equal(namesHostVm({ MEND_SESSION_RUNTIME: "host-vm" }), true);
+  assert.equal(namesHostVm({ MEND_SESSION_RUNTIMES: "host-vms" }), false);
+  assert.deepEqual(
+    hostVmEnvironment({ ...subnets, MEND_SESSION_RUNTIMES: "docker,host-vm" }, true),
+    dirs,
+  );
+  assert.deepEqual(hostVmEnvironment({ ...subnets, MEND_SESSION_RUNTIME: "host-vm" }, true), dirs);
+  // Named, but with nowhere to keep its disks, or no network for each VM's proxy: refused.
+  assert.throws(
+    () => hostVmEnvironment({ ...subnets, MEND_SESSION_RUNTIMES: "host-vm" }, false),
+    /host-vm sessions are on .* maps no \/var\/lib\/mend\/vm-images and \/var\/lib\/mend\/vm-data/,
+  );
+  assert.throws(
+    () => hostVmEnvironment({ MEND_SESSION_RUNTIME: "host-vm" }, true),
+    /SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS is unset/,
+  );
+  assert.throws(
+    () =>
+      hostVmEnvironment(
+        { SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS: " ", MEND_SESSION_RUNTIMES: "host-vm" },
+        true,
+      ),
+    /SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS is unset/,
   );
 });

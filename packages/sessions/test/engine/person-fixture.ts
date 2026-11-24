@@ -294,6 +294,8 @@ export const workspacesPerOwner = (
           guarded("expireWorkspace", ofWorkspace(workspaceId), () =>
             client.expireWorkspace(workspaceId, ttlSeconds),
           ),
+        applyNetworkPolicy: (workspace, options) => client.applyNetworkPolicy(workspace, options),
+        revokeAccess: (workspace, options) => client.revokeAccess(workspace, options),
         getSession: (workspace, sessionId) =>
           guarded("getSession", ofWorkspace(workspace.id), () =>
             (ptys.getSessionDefect?.(sessionId) === true

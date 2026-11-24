@@ -92,6 +92,21 @@ export const AuditAction = Schema.Literals([
   // The key was pointed at another Boat wallet it can bill (SLNT-821): `wallet` is Boat's id for
   // it (`personal` for the key's own account), `walletName` the organization's name when known.
   "boat_key.wallet_changed",
+  // Organization → Access policies (ADR 0025's 2026-11-24 amendment). The subject is the policy;
+  // `data.name` its name, `data.revision` the revision written, `data.elevated` whether it is.
+  "access_policy.created",
+  "access_policy.updated",
+  "access_policy.removed",
+  // A durable revocation (`data.kind` host, secret or all; `data.target`; `data.policyId`, or none
+  // for every policy). The subject is the revocation.
+  "access_policy.revoked",
+  // A project's own policy was replaced by a copy of a template (`data.policyId`, `data.revision`,
+  // `data.elevated`). The subject is the project.
+  "project.access_policy_assigned",
+  // A project secret was made Brokered (an elevated binding), or an owner turned a Brokered one
+  // back to Direct. The subject is the project; `data.secret` the secret's name, never its value.
+  "project.secret_brokered",
+  "project.secret_unbrokered",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 

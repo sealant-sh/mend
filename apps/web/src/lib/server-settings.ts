@@ -1,4 +1,5 @@
 import type { ExposureGateItem, MultiModeGateItem, PreviewProblem } from "@mend/api-contracts";
+import type { SessionRuntime } from "@mend/domain";
 import {
   boatKeyStatusLine,
   reportRefusal,
@@ -947,6 +948,7 @@ export const sealantNeedsYou = (
 // ---------------------------------------------------------------------------------------------
 // Where sessions run
 
+/** The runtimes this page lists. The server may also offer host-vm, which it does not list yet. */
 export type Runtime = "docker" | "boat";
 
 export const RUNTIMES: ReadonlyArray<Runtime> = ["docker", "boat"];
@@ -962,7 +964,7 @@ export const RUNTIME_PLACES: Readonly<Record<Runtime, string>> = {
 /** Whether the server offers a runtime, and whether new organizations start on it. */
 export const runtimeOffer = (
   runtime: Runtime,
-  offer: { readonly offered: ReadonlyArray<Runtime>; readonly default: Runtime },
+  offer: { readonly offered: ReadonlyArray<SessionRuntime>; readonly default: SessionRuntime },
 ): { readonly word: string; readonly startsHere: boolean } =>
   offer.offered.includes(runtime)
     ? { word: "Offered", startsHere: offer.default === runtime }

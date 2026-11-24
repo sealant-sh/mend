@@ -80,6 +80,15 @@ const fakeWorkspace: Workspace = {
   publication: async () => null,
   processUser: async () => "supported",
   sshAsRoot: async () => {},
+  applyNetworkPolicy: async () => {
+    throw new Error("not in test");
+  },
+  revokeAccess: async () => {
+    throw new Error("not in test");
+  },
+  networkPolicy: async () => {
+    throw new Error("not in test");
+  },
   phase: async () => null,
   launch: undefined,
   recover: async () => new Promise(() => {}),
@@ -143,6 +152,8 @@ const sealantFakeLayer = Layer.succeed(SealantClient, {
   findWorkspaceByKey: () => Effect.succeed({ kind: "unsupported" as const }),
   fenceWorkspaceCreate: () => Effect.succeed({ kind: "unsupported" as const }),
   captureReplan: () => Effect.die("not in test"),
+  applyNetworkPolicy: () => Effect.die("not in test"),
+  revokeAccess: () => Effect.die("not in test"),
   expireWorkspace: () => Effect.die("not in test"),
   getSession: () => Effect.die("not in test"),
   sessionOutput: () => Effect.die("not in test"),

@@ -9,6 +9,7 @@ import { DopplerRepo, GithubLoginsRepo } from "@mend/db";
 import { ProjectNameTakenError } from "@mend/db";
 import {
   AccessKeysRepo,
+  AccessPoliciesRepo,
   AuditEventsRepo,
   BoatKeysRepo,
   MemberRevocationsRepo,
@@ -118,6 +119,7 @@ import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { SealantClient, SealantClients, workspaceRuntimesReportOf } from "@mend/sealant";
 import {
+  AccessPolicyEnforcement,
   McpAppConnections,
   McpAppRequestsLive,
   OrganizationExecutor,
@@ -354,7 +356,7 @@ export const createTenancyApi = async (
     readonly tenancy?: "single" | "multi";
     readonly sessionStore?: DeploymentConfig["Service"]["sessionStore"];
     /** A server set up the old way (`MEND_SESSION_RUNTIME`): it offers this one runtime. */
-    readonly sessionRuntime?: "docker" | "boat";
+    readonly sessionRuntime?: "docker" | "host-vm" | "boat";
     /** What the server offers (`MEND_SESSION_RUNTIMES`); wins over `sessionRuntime`. */
     readonly sessionRuntimes?: SessionRuntimeOffer;
     /** Each organization's choice of where its new sessions run, by organization id. */
@@ -397,6 +399,8 @@ export const createTenancyApi = async (
       readonly followUps?: Layer.PartialEffectful<FollowUpsRepo["Service"]>;
       readonly workspaceCaller?: Partial<WorkspaceCaller["Service"]>;
       readonly audit?: Layer.PartialEffectful<AuditEventsRepo["Service"]>;
+      readonly accessPolicies?: Layer.PartialEffectful<AccessPoliciesRepo["Service"]>;
+      readonly accessPolicyEnforcement?: Layer.PartialEffectful<AccessPolicyEnforcement["Service"]>;
       readonly mounts?: Layer.PartialEffectful<ProjectMountsRepo["Service"]>;
       readonly recipes?: Layer.PartialEffectful<ProjectServiceRecipesRepo["Service"]>;
       readonly landings?: Layer.PartialEffectful<ChangeLandingsRepo["Service"]>;
@@ -760,6 +764,18 @@ export const createTenancyApi = async (
       ),
       recording(DevicesRepo, "devices", options.implement?.devices ?? {}, calls),
       recording(AccessKeysRepo, "accessKeys", {}, calls),
+      recording(
+        AccessPoliciesRepo,
+        "accessPolicies",
+        options.implement?.accessPolicies ?? {},
+        calls,
+      ),
+      recording(
+        AccessPolicyEnforcement,
+        "accessPolicyEnforcement",
+        options.implement?.accessPolicyEnforcement ?? {},
+        calls,
+      ),
       recording(FollowUpsRepo, "followUps", options.implement?.followUps ?? {}, calls),
       recording(HotWorkspacesRepo, "hotWorkspaces", options.implement?.hotWorkspaces ?? {}, calls),
       recording(IssuesRepo, "issues", {}, calls),

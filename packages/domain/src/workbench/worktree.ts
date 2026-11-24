@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
 import { ProjectId, Sha, WorktreeId } from "../ids.ts";
 import { SessionRuntime } from "../settings.ts";
 import { Timestamp } from "../timestamp.ts";
+import { WorktreeAccessPolicyPin } from "./access-policy.ts";
 import { WorktreeHandoff } from "./handoff.ts";
 
 export const WORKTREE_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -43,6 +44,14 @@ export class Worktree extends Schema.Class<Worktree>("Worktree")({
   name: Schema.String,
   /** Pinned at creation. Null keeps a pre-choice worktree on sealant's original default. */
   sessionRuntime: Schema.NullOr(SessionRuntime).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * The Access policy rules pinned when the worktree was created, which every session in it
+   * shares. Null on a worktree from before Access policies: it reads as Standard.
+   */
+  accessPolicy: Schema.NullOr(WorktreeAccessPolicyPin).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),

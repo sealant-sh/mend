@@ -16,6 +16,7 @@ import {
 
 import { BOAT_GATEWAY_IMAGE_LABEL } from "./server-boat.ts";
 import {
+  BUNDLE_NAMED_VOLUMES,
   bundleComposeVolumes,
   bundleNetworks,
   GENERATION_DIRECTORY,
@@ -593,6 +594,7 @@ const serverVolumes = (plan: {
   "mend-config",
   "mend-ssh",
   "mend-postgres",
+  ...BUNDLE_NAMED_VOLUMES,
   ...(plan.edgeHost === null ? [] : ["mend-edge-data", "mend-edge-config"]),
   ...(plan.mirrors ?? []).map((service) => `mend-${service}`),
   // The t3code gateway's state, with paired people's device tokens, when it is there.

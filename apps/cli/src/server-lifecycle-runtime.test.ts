@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 import { afterEach, expect, it } from "vitest";
 
 import { lifecycleTestFixtures } from "./server-lifecycle-test-fixtures.ts";
@@ -72,5 +75,45 @@ it(
     });
     expect(await serverCommand(["restart"], f.runtime)).toEqual({ _tag: "ok" });
     expect(f.files()["server.env"]).toContain("MEND_SESSION_RUNTIMES=docker,boat\n");
+  },
+);
+
+it(
+  "reads back a server set to host-vm another way, and offers no host-vm itself",
+  { timeout: 120_000 },
+  async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    expect(
+      await serverCommand(["setup", "--offline", "--session-runtime", "docker"], f.runtime),
+    ).toEqual({ _tag: "ok" });
+    // What an owner, or a later setup, writes: the saved config and its environment name host-vm.
+    const configFile = path.join(f.active(), "server.json");
+    const config = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    fs.writeFileSync(
+      configFile,
+      `${JSON.stringify({ ...config, sessionRuntime: "host-vm" }, null, 2)}\n`,
+    );
+    const envFile = path.join(f.active(), "server.env");
+    fs.writeFileSync(
+      envFile,
+      fs
+        .readFileSync(envFile, "utf8")
+        .replace("MEND_SESSION_RUNTIME=docker\n", "MEND_SESSION_RUNTIME=host-vm\n"),
+    );
+    for (const command of [["restart"], ["setup", "--yes", "--offline"]]) {
+      expect(await serverCommand(command, f.runtime)).toEqual({ _tag: "ok" });
+      expect(f.files()["server.env"]).toContain("MEND_SESSION_RUNTIME=host-vm\n");
+      expect(JSON.parse(f.files()["server.json"] ?? "{}").sessionRuntime).toBe("host-vm");
+    }
+    for (const flags of [
+      ["--session-runtime", "host-vm"],
+      ["--session-runtimes", "docker,host-vm"],
+    ]) {
+      expect(await serverCommand(["setup", "--offline", ...flags], f.runtime)).toMatchObject({
+        _tag: "error",
+        message: expect.stringMatching(/docker.*boat/),
+      });
+    }
   },
 );

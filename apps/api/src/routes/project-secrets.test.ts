@@ -64,6 +64,7 @@ describe("loading a .env that names a provider login", () => {
                   projectId,
                   name: input.name,
                   revision: 1,
+                  delivery: { mode: "direct" },
                   createdAt: new Date(0),
                   updatedAt: new Date(0),
                 }),

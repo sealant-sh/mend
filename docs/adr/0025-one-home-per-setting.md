@@ -167,13 +167,30 @@ The person's own Git access mode, under You (decision 1), still chooses how they
 key or through the bridge. The cap covers Mend's signer only: a credential the person brings into
 the workspace themselves does not pass through it.
 
-### What Mend does until policies are stored
+### Where the rules are read
 
 Mend's Git signer and its MCP dispatcher each read a session's worktree policy from one place
-(`AccessPolicies` in `@mend/sessions`). Until Access policies are stored, every worktree reads
+(`AccessPolicies` in `@mend/sessions`): the rules the worktree pinned when it was created, less
+every revocation that reaches it. A worktree from before Access policies pinned nothing and reads
 `Standard`: the signer signs fetches and pushes, and Executor tools may be called. Whatever the cap,
 the signer pushes only to the project's own repository, by its canonical path, and refuses a push
 for a project whose origin is missing or ambiguous; it fetches from any repository on the origin's
 host, which submodules and other repositories of a session need. An operator who turns the origin
 binding off on a machine they alone use (`MEND_GIT_TRANSPORT_BIND_ORIGIN=false`) lifts both
 bindings, never the cap.
+
+### A3. Secrets stay in one home, Direct or Brokered
+
+A project secret is **Direct** (its value reaches the workspace's environment, as before) or
+**Brokered** (the workspace holds a placeholder, and only its egress proxy puts the value in one
+named header on requests to the secret's bind hosts). Both live in **Project → Variables and
+secrets**; the project owns the binding, and no template names a project's secret. A Brokered
+secret reaches a workspace only when the project's policy allows Brokered secrets, which makes the
+policy elevated: assigning it takes an Organization Owner, and so does turning a Brokered secret
+back to Direct. A launch never falls back to putting a Brokered secret's value in the environment.
+
+### A4. Revocations are kept, and win
+
+An Organization Owner can revoke a host, a secret or everything, for one template's worktrees or
+for all of them. The revocation is stored first, then sent to every running workspace it reaches,
+and it holds over every pin, every "Apply updated policy" and every later launch.

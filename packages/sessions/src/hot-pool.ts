@@ -16,7 +16,18 @@ import { Schema } from "effect";
  */
 export interface HotFingerprintInputs {
   /** Standbys must match the worktree's runtime choice; null or omitted keeps sealant selection. */
-  readonly runtime?: "docker" | "boat" | null;
+  readonly runtime?: "docker" | "host-vm" | "boat" | null;
+  /**
+   * The canonical hash of the Access policy rules the standby was created under (its network
+   * policy is create-time-fixed): it serves only a worktree that pinned the same rules. Null or
+   * omitted: Standard, as before Access policies.
+   */
+  readonly accessPolicyHash?: string | null;
+  /**
+   * Whether the standby holds the project's Brokered secrets behind its egress proxy. A standby
+   * without them cannot take them later, nor one with them give them up. Omitted: false.
+   */
+  readonly hasBrokeredSecrets?: boolean;
   /**
    * The sealant Boat account a Boat standby runs in (SLNT-790): a standby is a paid VM in that
    * account, so it serves only a launch that would name the same one. Null or omitted: the
@@ -96,6 +107,10 @@ export const hotFingerprint = (
   const canonical = {
     ...(inputs.runtime == null ? {} : { runtime: inputs.runtime }),
     ...(inputs.boatAccountId == null ? {} : { boatAccountId: inputs.boatAccountId }),
+    // Absent under Standard and without Brokered secrets, so a standby made before Access
+    // policies hashes as it did.
+    ...(inputs.accessPolicyHash == null ? {} : { accessPolicyHash: inputs.accessPolicyHash }),
+    ...(inputs.hasBrokeredSecrets === true ? { hasBrokeredSecrets: true } : {}),
     ...(standby.layout === "person"
       ? { harnessLayout: { layout: standby.layout, imageKey: standby.imageKey } }
       : {}),

@@ -15,7 +15,7 @@ import {
  * shows before a save and what a launch is told agree.
  */
 
-/** A runtime family Sealant launches workspaces on; Mend's `SessionRuntime` is two of them. */
+/** A runtime family Sealant launches workspaces on; Mend's `SessionRuntime` is three of them. */
 export const RuntimeKind = Schema.Literals([
   "docker",
   "k8s",
@@ -23,6 +23,7 @@ export const RuntimeKind = Schema.Literals([
   "cloudflare",
   "microvm",
   "boat",
+  "host-vm",
 ]);
 export type RuntimeKind = typeof RuntimeKind.Type;
 
@@ -76,6 +77,22 @@ export class RuntimeSupport extends Schema.Class<RuntimeSupport>("RuntimeSupport
   ]),
   /** Whether a workspace that sits idle costs money, and sealant's sentence saying so. */
   idleCost: Schema.Struct({ charged: Schema.Boolean, message: Schema.String }),
+  /**
+   * What the runtime enforces of an Access policy (sealant 0.40.0-next.936). Absent from a
+   * control plane that predates network policies, which enforces none of them.
+   */
+  networkPolicy: Schema.optional(
+    Schema.Struct({
+      /** The workspace in a VM of its own (`requireVmIsolation`). */
+      vmIsolation: RuntimeCapability,
+      /** Restricted egress. */
+      restricted: RuntimeCapability,
+      /** Restricted egress together with Docker inside the workspace. */
+      restrictedWithDocker: RuntimeCapability,
+      /** Any brokered project secret, whatever the mode. */
+      brokeredSecrets: RuntimeCapability,
+    }),
+  ),
 }) {}
 
 /** The runtimes this install launches; one it cannot launch is not listed. */
@@ -139,6 +156,7 @@ const RUNTIME_NAMES: Readonly<Record<RuntimeKind, string>> = {
   cloudflare: "Cloudflare",
   microvm: "MicroVM",
   boat: "Boat",
+  "host-vm": "this server's KVM",
 };
 
 /** Where sessions run, in plain words: "this server's Docker", "Boat". */

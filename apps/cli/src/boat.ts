@@ -109,11 +109,23 @@ const capital = (words: string): string => `${words.charAt(0).toUpperCase()}${wo
 /** `2026-11-13 14:02 UTC`: when something was observed, to the minute. */
 const at = (date: Date): string => `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
+/** Where sessions run when not on Boat, in the words the notes below say it. */
+const elsewhere = (runtime: BoatKeyStatus["sessionRuntime"]): string => {
+  switch (runtime) {
+    case "docker":
+      return "this server's Docker";
+    case "host-vm":
+      return "this server's KVM";
+    default:
+      return "the runtime Sealant picks";
+  }
+};
+
 const runtimeNote = (status: BoatKeyStatus): ReadonlyArray<string> =>
   status.sessionRuntime === "boat"
     ? []
     : [
-        `This organization's new sessions run on ${status.sessionRuntime === "docker" ? "this server's Docker" : "the runtime Sealant picks"}, so no session uses a Boat key until they run on Boat.`,
+        `This organization's new sessions run on ${elsewhere(status.sessionRuntime)}, so no session uses a Boat key until they run on Boat.`,
       ];
 
 /** Where the CLI sends a person to make a new key: the command itself. */
@@ -346,7 +358,7 @@ export const renderPersonStatus = (status: PersonBoatKeyStatus): ReadonlyArray<s
     status.sessionRuntime === "boat"
       ? []
       : [
-          `${status.organizationName}'s new sessions run on ${status.sessionRuntime === "docker" ? "this server's Docker" : "the runtime Sealant picks"}, so no session uses a Boat key until they run on Boat.`,
+          `${status.organizationName}'s new sessions run on ${elsewhere(status.sessionRuntime)}, so no session uses a Boat key until they run on Boat.`,
         ];
   const details = status.details;
   if (!status.connected || details === null) {

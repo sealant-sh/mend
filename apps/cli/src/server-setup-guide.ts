@@ -1,5 +1,6 @@
 import * as net from "node:net";
 
+import type { SessionRuntime } from "@mend/domain";
 import { DEFAULT_TAILNET_PREVIEW_PORTS, writePreviewPorts } from "@mend/network";
 import { type AddressKind, addressKindOf } from "@mend/network/address-kind";
 
@@ -50,10 +51,13 @@ import { shellWord } from "./shared.ts";
  * compared on the same terms.
  */
 export interface SetupSettings {
-  /** Where an organization's new sessions run until it chooses. */
-  readonly sessionRuntime?: "docker" | "boat";
+  /**
+   * Where an organization's new sessions run until it chooses. Setup offers docker and boat; a
+   * server set to host-vm another way keeps it until the guide's question is answered.
+   */
+  readonly sessionRuntime?: SessionRuntime;
   /** The runtimes organizations may choose among; absent, the server offers `sessionRuntime`. */
-  readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
+  readonly sessionRuntimes?: ReadonlyArray<SessionRuntime>;
   /** Saved HTTPS origins and loopback listeners for remote workspaces. */
   readonly remoteEndpoints?: ServerRemoteEndpoints;
   /**
@@ -137,15 +141,28 @@ const samePreview = (
 };
 
 /** Where the server lets sessions run: its offered list, else its one runtime. */
-const offeredOf = (settings: SetupSettings): ReadonlyArray<"docker" | "boat"> =>
+const offeredOf = (settings: SetupSettings): ReadonlyArray<SessionRuntime> =>
   settings.sessionRuntimes ?? [settings.sessionRuntime ?? "docker"];
+
+/** Each runtime as the guide names it. */
+const RUNTIME_WORDS: Readonly<Record<SessionRuntime, string>> = {
+  docker: "Docker",
+  "host-vm": "this server's KVM",
+  boat: "Boat",
+};
+
+/** The order the guide names runtimes in, whatever order the server offers them. */
+const RUNTIME_ORDER: ReadonlyArray<SessionRuntime> = ["docker", "host-vm", "boat"];
 
 /** Where sessions run, as the guide says it. */
 const sessionsRunOf = (settings: SetupSettings): string => {
-  const runtime = settings.sessionRuntime === "boat" ? "Boat" : "Docker";
-  return offeredOf(settings).length < 2
+  const runtime = RUNTIME_WORDS[settings.sessionRuntime ?? "docker"];
+  const offered = offeredOf(settings);
+  return offered.length < 2
     ? runtime
-    : `Docker or Boat, each organization chooses (new organizations: ${runtime})`;
+    : `${RUNTIME_ORDER.filter((each) => offered.includes(each))
+        .map((each) => RUNTIME_WORDS[each])
+        .join(" or ")}, each organization chooses (new organizations: ${runtime})`;
 };
 
 /** Equal as settings: the lists as sets, since their order changes nothing the server reads. */
@@ -1621,7 +1638,8 @@ type RuntimeAnswer = "docker" | "boat" | "both-docker" | "both-boat";
 
 const answerOf = (settings: SetupSettings): RuntimeAnswer => {
   const runtime = settings.sessionRuntime ?? "docker";
-  if (offeredOf(settings).length < 2) return runtime;
+  // The guide offers no host-vm yet: a server set to it is asked from Docker.
+  if (offeredOf(settings).length < 2) return runtime === "host-vm" ? "docker" : runtime;
   return runtime === "boat" ? "both-boat" : "both-docker";
 };
 

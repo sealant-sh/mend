@@ -103,6 +103,7 @@ describe("the Boat page's words", () => {
   it("says whether the organization's sessions run on Boat now", () => {
     expect(runtimeLine("boat", "Northwind").lead).toMatch(/as it is now\.$/);
     expect(runtimeLine("docker", "Northwind").lead).toMatch(/run on Docker now/);
+    expect(runtimeLine("host-vm", "Northwind").lead).toMatch(/run on this server's KVM now/);
     expect(runtimeLine(null, "Northwind").lead).toMatch(/^Sealant picks/);
   });
 });

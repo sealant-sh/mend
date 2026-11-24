@@ -8,7 +8,7 @@ import {
   ReviewSliceId,
   Timestamp,
 } from "@mend/domain";
-import { CheckpointRestore, TurnSelection } from "@mend/domain/workbench";
+import { BrokeredSecretBinding, CheckpointRestore, TurnSelection } from "@mend/domain/workbench";
 import {
   AgentLaunchMode,
   CLUSTER_BINDING_KINDS,
@@ -37,6 +37,7 @@ import { Change as SessionChange } from "@mend/domain/workbench";
 import { Effect, Schema, SchemaTransformation } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
+import { AccessPolicyOwnersOnly, AccessPolicyRejected } from "./access-policies.ts";
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
 import {
@@ -122,6 +123,25 @@ export class ProjectSecretRemoveRequest extends Schema.Class<ProjectSecretRemove
   expectedRevision: Schema.Int,
 }) {}
 
+/**
+ * How a secret reaches the workspace from now on. `direct`: its value goes into the workspace's
+ * environment at launch. `brokered`: the workspace holds a placeholder, and its egress proxy puts
+ * the value into `binding.headerName` on HTTPS requests to `binding.bindHosts` only.
+ */
+export const ProjectSecretDeliveryChoice = Schema.Union([
+  Schema.Struct({ mode: Schema.Literal("direct") }),
+  Schema.Struct({ mode: Schema.Literal("brokered"), binding: BrokeredSecretBinding }),
+]);
+export type ProjectSecretDeliveryChoice = typeof ProjectSecretDeliveryChoice.Type;
+
+export class ProjectSecretDeliveryRequest extends Schema.Class<ProjectSecretDeliveryRequest>(
+  "ProjectSecretDeliveryRequest",
+)({
+  delivery: ProjectSecretDeliveryChoice,
+  /** The secret's row revision the caller read. */
+  expectedRevision: Schema.Int,
+}) {}
+
 /** A secret mutation's result: the touched row (name/revision only) + new aggregate revision. */
 export class ProjectSecretMutationResult extends Schema.Class<ProjectSecretMutationResult>(
   "ProjectSecretMutationResult",
@@ -167,6 +187,24 @@ export const projectSecretsGroup = HttpApiGroup.make("projectSecrets")
       payload: ProjectSecretRemoveRequest,
       success: ProjectSecretMutationResult,
       error: [NotFound, EnvironmentStaleWrite, RemovalInProgress],
+    }),
+  )
+  .add(
+    // Whoever manages the project. Making a secret Brokered is audited as
+    // `project.secret_brokered`; turning a Brokered one back to Direct takes an Organization Owner
+    // and is audited as `project.secret_unbrokered`. The answer shows the binding and the
+    // placeholder, never the value.
+    HttpApiEndpoint.put("setDelivery", "/projects/:id/secrets/:secretId/delivery", {
+      params: { id: ProjectId, secretId: ProjectSecretId },
+      payload: ProjectSecretDeliveryRequest,
+      success: ProjectSecretMutationResult,
+      error: [
+        NotFound,
+        AccessPolicyRejected,
+        AccessPolicyOwnersOnly,
+        EnvironmentStaleWrite,
+        RemovalInProgress,
+      ],
     }),
   )
   .middleware(AuthMiddleware);

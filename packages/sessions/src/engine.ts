@@ -105,6 +105,7 @@ import {
   workspaceImagePackages,
   WorktreeId,
 } from "@mend/domain";
+import type { SessionRuntime } from "@mend/domain";
 import {
   SessionHistoryRefusedError,
   RollbackRefusedError,
@@ -119,6 +120,7 @@ import {
   ForkOperation,
   type NativeHistoryObservation,
   InheritedHistory,
+  type WorktreeAccessPolicyPin,
 } from "@mend/domain/workbench";
 import {
   CONVERSATION_HARNESSES,
@@ -433,7 +435,21 @@ import {
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
-import { AccessPolicies } from "./access-policy.ts";
+import { brokeredForLaunch, configuredPolicyMirrors } from "./access-policy-enforcement.ts";
+import {
+  AccessPolicies,
+  accessPolicyAdmissionRefusal,
+  AccessPolicyStore,
+  allProviderHosts,
+  brokeredSecretsFor,
+  DOPPLER_HOST,
+  launchAccessPolicyOf,
+  launchNeedsNetworkPolicy,
+  mcpServerHost,
+  networkPolicyFor,
+  pinOrStandard,
+  providerHostsFor,
+} from "./access-policy.ts";
 import { withPrompt } from "./agent-command.ts";
 import {
   AGENT_MEMORY_DELIVERED,
@@ -9729,10 +9745,44 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.orElseSucceed(() => true),
       );
       const accessPolicies = yield* AccessPolicies;
+      const policyStore = yield* AccessPolicyStore;
       const projectEnvironment = yield* ProjectEnvironmentRepo;
       const projectSecrets = yield* ProjectSecretsRepo;
       const projectClusterBindings = yield* ProjectClusterBindingsRepo;
       const secretCipher = yield* SecretCipher;
+      /**
+       * The hosts a Restricted workspace reaches without its policy listing them, shown beside
+       * the policy (§7.1): the session's model provider (every provider for a standby, which any
+       * harness may claim), Doppler when its person uses it for the project, and the hosts of the
+       * person's MCP servers.
+       */
+      const restrictedAutoHosts = (input: {
+        readonly projectId: ProjectId;
+        readonly ownerUserId: string | null;
+        readonly harness: string | null;
+      }) =>
+        Effect.gen(function* () {
+          const hosts = new Set<string>(
+            input.harness === null ? allProviderHosts() : providerHostsFor(input.harness),
+          );
+          if (input.ownerUserId !== null) {
+            const mappings = yield* doppler
+              .mappings(input.ownerUserId)
+              .pipe(Effect.orElseSucceed(() => []));
+            if (mappings.some((mapping) => mapping.projectId === input.projectId)) {
+              hosts.add(DOPPLER_HOST);
+            }
+            const servers = yield* mcpServers
+              .list(input.ownerUserId)
+              .pipe(Effect.orElseSucceed(() => []));
+            for (const server of servers) {
+              if (!server.enabled || server.transport._tag === "stdio") continue;
+              const host = mcpServerHost(server.transport.url);
+              if (host !== null) hosts.add(host);
+            }
+          }
+          return [...hosts].toSorted();
+        });
       const projectRecipes = yield* ProjectServiceRecipesRepo;
       const sessionRepo = yield* SessionRepository;
       const gitOps = yield* SessionGitOpsRepo;
@@ -14024,7 +14074,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const provisionWorkspace = Effect.fn("SessionEngine.provisionWorkspace")(function* (input: {
         readonly project: Project;
-        readonly runtime: "docker" | "boat" | null;
+        readonly runtime: SessionRuntime | null;
+        /**
+         * The worktree's Access policy pin (null: a worktree from before policies, Standard).
+         * Omitted for a standby, which runs under the project's own policy and serves only a
+         * worktree that pinned the same rules (`hotFingerprint`'s `accessPolicyHash`).
+         */
+        readonly accessPolicy?: WorktreeAccessPolicyPin | null;
         readonly purpose?: SessionPurpose | null;
         readonly sessionId: SessionId;
         /** The session socket dir from `socketHost.start`, mounted at `/run/mend`. */
@@ -14244,8 +14300,57 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
           report,
         );
+        // The Access policy this launch runs under: the worktree's pin (a standby: the project's
+        // own policy) less every revocation that reaches it (§7.3, §8.2). Admission is
+        // fail-closed: a launch whose runtime cannot hold to it is refused before anything is
+        // created, never run with less (§8.3).
+        const launchPolicy = launchAccessPolicyOf(
+          input.accessPolicy === undefined
+            ? yield* policyStore.projectPolicy(project.id)
+            : pinOrStandard(input.accessPolicy),
+          yield* policyStore.revocationsForProject(project.id),
+        );
+        // A revoked secret reaches the workspace in no form. A Brokered one never reaches its
+        // environment: only its placeholder does, and its value goes to the egress proxy alone.
+        const deliveredSecrets = sealedSecrets.secrets.filter(
+          (secret) => !launchPolicy.revokedSecretIds.has(secret.id),
+        );
+        const brokeredNames = deliveredSecrets
+          .filter((secret) => secret.brokered !== null)
+          .map((secret) => secret.name);
+        const admissionRefusal = accessPolicyAdmissionRefusal({
+          rules: launchPolicy.rules,
+          runtime: input.runtime,
+          dockerInside: project.workspaceImage.services.docker,
+          brokeredCount: brokeredNames.length,
+          brokeredNames,
+        });
+        if (admissionRefusal !== null) {
+          return yield* new DotfilesResolveError({ message: admissionRefusal }).pipe(report);
+        }
+        const brokered = yield* brokeredForLaunch(
+          deliveredSecrets,
+          launchPolicy,
+          secretCipher.decrypt,
+        ).pipe(
+          Effect.mapError((error) => new DotfilesResolveError({ message: error.message })),
+          report,
+        );
+        const networkPolicy = launchNeedsNetworkPolicy(launchPolicy, brokered.secrets.length)
+          ? networkPolicyFor({
+              policy: launchPolicy,
+              autoHosts: yield* restrictedAutoHosts({
+                projectId: project.id,
+                ownerUserId,
+                // A standby serves whichever harness claims it.
+                harness: input.layout === undefined ? null : shape.starts,
+              }),
+              mirrors: yield* configuredPolicyMirrors,
+              brokered: brokered.secrets,
+            })
+          : null;
         const secretEnv = yield* Effect.forEach(
-          sealedSecrets.secrets,
+          deliveredSecrets.filter((secret) => secret.brokered === null),
           (secret) =>
             secretCipher.decrypt(secret.sealedValue).pipe(
               Effect.map((value) => [secret.name, value] as const),
@@ -14403,6 +14508,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   services: workspaceImage.services,
                   env,
                   ...(Object.keys(secretEnv).length === 0 ? {} : { secretEnv }),
+                  // Access policies (§8.4): only when the policy needs the workspace's egress
+                  // proxy, so a Standard launch is created exactly as before.
+                  ...(networkPolicy === null ? {} : { networkPolicy }),
+                  ...(brokered.secrets.length === 0
+                    ? {}
+                    : {
+                        brokeredSecrets: brokeredSecretsFor(brokered.secrets),
+                        brokeredSecretValues: brokered.values,
+                      }),
                   // Cluster bindings (and the Docker service above) pass through unconditionally — no
                   // Mend-side capability pre-check. The platform validates at create: a runtime that
                   // cannot serve them refuses synchronously with a stable code
@@ -20776,8 +20890,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         };
-        const sessionRuntime = (yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie))
-          .sessionRuntime;
+        const launchWorktree = yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie);
+        const sessionRuntime = launchWorktree.sessionRuntime;
         const provisionColdFrom = (
           key: string,
           restoredFrom: number | null,
@@ -20787,6 +20901,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             project,
             purpose: session.purpose,
             runtime: sessionRuntime,
+            accessPolicy: launchWorktree.accessPolicy,
             restoredFrom,
             ...(sessionRuntime === "boat" && !bindsResources ? { resources: "none" as const } : {}),
             sessionId,
@@ -31237,6 +31352,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const hotInputsFor = Effect.fn("SessionEngine.hotInputsFor")(function* (
         project: Project,
         ownerUserId: string | null,
+        /**
+         * The claiming worktree's pin; omitted for a standby, which runs under the project's own
+         * policy, as `provisionWorkspace` creates it.
+         */
+        accessPolicy?: WorktreeAccessPolicyPin | null,
       ) {
         const workspaceImage = project.workspaceImage;
         const dotfilesEnabled =
@@ -31265,8 +31385,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           inheritUserSkills: project.inheritUserSkills,
         });
         const runtime = yield* newWorktreeRuntime(project.organizationId);
+        // The network policy and Brokered secrets are fixed at create (§8.3): a standby serves
+        // only a worktree whose pin, less its revocations, reads the same.
+        const hotPolicy = launchAccessPolicyOf(
+          accessPolicy === undefined
+            ? yield* policyStore.projectPolicy(project.id)
+            : pinOrStandard(accessPolicy),
+          yield* policyStore.revocationsForProject(project.id),
+        );
         const inputs: HotFingerprintInputs = {
           runtime,
+          accessPolicyHash: hotPolicy.fingerprintHash,
+          hasBrokeredSecrets:
+            hotPolicy.rules.allowBrokeredSecrets &&
+            secrets.secrets.some(
+              (secret) =>
+                secret.delivery.mode === "brokered" && !hotPolicy.revokedSecretIds.has(secret.id),
+            ),
           boatAccountId:
             runtime === "boat"
               ? (yield* boatKeys.launchKey(project.organizationId, ownerUserId))
@@ -31981,7 +32116,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         if (refused) return null;
         const inputs = {
-          ...(yield* hotInputsFor(project, ownerUserId)),
+          ...(yield* hotInputsFor(project, ownerUserId, worktree.accessPolicy)),
           runtime: worktree.sessionRuntime,
         };
         const entry = yield* hotWorkspaces.claim(

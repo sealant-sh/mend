@@ -50,6 +50,15 @@ export const fakeWorkspace = (id = "workspace-1"): Workspace => ({
   publication: async () => null,
   processUser: async () => "supported",
   sshAsRoot: async () => {},
+  applyNetworkPolicy: async () => {
+    throw new Error("not in test");
+  },
+  revokeAccess: async () => {
+    throw new Error("not in test");
+  },
+  networkPolicy: async () => {
+    throw new Error("not in test");
+  },
   phase: async () => null,
   launch: undefined,
   recover: never,

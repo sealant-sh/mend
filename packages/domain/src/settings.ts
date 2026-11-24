@@ -16,8 +16,12 @@ const offByDefault = Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.su
 export const WorkspaceImageOs = Schema.Literals(["fedora", "arch", "nix", "ubuntu"]);
 export type WorkspaceImageOs = typeof WorkspaceImageOs.Type;
 
-/** Where a session's workspace runs: this server's Docker, or a Boat VM. */
-export const SessionRuntime = Schema.Literals(["docker", "boat"]);
+/**
+ * Where a session's workspace runs: a container on this server's Docker (it shares the server's
+ * kernel, so it is never called isolated), a microVM of its own on this server's KVM (`host-vm`),
+ * or a Boat VM.
+ */
+export const SessionRuntime = Schema.Literals(["docker", "host-vm", "boat"]);
 export type SessionRuntime = typeof SessionRuntime.Type;
 
 /**

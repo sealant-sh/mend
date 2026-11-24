@@ -12,6 +12,7 @@ import {
   WorkspaceImage,
 } from "@mend/domain";
 import type {
+  AccessPolicyId,
   SessionMessageId,
   ClientMessageId,
   AgentItemId,
@@ -77,6 +78,13 @@ import type {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
+import {
+  AccessPolicyRules,
+  BrokeredSecretBinding,
+  ProjectAccessPolicy,
+  STANDARD_PROJECT_ACCESS_POLICY,
+  WorktreeAccessPolicyPin,
+} from "@mend/domain/workbench";
 import {
   type ConversationArchiveFile,
   MergeBackContext,
@@ -449,6 +457,50 @@ export const organizationInvitations = pgTable(
  * An organization's audit log (docs/adr/0003-organizations-and-tenancy.md): append-only. Actions
  * are validated by the domain schema, not a check constraint, so new ones need no migration.
  */
+/** Organization → Access policies: the templates owners made. Standard is built in, no row. */
+export const accessPolicies = pgTable(
+  "access_policies",
+  {
+    id: text().$type<AccessPolicyId>().primaryKey(),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    revision: integer().notNull().default(1),
+    rules: jsonbOf(AccessPolicyRules).notNull(),
+    createdByUserId: text().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("access_policies_organization_name_key").on(
+      table.organizationId,
+      sql`lower(${table.name})`,
+    ),
+  ],
+);
+
+/** Durable revocations: stored first, they win over every worktree pin and later policy. */
+export const accessRevocations = pgTable(
+  "access_revocations",
+  {
+    id: text().primaryKey(),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    policyId: text().$type<AccessPolicyId>(),
+    kind: text().$type<"host" | "secret" | "all">().notNull(),
+    target: text(),
+    revokedByUserId: text().notNull(),
+    revokedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("access_revocations_organization_idx").on(table.organizationId, table.revokedAt),
+  ],
+);
+
 export const auditEvents = pgTable(
   "audit_events",
   {
@@ -590,6 +642,9 @@ export const projects = pgTable(
     // required); the column's default, Mend's built-in image, only serves rows inserted by hand,
     // such as test fixtures.
     workspaceImage: jsonbOf(WorkspaceImage).notNull().default(defaultWorkspaceImage),
+    // The project's own Access policy: a copy of Standard, or of the template an owner assigned
+    // (migration 0243, ADR 0025's 2026-11-24 amendment). Never a live link to the template.
+    accessPolicy: jsonbOf(ProjectAccessPolicy).notNull().default(STANDARD_PROJECT_ACCESS_POLICY),
     // Whether sessions here receive the launching user's dotfiles.
     applyDotfiles: boolean().notNull().default(true),
     // Whether a zsh launch writes Mend's default shell profile where dotfiles left no file (0071).
@@ -649,8 +704,11 @@ export const worktrees = pgTable(
       .$type<ProjectId>()
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    sessionRuntime: text().$type<"docker" | "boat">(),
+    sessionRuntime: text().$type<"docker" | "host-vm" | "boat">(),
     usesProjectResources: boolean().notNull().default(true),
+    // The Access policy rules the worktree pinned when it was created (migration 0243); null on a
+    // worktree from before, which reads as Standard. Every session in the worktree shares it.
+    accessPolicy: jsonbOf(WorktreeAccessPolicyPin),
     name: text().notNull(),
     directory: text().notNull(),
     branch: text().notNull(),
@@ -1404,6 +1462,11 @@ export const projectSecrets = pgTable(
     name: text().notNull(),
     sealedValue: text().notNull(),
     revision: integer().notNull().default(1),
+    // Direct (the value reaches the environment) or Brokered (migration 0243): then the binding
+    // and the placeholder the workspace holds instead are both set.
+    delivery: text().$type<"direct" | "brokered">().notNull().default("direct"),
+    brokeredBinding: jsonbOf(BrokeredSecretBinding),
+    placeholder: text(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
@@ -1538,7 +1601,7 @@ export const organizationSettings = pgTable("organization_settings", {
   autoLand: boolean(),
   backgroundSessions: boolean(),
   /** Where the organization's new sessions run; null follows the server's default. */
-  sessionRuntime: text().$type<"docker" | "boat">(),
+  sessionRuntime: text().$type<"docker" | "host-vm" | "boat">(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 

@@ -7,8 +7,9 @@
  * Both live in the server config and render into the generation like the edge (server-edge.ts):
  * `compose.mirrors.yaml` names the services and hands Mend their addresses, `npm-mirror.conf` is
  * the npm mirror's nginx configuration, and `server.env` carries the values. Neither publishes a
- * port on the host: workspaces reach them on the Compose network, and the Docker mirror is
- * connected to each workspace's own Docker network by Sealant
+ * port on the host. Each workspace is on a network of its own, and Sealant joins both mirrors to it
+ * under their service names (`SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS`), beside Mend and Garage;
+ * the Docker mirror is also connected to each workspace's own Docker network
  * (`SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER`).
  *
  * Neither decides what is installed. The package manager checks every tarball against its
@@ -28,6 +29,15 @@ export const NPM_MIRROR_URL = "http://npm-mirror:4873/";
 export const DOCKER_MIRROR_URL = "http://docker-mirror:5000";
 /** The Docker mirror's fixed container name, which Sealant connects to each workspace network. */
 export const DOCKER_MIRROR_CONTAINER = "mend-docker-mirror";
+/** The npm mirror's fixed container name, which Sealant joins to each workspace's own network. */
+export const NPM_MIRROR_CONTAINER = "mend-npm-mirror";
+/**
+ * The containers the base Compose file joins to every workspace's own network, as `container:alias`:
+ * Mend (the session channel, mend:3106) and Garage (captures, garage:3900). The mirrors overlay
+ * names them again beside the mirrors, because its value replaces the base file's.
+ */
+export const BASE_WORKSPACE_MIRROR_CONTAINERS =
+  "${MEND_CONTAINER_NAME:-mend-mend-1}:mend,${MEND_GARAGE_CONTAINER_NAME:-mend-garage-1}:garage";
 /** The npm mirror's default size cap, in nginx's units. */
 export const DEFAULT_NPM_MIRROR_MAX_SIZE = "10g";
 /** How long after a fetch the Docker mirror deletes a layer's data (manifests and tags stay). */
@@ -141,6 +151,7 @@ const npmMirrorService = (): ReadonlyArray<string> => [
   `  # ${MIRROR_MIN_FREE} free on its disk; the least recently used tarballs go first. No credential sent.`,
   "  npm-mirror:",
   `    image: ${NPM_MIRROR_IMAGE}`,
+  `    container_name: ${NPM_MIRROR_CONTAINER}`,
   "    hostname: npm-mirror",
   "    restart: unless-stopped",
   "    environment:",
@@ -199,6 +210,17 @@ const dockerMirrorService = (mirrors: ServerMirrors): ReadonlyArray<string> => [
 ];
 
 /**
+ * What joins every workspace's own network once the mirrors run: Mend and Garage, then each mirror
+ * under its service name, so `npm-mirror:4873` and `docker-mirror:5000` resolve there.
+ */
+const workspaceMirrorContainers = (mirrors: ServerMirrors): string =>
+  [
+    BASE_WORKSPACE_MIRROR_CONTAINERS,
+    ...(mirrors.npm === null ? [] : [`${NPM_MIRROR_CONTAINER}:npm-mirror`]),
+    ...(mirrors.docker === null ? [] : [`${DOCKER_MIRROR_CONTAINER}:docker-mirror`]),
+  ].join(",");
+
+/**
  * `compose.mirrors.yaml`: the mirrors this install runs, and the addresses Mend hands sessions.
  * Absent when both are off, and the install renders as it did before the mirrors existed.
  */
@@ -218,6 +240,9 @@ export const renderMirrorsOverlay = (mirrors: ServerMirrors | undefined): string
           `      SEALANT_DOCKER_REGISTRY_MIRRORS: ${DOCKER_MIRROR_URL}`,
           `      SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER: ${DOCKER_MIRROR_CONTAINER}`,
         ]),
+    "      # Joined to every workspace's own network: Mend and Garage, as in the base file, and each mirror.",
+    "      SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS: >-",
+    `        ${workspaceMirrorContainers(mirrors)}`,
     "",
     ...(mirrors.npm === null ? [] : [...npmMirrorService(), ""]),
     ...(mirrors.docker === null ? [] : [...dockerMirrorService(mirrors), ""]),

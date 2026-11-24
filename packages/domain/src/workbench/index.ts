@@ -20,6 +20,7 @@
  * Lives on a subpath while the queue-era model retires; promotes to the root
  * barrel when `issue.ts` and friends go (the M0 inventory, in git history).
  */
+export * from "./access-policy.ts";
 export * from "./audit.ts";
 export * from "./boat-failure.ts";
 export * from "./boat-failure-words.ts";

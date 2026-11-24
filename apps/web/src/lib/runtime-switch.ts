@@ -32,10 +32,11 @@ type ObservedImpact = Extract<Impact, { state: "observed" }>;
 /** A runtime's name as the page's choices and sentences say it ("Docker", not "this server's Docker"). */
 export const RUNTIME_LABELS: Readonly<Record<SessionRuntime, string>> = {
   docker: "Docker",
+  "host-vm": "this server's KVM",
   boat: "Boat",
 };
 
-/** The order the page lists runtimes in, as the frame draws them. */
+/** The order the page lists runtimes in, as the frame draws them. host-vm is not listed yet. */
 const RUNTIME_ORDER: ReadonlyArray<SessionRuntime> = ["docker", "boat"];
 
 /** What the Session runtime section shows. */

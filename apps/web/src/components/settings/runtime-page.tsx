@@ -173,6 +173,8 @@ export function RuntimePage() {
 
 const DESCRIPTIONS: Readonly<Record<SessionRuntime, (organization: string) => ReactNode>> = {
   docker: () => "Workspaces run as containers on this server. They stop when the server stops.",
+  "host-vm": () =>
+    "Each workspace runs in a virtual machine of its own on this server's KVM. They stop when the server stops.",
   boat: (organization) => (
     <>
       Workspaces run as virtual machines on Boat, away from this server. {organization} pays for

@@ -3,23 +3,27 @@
   "composeTemplate": "compose.v2.yaml",
   "environmentTemplate": "bundle.env.example",
   "mendImageRepository": "ghcr.io/sealant-sh/mend",
-  "sealantVersion": "0.40.0-next.933",
+  "sealantVersion": "0.40.0-next.936",
   "runtimeContainers": ["mend", "postgres", "garage"],
   "canonicalPaths": {
     "store": "/var/lib/mend/store",
-    "sealantSockets": "/run/sealant/sockets"
+    "sealantSockets": "/run/sealant/sockets",
+    "vmImages": "/var/lib/mend/vm-images",
+    "vmData": "/var/lib/mend/vm-data"
   },
   "canonicalVolumes": {
     "store": "mend-store",
     "control": "mend-control",
-    "garage": "mend-garage"
+    "garage": "mend-garage",
+    "vmImages": "mend-vm-images",
+    "vmData": "mend-vm-data"
   },
   "volumeOwnership": {
     "anchor": "mend-store",
     "label": "dev.sealant.mend.installation",
     "identity": "SHA-256 of the persisted identity.env bytes",
     "externalVolumes": ["mend-store", "mend-control", "mend-garage"],
-    "policy": "Setup claims the anchor before creating other volumes or starting Compose. Reject mismatched ownership and existing unclaimed Mend data; never replace credentials to adopt it. mend-garage is claimed the same way when the bundle carries Garage; a generation without it (an install from before the capture store) verifies without it."
+    "policy": "Setup claims the anchor before creating other volumes or starting Compose. Reject mismatched ownership and existing unclaimed Mend data; never replace credentials to adopt it. mend-garage is claimed the same way when the bundle carries Garage; a generation without it (an install from before the capture store) verifies without it. mend-vm-images and mend-vm-data are Compose's own volumes, not external: setup claims neither."
   },
   "dockerVolumeMappings": [
     {
@@ -29,6 +33,14 @@
     {
       "logicalRoot": "/run/sealant/sockets",
       "volumeName": "mend-control"
+    },
+    {
+      "logicalRoot": "/var/lib/mend/vm-images",
+      "volumeName": "mend-vm-images"
+    },
+    {
+      "logicalRoot": "/var/lib/mend/vm-data",
+      "volumeName": "mend-vm-data"
     }
   ],
   "requiredSecrets": {
@@ -56,13 +68,13 @@
     }
   },
   "bootstrap": {
-    "sealantMigrations": "node /opt/sealant/api/dist/migrate.js from sealant-api 0.40.0-next.933",
+    "sealantMigrations": "node /opt/sealant/api/dist/migrate.js from sealant-api 0.40.0-next.936",
     "servicePrincipal": "SEALANT_SERVICE_KEY configures the platform principal; Mend provisions each user through public @sealant/sdk users.ensure on first use",
     "jobQueue": "pg-boss inside sealant_control_plane (schema pgboss); created by the Sealant API/worker on first start"
   },
   "workspaceImages": {
     "store": "host Docker Engine",
-    "note": "Sealant builds workspace images through the mounted Docker socket and launches them from the same Engine by image id. No registry runs and no port is published for one. Workspace containers must reach mend:3106 and garage:3900 on the Compose network."
+    "note": "Sealant builds workspace images through the mounted Docker socket and launches them from the same Engine by image id. No registry runs and no port is published for one. Each workspace is on a network of its own, from 10.233.0.0/16 (MEND_WORKSPACE_EGRESS_SUBNETS), where it reaches mend:3106 and garage:3900: sealant joins the mend and garage containers to every workspace network under those aliases. Workspaces never join mend_default."
   },
   "derivedSecrets": {
     "MEND_GARAGE_RPC_SECRET": "HMAC-SHA256(BETTER_AUTH_SECRET, 'mend-garage-rpc-secret'), hex",
@@ -78,7 +90,7 @@
     "init": "mend server setup/start run `garage layout assign`, `layout apply`, `bucket create mend`, `key import`, `bucket allow` through `docker compose exec -T garage`, idempotently, after `up --wait`",
     "sessionEndpoint": "http://mend:3106 on the Compose network (not published)",
     "publicUrl": "http://garage:3900 on the Compose network (not published)",
-    "workspaceNetwork": "mend_default \u2014 set as SEALANT_DOCKER_WORKSPACE_NETWORK; the Sealant 0.40.0-next.933 runtime attaches workspace containers to it",
+    "workspaceNetwork": "a /28 network of each workspace's own, from 10.233.0.0/16 (SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS); the Sealant 0.40.0-next.936 runtime joins mend and garage to each one under those aliases (SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS), never mend_default",
     "idleMemoryMiB": 7.5
   }
 }

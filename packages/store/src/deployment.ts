@@ -153,7 +153,7 @@ export const resolveSessionRuntimes = (
 ): SessionRuntimeOffer | null => {
   const rawDefault = env.MEND_SESSION_RUNTIME?.trim() || null;
   if (rawDefault !== null && !isSessionRuntime(rawDefault))
-    throw new DeploymentConfigError('MEND_SESSION_RUNTIME must be "docker" or "boat".');
+    throw new DeploymentConfigError('MEND_SESSION_RUNTIME must be "docker", "host-vm" or "boat".');
   const rawList = env.MEND_SESSION_RUNTIMES?.trim() || null;
   if (rawList === null) {
     if (rawDefault !== null)
@@ -166,7 +166,7 @@ export const resolveSessionRuntimes = (
   for (const entry of rawList.split(",").map((part) => part.trim())) {
     if (!isSessionRuntime(entry))
       throw new DeploymentConfigError(
-        `MEND_SESSION_RUNTIMES must list "docker", "boat" or both, separated by commas, got "${rawList}".`,
+        `MEND_SESSION_RUNTIMES must list one or more of "docker", "host-vm" and "boat", separated by commas, got "${rawList}".`,
       );
     if (!offered.includes(entry)) offered.push(entry);
   }

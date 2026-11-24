@@ -358,12 +358,19 @@ const reservedResourceName = (
 export const GENERATION_DIRECTORY = /\/generations\/gen-[0-9a-f-]{36}$/;
 
 /**
- * The bundle's own Compose volumes, as Compose names them under its project. Another Compose
- * project called mend (a checkout of Mend's own repository, say) has other volumes.
+ * The host VM runtime's volumes (compose.v2.yaml): Compose's own, but named outright rather than
+ * under the project, because sealant mounts them by the name SEALANT_DOCKER_VOLUME_MAPPINGS gives.
+ */
+export const BUNDLE_NAMED_VOLUMES: ReadonlyArray<string> = ["mend-vm-images", "mend-vm-data"];
+
+/**
+ * The bundle's own Compose volumes, as Compose names them under its project, and the ones it names
+ * outright. Another Compose project called mend (a checkout of Mend's own repository, say) has
+ * other volumes.
  */
 export const bundleComposeVolumes = (project: string): ReadonlySet<string> =>
-  new Set(
-    [
+  new Set([
+    ...[
       "mend-config",
       "mend-ssh",
       "mend-postgres",
@@ -374,7 +381,8 @@ export const bundleComposeVolumes = (project: string): ReadonlySet<string> =>
       T3_GATEWAY_VOLUME,
       BOAT_STATE_VOLUME,
     ].map((volume) => `${project}_${volume}`),
-  );
+    ...BUNDLE_NAMED_VOLUMES,
+  ]);
 
 /** The bundle's Compose networks: the project's default, and the edge's when it runs one. */
 export const bundleNetworks = (project: string): ReadonlySet<string> =>

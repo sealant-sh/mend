@@ -1,5 +1,6 @@
 import * as net from "node:net";
 
+import type { SessionRuntime } from "@mend/domain";
 import { writePreviewPorts } from "@mend/network";
 
 import { BOAT_COMPOSE_FILE, type ServerBoat } from "./server-boat.ts";
@@ -90,9 +91,9 @@ export const isDeclarableItem = (value: string): value is DeclarableItem =>
 
 /** What a server config says about how the install is reached and for whom. */
 export interface ServerPosture {
-  readonly sessionRuntime?: "docker" | "boat";
+  readonly sessionRuntime?: SessionRuntime;
   /** The runtimes organizations may choose among; absent, the server offers `sessionRuntime`. */
-  readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
+  readonly sessionRuntimes?: ReadonlyArray<SessionRuntime>;
   /** The name the edge's certificate is for; absent, no edge runs. */
   readonly edgeHost?: string;
   readonly exposure?: Exposure;
