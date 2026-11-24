@@ -1367,9 +1367,15 @@ describe("SessionEngine capture mode", () => {
               .gitTransport({ host: origin.hostname, port: Number(origin.port), command })
               .pipe(Effect.exit);
           keysAsked.length = 0;
-          const own = yield* transport("git-receive-pack '/Origin.git'");
+          const own = yield* transport("git-receive-pack '/origin.git'");
           if (!Exit.isSuccess(own)) throw new Error(failureText(own));
           expect(own.value.kind).toBe("push");
+          // A plain Git server keeps case and the leading slash: these may be other repositories.
+          for (const spelling of ["'/Origin.git'", "'origin'"]) {
+            expect(failureText(yield* transport(`git-receive-pack ${spelling}`))).toContain(
+              "pushes only to this project's own repository",
+            );
+          }
           const other = yield* transport("git-receive-pack 'acme/other.git'");
           expect(failureText(other)).toContain("pushes only to this project's own repository");
           const climbing = yield* transport("git-receive-pack 'origin/../acme/other.git'");
@@ -1380,8 +1386,8 @@ describe("SessionEngine capture mode", () => {
           expect(keysAsked).toEqual(["user-fixture", "user-fixture"]);
 
           policies.set(session.id, "read-only");
-          expect(Exit.isSuccess(yield* transport("git-upload-pack 'origin'"))).toBe(true);
-          expect(failureText(yield* transport("git-receive-pack 'origin'"))).toContain(
+          expect(Exit.isSuccess(yield* transport("git-upload-pack '/origin'"))).toBe(true);
+          expect(failureText(yield* transport("git-receive-pack '/origin'"))).toContain(
             "gitTransport: read-only",
           );
           policies.set(session.id, "disabled");

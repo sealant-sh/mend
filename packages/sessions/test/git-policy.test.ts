@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { GitTransportCeiling } from "../src/access-policy.ts";
-import { canonicalRepositoryPath, decideGitTransport } from "../src/git-policy.ts";
+import { decideGitTransport, repositoryKey } from "../src/git-policy.ts";
 
 /**
  * Mend's Git signer (agent-home workspace-isolation-architecture.md §7.4): fetches bound to the
@@ -38,17 +38,30 @@ describe("decideGitTransport", () => {
     expect(decide("archive", "other-org/tool.git")).toEqual({ ok: true });
   });
 
-  it("pushes to the origin's repository however git spells it", () => {
+  it("pushes to the origin's repository on a forge however git spells it", () => {
     for (const repository of ["acme/api.git", "/acme/api.git", "acme/api", "ACME/Api.git/"]) {
       expect(decide("push", repository), repository).toEqual({ ok: true });
     }
+    // An HTTPS origin and an SSH push name one repository on a forge.
     expect(
-      decide("push", "/acme/api.git", {
-        originUrl: "ssh://git@git.acme.dev:2222/acme/api.git",
-        host: "git@git.acme.dev",
-        port: 2222,
-      }),
+      decide("push", "acme/api.git", { originUrl: "https://github.com/acme/api.git" }),
     ).toEqual({ ok: true });
+  });
+
+  it("keeps a plain SSH server's leading slash and case", () => {
+    const plain = {
+      originUrl: "ssh://git@git.acme.dev:2222/srv/git/api.git",
+      host: "git@git.acme.dev",
+      port: 2222,
+    };
+    expect(decide("push", "/srv/git/api.git", plain)).toEqual({ ok: true });
+    expect(decide("push", "/srv/git/api", plain)).toEqual({ ok: true });
+    expect(decide("push", "srv/git/api.git", plain).ok).toBe(false);
+    expect(decide("push", "/srv/git/API.git", plain).ok).toBe(false);
+    const scp = { originUrl: "git@git.acme.dev:acme/api.git", host: "git@git.acme.dev" };
+    expect(decide("push", "acme/api.git", scp)).toEqual({ ok: true });
+    expect(decide("push", "acme/API.git", scp).ok).toBe(false);
+    expect(decide("push", "/acme/api.git", scp).ok).toBe(false);
   });
 
   it("refuses a push to another repository on the same host", () => {
@@ -58,14 +71,19 @@ describe("decideGitTransport", () => {
       "acme/api/../other.git",
       "acme/api.git/../../other/x",
       "acme//api.git",
+      "acme%2Fapi.git",
       "acme/api%2F..%2F..%2Fother",
       "acme/%2561pi.git",
+      // Kelvin sign: a Unicode fold would read it as `k`.
+      "acme/\u212Api.git",
     ]) {
-      const decision = decide("push", repository);
+      const decision = decide("push", repository, { originUrl: "git@github.com:acme/kpi.git" });
       expect(decision.ok, repository).toBe(false);
     }
     expect(decide("push", "acme/other.git")).toMatchObject({
-      message: expect.stringContaining("pushes only to this project's own repository (acme/api)"),
+      message: expect.stringContaining(
+        "pushes only to this project's own repository (acme/api.git)",
+      ),
     });
   });
 
@@ -81,12 +99,17 @@ describe("decideGitTransport", () => {
       ok: false,
       message: expect.stringContaining("has no origin"),
     });
-    expect(
-      decide("push", "acme/api.git", {
-        originUrl: "https://github.com/acme//api.git",
-        host: "github.com",
-      }),
-    ).toMatchObject({ ok: false, message: expect.stringContaining("cannot read one repository") });
+    for (const originUrl of [
+      "https://github.com/acme//api.git",
+      // A URL parser would collapse this to `/org/other.git` before anything could see the `..`.
+      "https://github.com/org/allowed/../other.git",
+      "https://github.com/acme/%2561pi.git",
+    ]) {
+      expect(decide("push", "org/other.git", { originUrl }), originUrl).toMatchObject({
+        ok: false,
+        message: expect.stringContaining("cannot read one repository"),
+      });
+    }
     // A fetch without an origin is not bound to one, as before.
     expect(decide("fetch", "acme/api.git", { originUrl: null })).toEqual({ ok: true });
   });
@@ -119,11 +142,12 @@ describe("decideGitTransport", () => {
   });
 });
 
-describe("canonicalRepositoryPath", () => {
-  it("reads one spelling per repository", () => {
-    expect(canonicalRepositoryPath("/Acme/API.git")).toBe("acme/api");
-    expect(canonicalRepositoryPath("acme/my%20repo.git")).toBe("acme/my repo");
-    expect(canonicalRepositoryPath("~user/repo.git")).toBe("~user/repo");
+describe("repositoryKey", () => {
+  it("folds ASCII case and the leading slash on a forge only", () => {
+    expect(repositoryKey("/Acme/API.git", "github.com")).toBe("acme/api");
+    expect(repositoryKey("/Acme/API.git", "git.acme.dev")).toBe("/Acme/API");
+    expect(repositoryKey("~user/repo.git/", "git.acme.dev")).toBe("~user/repo");
+    expect(repositoryKey("acme/\u212Api", "github.com")).toBe("acme/\u212Api");
   });
 
   it("refuses a path that reads more than one way", () => {
@@ -131,15 +155,15 @@ describe("canonicalRepositoryPath", () => {
       "",
       "/",
       ".git",
+      "a/.git",
+      "//a",
       "a/../b",
       "a/./b",
       "a//b",
       "a\\b",
-      "a/%zz",
-      "a/%252e%252e/b",
       "a/\u0000b",
     ]) {
-      expect(canonicalRepositoryPath(path), JSON.stringify(path)).toBeNull();
+      expect(repositoryKey(path, "github.com"), JSON.stringify(path)).toBeNull();
     }
   });
 });

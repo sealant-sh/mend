@@ -57,6 +57,7 @@ let runtime: ManagedRuntime.ManagedRuntime<
 let launchToken = "";
 let otherLaunchToken = "";
 let personToken = "";
+let otherLaunchPersonToken = "";
 
 const capture: SessionCaptureApi = {
   planGet: () => Effect.die("not in this test"),
@@ -92,6 +93,9 @@ const sessionApi: SessionSocketApi = {
     captureLaunches.push(launchId);
     return capture;
   },
+  // The engine grants a launch's tokens the session's routes; session.sock still takes only a
+  // person's, which is what these tests check of it.
+  channelFor: () => Effect.succeed({ ok: true, api: sessionApi }),
 };
 
 /** Write `request` to the socket as is and read everything until the server closes. */
@@ -169,6 +173,7 @@ beforeAll(async () => {
       launchToken = yield* tokens.issue(SESSION, LAUNCH);
       otherLaunchToken = yield* tokens.issue(SESSION, OTHER_LAUNCH);
       personToken = yield* tokens.issuePerson(LAUNCH, "account-anna");
+      otherLaunchPersonToken = yield* tokens.issuePerson(OTHER_LAUNCH, "account-anna");
       const sockets = yield* ExecutorSockets;
       yield* sockets.bind({ scope: SCOPE, launchId: LAUNCH, mode: "normal" });
     }),
@@ -264,6 +269,52 @@ describe("capture.sock", () => {
     ).toBe(403);
     expect(received).toEqual([]);
   });
+
+  it("answers 400 to a target it cannot read, and goes on serving", async () => {
+    for (const target of ["//", "//[", "//:80/x"]) {
+      const answer = await exchange(
+        capturePath,
+        `GET ${target} HTTP/1.1\r\nHost: mend:3106\r\nConnection: close\r\n\r\n`,
+      );
+      expect(statusOf(answer), target).toBe(400);
+    }
+    const heartbeat = await post(capturePath, "/lease.heartbeat", launchToken, {
+      worktree_id: "wt",
+      epoch: 1,
+    });
+    expect(statusOf(heartbeat)).toBe(200);
+  });
+
+  it("serves Mend and the object store on one hostname, and only the store's own port relays", async () => {
+    received.length = 0;
+    // Mend at 127.0.0.1:3106 beside the store at 127.0.0.1:<storePort>, as .env.example puts
+    // both on 172.17.0.1.
+    const heartbeat = await post(
+      capturePath,
+      "/lease.heartbeat",
+      launchToken,
+      { worktree_id: "wt", epoch: 1 },
+      "127.0.0.1:3106",
+    );
+    expect(statusOf(heartbeat)).toBe(200);
+    const target = `/mend/captures/wt/4/packs/def?${SIGNED_QUERY}`;
+    const put = await exchange(
+      capturePath,
+      `PUT ${target} HTTP/1.1\r\nHost: 127.0.0.1:${storePort}\r\nContent-Length: 2\r\n` +
+        `Connection: close\r\n\r\nok`,
+    );
+    expect(statusOf(put)).toBe(200);
+    // The store's admin port on the same host: never relayed, whatever the method.
+    const admin = `127.0.0.1:${storePort + 3}`;
+    for (const request of [
+      `GET /v2/GetClusterStatus?${SIGNED_QUERY} HTTP/1.1\r\nHost: ${admin}\r\nConnection: close\r\n\r\n`,
+      `POST /v2/CreateKey HTTP/1.1\r\nHost: ${admin}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`,
+      `PUT ${target} HTTP/1.1\r\nHost: ${admin}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`,
+    ]) {
+      expect(statusOf(await exchange(capturePath, request)), request).toBe(403);
+    }
+    expect(received.map((each) => each.method)).toEqual(["PUT"]);
+  });
 });
 
 describe("capture.sock's sorting of a request", () => {
@@ -279,10 +330,18 @@ describe("capture.sock's sorting of a request", () => {
       kind: "refused",
       status: 403,
     });
-    expect(sort("POST", "/plan.get", { host: "garage:3903" })).toMatchObject({
+    // A capture route is Mend's whatever host it names; it is never relayed.
+    expect(sort("POST", "/plan.get", { host: "garage:3903" })).toEqual({
+      kind: "capture",
+      route: "/plan.get",
+    });
+    expect(sort("PUT", `/mend/captures/k?${SIGNED_QUERY}`, { host: "garage:3903" })).toMatchObject({
       kind: "refused",
       status: 403,
     });
+    for (const target of ["//", "//[", "//:80/x"]) {
+      expect(sort("GET", target, { host: "garage:3900" }), target).toMatchObject({ status: 400 });
+    }
     expect(
       sort("DELETE", `/mend/captures/k?${SIGNED_QUERY}`, { host: "garage:3900" }),
     ).toMatchObject({ kind: "refused", status: 405 });
@@ -317,33 +376,43 @@ describe("session.sock", () => {
     exchange(
       sessionPath,
       `GET ${route} HTTP/1.1\r\nHost: localhost\r\n` +
-        (token === null ? "" : `Authorization: Bearer ${token}\r\n`) +
+        (token === null
+          ? ""
+          : `Authorization: Bearer ${token}\r\nx-mend-session-id: ${SESSION}\r\n`) +
         `Connection: close\r\n\r\n`,
     );
+  const connect = (token: string | null) =>
+    exchange(
+      sessionPath,
+      `CONNECT /git/transport HTTP/1.1\r\nHost: localhost\r\n` +
+        (token === null
+          ? ""
+          : `Authorization: Bearer ${token}\r\nx-mend-session-id: ${SESSION}\r\n`) +
+        `x-mend-git-host: github.com\r\nx-mend-git-command: git-upload-pack 'acme/api.git'\r\n\r\n`,
+    );
 
-  it("serves the session routes to a token of its own launch, and nothing without one", async () => {
-    const served = await get("/recipes", launchToken);
+  it("serves the session routes to a person's token of its own launch", async () => {
+    const served = await get("/recipes", personToken);
     expect(statusOf(served)).toBe(200);
     expect(served).toContain('[{"name":"web"}]');
-    expect(statusOf(await get("/recipes", null))).toBe(401);
-    expect(statusOf(await get("/recipes", otherLaunchToken))).toBe(401);
-    expect(
-      statusOf(
-        await exchange(
-          sessionPath,
-          `CONNECT /git/transport HTTP/1.1\r\nHost: localhost\r\nx-mend-git-host: github.com\r\n` +
-            `x-mend-git-command: git-upload-pack 'acme/api.git'\r\n\r\n`,
-        ),
-      ),
-    ).toBe(401);
+  });
+
+  it("refuses no token, the launch's capture credential, and another launch's tokens", async () => {
+    for (const token of [null, launchToken, otherLaunchToken, otherLaunchPersonToken]) {
+      expect(statusOf(await get("/recipes", token)), String(token)).toBe(401);
+      expect(statusOf(await connect(token)), String(token)).toBe(401);
+    }
   });
 
   it("serves no capture route: captures travel over capture.sock", async () => {
-    expect(
-      statusOf(
-        await post(sessionPath, "/lease.heartbeat", launchToken, { worktree_id: "wt", epoch: 1 }),
-      ),
-    ).toBe(404);
+    const text = JSON.stringify({ worktree_id: "wt", epoch: 1 });
+    const answer = await exchange(
+      sessionPath,
+      `POST /lease.heartbeat HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${personToken}\r\n` +
+        `x-mend-session-id: ${SESSION}\r\nContent-Type: application/json\r\n` +
+        `Content-Length: ${Buffer.byteLength(text)}\r\nConnection: close\r\n\r\n${text}`,
+    );
+    expect(statusOf(answer)).toBe(404);
   });
 });
 

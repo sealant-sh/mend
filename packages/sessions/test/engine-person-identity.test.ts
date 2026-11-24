@@ -492,7 +492,7 @@ const STOP_HOOK = new AgentHookReport({
 const push = (origin: string) => ({
   host: origin,
   port: null,
-  command: "git-receive-pack 'origin'",
+  command: "git-receive-pack '/origin'",
 });
 
 describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => {

@@ -740,7 +740,8 @@ export type ChannelAuthentication =
  * Authenticate one session channel request by its bearer token: the token's hash resolves its
  * launch and person, and the live session it names answers what that token reaches. Shared by
  * every listener that takes tokens: the network endpoint and an executor's `session.sock`
- * (`executor-sockets.ts`), which passes `launchId` so only its own executor's tokens reach it.
+ * (`executor-sockets.ts`), which passes `launchId` so only its own executor's tokens reach it, and
+ * `personOnly` so the launch's capture credential never does.
  */
 export const authenticateChannelRequest = async (
   headers: http.IncomingHttpHeaders,
@@ -748,7 +749,11 @@ export const authenticateChannelRequest = async (
     readonly tokens: SessionChannelTokensRepo["Service"];
     readonly registry: Pick<SessionChannelRegistry["Service"], "lookup">;
   },
-  options: { readonly launchId?: string } = {},
+  options: {
+    readonly launchId?: string;
+    /** A person's token only: the launch's own token (its capture credential) is refused. */
+    readonly personOnly?: boolean;
+  } = {},
 ): Promise<ChannelAuthentication> => {
   const { tokens, registry } = deps;
   const credentials = parseChannelCredentials(headers);
@@ -772,6 +777,7 @@ export const authenticateChannelRequest = async (
   if (resolved === null) return notAccepted;
   // A listener of one executor takes that executor's tokens only.
   if (options.launchId !== undefined && resolved.launchId !== options.launchId) return notAccepted;
+  if (options.personOnly === true && resolved.accountId === null) return notAccepted;
   let target: SessionId;
   if (resolved.accountId === null) {
     if (credentials.sessionId !== null && credentials.sessionId !== resolved.sessionId) {

@@ -37,9 +37,10 @@ import type { SessionSocketApi } from "./session-socket.ts";
  *   with its `Host` kept, so the signature over it still holds. Never a tunnel, never another
  *   host: it is all a recovering executor reaches.
  * - `session.sock`: the session channel's routes (Git, MCP, `mend resource`, land, repositories,
- *   Services, pickups, agent hooks, sign-ins, Doppler), each request with a bearer token of this
- *   executor's launch (docs/adr/0016, decision 4: never tokenless). Captures are not served here.
- *   A recovery boot never has one.
+ *   Services, pickups, agent hooks, sign-ins, Doppler), each request with a person's bearer token
+ *   of this executor's launch (docs/adr/0016, decision 4: never tokenless). The launch's own token
+ *   is the capture credential and is refused here; captures are not served here. A recovery boot
+ *   never has one.
  */
 
 /** The capture relay's file name in an executor's scope. */
@@ -110,10 +111,12 @@ const refuse = (status: 400 | 403 | 405, message: string) =>
 
 /**
  * Sort one request that reached `capture.sock`. A request whose `Host` names the object store's
- * host must name its port too, be a GET, HEAD or PUT, and carry a SigV4 query signature and no
- * `Authorization` header; it is relayed. Any other request must be a POST to a capture route; it
- * is served here once its credential is checked. Everything else, a tunnel and an absolute-form
- * target included, is refused.
+ * host and port must be a GET, HEAD or PUT carrying a SigV4 query signature and no
+ * `Authorization` header; it is relayed, and only it ever leaves this process. Any other request
+ * must be a POST to a capture route, served here once its credential is checked, whatever host it
+ * names: Mend and the store may share one (`172.17.0.1:3106` beside `172.17.0.1:3900`). Everything
+ * else, a tunnel, an absolute-form or unreadable target and the store's other ports included, is
+ * refused. Never throws: a request this cannot read is a 400.
  */
 export const classifyCaptureSocketRequest = (
   request: {
@@ -131,14 +134,20 @@ export const classifyCaptureSocketRequest = (
   if (!request.target.startsWith("/")) {
     return refuse(403, "capture.sock is not a proxy: a request names a path, never a URL");
   }
+  // `//host/…` reads as a network-path reference, which a URL parser takes for a host.
+  if (request.target.startsWith("//")) {
+    return refuse(400, "capture.sock reads a request target that starts with one /");
+  }
   const hostHeader = request.headers.host;
   const host = typeof hostHeader === "string" ? hostHeaderOf(hostHeader) : null;
   if (host === null) return refuse(400, "a request to capture.sock names its Host");
-  const url = new URL(request.target, "http://capture.sock");
-  if (store !== null && host.hostname === store.hostname) {
-    if (host.port !== store.port) {
-      return refuse(403, `capture.sock relays to the object store's port ${store.port} only`);
-    }
+  let url: URL;
+  try {
+    url = new URL(request.target, "http://capture.sock");
+  } catch {
+    return refuse(400, "capture.sock cannot read this request target");
+  }
+  if (store !== null && host.hostname === store.hostname && host.port === store.port) {
     if (!OBJECT_METHODS.has(request.method)) {
       return refuse(405, "capture.sock relays GET, HEAD and PUT to the object store");
     }
@@ -210,6 +219,10 @@ const relayObjectRequest = (
     response.end(JSON.stringify({ message: "the object store did not answer" }));
   });
   request.on("aborted", () => upstream.destroy());
+  // The executor went away before the answer was through: stop reading the store for it.
+  response.on("close", () => {
+    if (!response.writableFinished) upstream.destroy();
+  });
   request.pipe(upstream);
 };
 
@@ -340,6 +353,16 @@ const makeExecutorSockets = (
 
     const captureServer = (launchId: string): http.Server => {
       const server = http.createServer((request, response) => {
+        try {
+          serveCapture(request, response);
+        } catch {
+          // Nothing a request carries may throw out of the listener and take Mend down.
+          if (response.headersSent) response.destroy();
+          else respondJson(response, 400, { message: "capture.sock cannot read this request" });
+          request.resume();
+        }
+      });
+      const serveCapture = (request: http.IncomingMessage, response: http.ServerResponse) => {
         const sorted = classifyCaptureSocketRequest(
           { method: request.method ?? "", target: request.url ?? "", headers: request.headers },
           store,
@@ -370,7 +393,7 @@ const makeExecutorSockets = (
             if (response.headersSent) response.destroy();
             else respondJson(response, 503, { message: "capture.sock: not answered now" });
           });
-      });
+      };
       const refuseTunnel = (_request: http.IncomingMessage, socket: net.Socket) =>
         refuseConnect(socket, "405 Method Not Allowed", ONLY_CAPTURE);
       server.on("connect", refuseTunnel);
@@ -381,9 +404,15 @@ const makeExecutorSockets = (
     };
 
     const sessionServer = (launchId: string): http.Server => {
-      // Captures travel over capture.sock: the routes this socket serves carry none.
+      // A person's token only (docs/adr/0016, decision 4): the launch's own token is the capture
+      // credential, which reaches capture.sock and nothing else. Captures travel over
+      // capture.sock: the routes this socket serves carry none.
       const handlers = tokenChannelHandlers(async (headers) => {
-        const auth = await authenticateChannelRequest(headers, { tokens, registry }, { launchId });
+        const auth = await authenticateChannelRequest(
+          headers,
+          { tokens, registry },
+          { launchId, personOnly: true },
+        );
         if (!auth.ok) return auth;
         const api: SessionSocketApi = { ...auth.api, capture: undefined, captureAs: undefined };
         return { ...auth, api };
@@ -396,36 +425,55 @@ const makeExecutorSockets = (
       return server;
     };
 
+    /** Bind `binding`'s sockets in `dir`; if one cannot listen, none is left serving. */
+    const bindIn = async (
+      dir: string,
+      binding: ExecutorSocketsBinding,
+    ): Promise<ReadonlyArray<string>> => {
+      const capturePath = path.join(dir, CAPTURE_SOCKET_NAME);
+      const sessionPath = path.join(dir, SESSION_SOCKET_NAME);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.rmSync(capturePath, { force: true });
+      fs.rmSync(sessionPath, { force: true });
+      const servers: Array<{ readonly server: http.Server; readonly path: string }> = [
+        { server: captureServer(binding.launchId), path: capturePath },
+        ...(binding.mode === "recover"
+          ? []
+          : [{ server: sessionServer(binding.launchId), path: sessionPath }]),
+      ];
+      try {
+        for (const entry of servers) {
+          await listen(entry.server, entry.path);
+          // The executor's user reaches the sockets through its volume subpath; nothing there runs.
+          fs.chmodSync(entry.path, 0o666);
+        }
+      } catch (cause) {
+        for (const entry of servers) {
+          entry.server.close();
+          fs.rmSync(entry.path, { force: true });
+        }
+        throw cause;
+      }
+      bound.set(
+        binding.scope,
+        servers.map((entry) => entry.server),
+      );
+      return servers.map((entry) => entry.path);
+    };
+
     const bind = Effect.fn("ExecutorSockets.bind")(function* (binding: ExecutorSocketsBinding) {
       if (!SCOPE_SHAPE.test(binding.scope)) {
         return yield* new ExecutorScopeError({
           message: `not an executor scope: ${JSON.stringify(binding.scope)}`,
         });
       }
-      const dir = path.join(root, binding.scope);
-      const capturePath = path.join(dir, CAPTURE_SOCKET_NAME);
-      const sessionPath = path.join(dir, SESSION_SOCKET_NAME);
       close(binding.scope);
-      return yield* Effect.promise(async () => {
-        fs.mkdirSync(dir, { recursive: true });
-        fs.rmSync(capturePath, { force: true });
-        fs.rmSync(sessionPath, { force: true });
-        const servers: Array<{ readonly server: http.Server; readonly path: string }> = [
-          { server: captureServer(binding.launchId), path: capturePath },
-          ...(binding.mode === "recover"
-            ? []
-            : [{ server: sessionServer(binding.launchId), path: sessionPath }]),
-        ];
-        for (const entry of servers) {
-          await listen(entry.server, entry.path);
-          // The executor's user reaches the sockets through its volume subpath.
-          fs.chmodSync(entry.path, 0o766);
-        }
-        bound.set(
-          binding.scope,
-          servers.map((entry) => entry.server),
-        );
-        return servers.map((entry) => entry.path);
+      return yield* Effect.tryPromise({
+        try: () => bindIn(path.join(root, binding.scope), binding),
+        catch: (cause) =>
+          new ExecutorScopeError({
+            message: `could not bind ${binding.scope}'s sockets: ${cause instanceof Error ? cause.message : String(cause)}`,
+          }),
       });
     });
 

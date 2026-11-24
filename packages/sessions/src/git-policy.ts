@@ -13,7 +13,7 @@ const refuse = (message: string) => ({ ok: false, message }) as const;
  * - a fetch or an archive is bound to the origin's host and port only, so submodules, private
  *   dependencies on the same host and other repositories of the session (ADR 0011) still fetch;
  * - a push is bound to the origin's repository itself: the same host and port, and the same
- *   canonical path (`canonicalRepositoryPath`), or to the origin of another repository the
+ *   canonical path (`repositoryKey`), or to the origin of another repository the
  *   session holds (ADR 0011) on that host. A project whose origin is missing, or whose path
  *   cannot be read one way only, pushes nowhere through the signer.
  *
@@ -52,62 +52,88 @@ export const decideGitTransport = (input: {
   if (input.originUrl === null) {
     return refuse("this project has no origin, so Mend's Git signer pushes nowhere");
   }
-  const originPath =
-    origin === null ? null : canonicalRepositoryPath(originRepositoryPath(input.originUrl));
-  if (originPath === null) {
+  const host = input.target.host.slice(input.target.host.lastIndexOf("@") + 1).toLowerCase();
+  const originRaw = origin === null ? null : originRepositoryPath(input.originUrl);
+  const originKey = originRaw === null ? null : repositoryKey(originRaw, host);
+  if (originKey === null) {
     return refuse(
       "Mend cannot read one repository from this project's origin, so its Git signer pushes nowhere",
     );
   }
-  const targetPath = canonicalRepositoryPath(input.repository);
-  const pushable = new Set([originPath]);
+  const pushable = new Set([originKey]);
   for (const other of input.repositoryOrigins) {
     const location = gitRemoteLocation(other);
-    const path = location === null ? null : canonicalRepositoryPath(originRepositoryPath(other));
-    if (location !== null && path !== null && isSameGitRemote(location, input.target)) {
-      pushable.add(path);
-    }
+    if (location === null || !isSameGitRemote(location, input.target)) continue;
+    const raw = originRepositoryPath(other);
+    const key = raw === null ? null : repositoryKey(raw, host);
+    if (key !== null) pushable.add(key);
   }
-  if (targetPath === null || !pushable.has(targetPath)) {
+  // Git hands the ssh command the path literally: it is never percent-decoded here.
+  const targetKey = repositoryKey(input.repository, host);
+  if (targetKey === null || !pushable.has(targetKey)) {
     return refuse(
-      `Mend's Git signer pushes only to this project's own repository (${originPath}); ${JSON.stringify(input.repository)} is another`,
+      `Mend's Git signer pushes only to this project's own repository (${originRaw}); ${JSON.stringify(input.repository)} is another`,
     );
   }
   return { ok: true };
 };
 
 /**
- * The repository path of a clone URL `gitRemoteLocation` accepts: the URL's path, or what follows
- * the host of an SCP-style `user@host:path` (split where `gitRemoteLocation` splits it).
+ * Hosts that route a repository whatever its ASCII case and whether its path leads with `/`, so
+ * `git@github.com:Acme/API.git` and `/acme/api` are one repository there. Any other host is a
+ * plain SSH or HTTP server, where both can name another repository.
  */
-const originRepositoryPath = (originUrl: string): string =>
-  originUrl.includes("://")
-    ? new URL(originUrl).pathname
-    : originUrl.slice(originUrl.lastIndexOf(":") + 1);
+const CASE_INSENSITIVE_FORGES = new Set(["github.com", "gitlab.com", "bitbucket.org"]);
 
 /**
- * One spelling per repository, or null for a path that reads more than one way. Percent-escapes
- * are decoded once (a `%` left after that is refused, never decoded again), leading and trailing
- * slashes and one `.git` suffix are dropped, and case is folded, the way the common Git hosts
- * route a repository. An empty, `.` or `..` segment, a backslash or a control character is
- * refused: the host might resolve it to another repository than the one it names.
+ * The repository path an origin names, as Git would hand it to the ssh command, or null when it
+ * reads more than one way. An SCP-style `user@host:path` is taken literally. A URL's path is cut
+ * from the text as written, never through a URL parser, which would collapse a `..` before
+ * `repositoryKey` could refuse it; its percent-escapes are decoded once, as Git decodes a URL,
+ * and a `%` left after that is refused.
  */
-export const canonicalRepositoryPath = (raw: string): string | null => {
+const originRepositoryPath = (originUrl: string): string | null => {
+  if (!originUrl.includes("://")) return originUrl.slice(originUrl.lastIndexOf(":") + 1);
+  const afterScheme = originUrl.slice(originUrl.indexOf("://") + 3);
+  const slash = afterScheme.indexOf("/");
+  if (slash === -1) return null;
+  const written = afterScheme.slice(slash).replace(/[?#][\s\S]*$/, "");
   let decoded: string;
   try {
-    decoded = decodeURIComponent(raw);
+    decoded = decodeURIComponent(written);
   } catch {
     return null;
   }
-  for (const character of decoded) {
+  return decoded.includes("%") ? null : decoded;
+};
+
+/** No empty, `.` or `..` segment between the first and last, no backslash, no control character. */
+const segmentsReadOneWay = (path: string): boolean => {
+  for (const character of path) {
     const code = character.charCodeAt(0);
-    if (code < 32 || code === 0x7f || character === "\\" || character === "%") return null;
+    if (code < 32 || code === 0x7f || character === "\\") return false;
   }
-  const segments = decoded.replace(/^\/+/, "").replace(/\/+$/, "").toLowerCase().split("/");
-  const last = segments.length - 1;
-  segments[last] = (segments[last] ?? "").replace(/\.git$/, "");
-  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
-    return null;
-  }
-  return segments.join("/");
+  const inner = path.replace(/^\//, "").replace(/\/+$/, "");
+  return inner.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+};
+
+/**
+ * The key a repository path compares by on `host`, or null for a path that reads more than one
+ * way. Trailing slashes and one `.git` suffix are dropped everywhere, as Git's own server looks
+ * for `<path>` and `<path>.git` alike. On a case-insensitive forge (`CASE_INSENSITIVE_FORGES`) a
+ * leading `/` is dropped and ASCII letters are folded; on any other host both are kept, since
+ * `/srv/git/api.git` and `srv/git/api.git`, or `API.git` and `api.git`, can be two repositories.
+ * Only ASCII is folded: a Unicode fold maps signs such as `K` (Kelvin) onto letters.
+ */
+export const repositoryKey = (path: string, host: string): string | null => {
+  if (!segmentsReadOneWay(path)) return null;
+  const forge = CASE_INSENSITIVE_FORGES.has(host.toLowerCase());
+  const leading = path.startsWith("/");
+  const inner = path
+    .replace(/^\//, "")
+    .replace(/\/+$/, "")
+    .replace(/\.git$/, "");
+  if (inner === "" || inner.endsWith("/")) return null;
+  if (forge) return inner.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  return leading ? `/${inner}` : inner;
 };
