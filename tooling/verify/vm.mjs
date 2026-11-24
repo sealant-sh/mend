@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -11,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
-import { homedir } from "node:os";
+import { homedir, constants as osConstants } from "node:os";
 import { join } from "node:path";
 
 import { mainMigrations, restoreScript, saveScript, storeLoadScript, sshRunner } from "./box.mjs";
@@ -257,11 +258,70 @@ const qemuArgs = ({ dir, slot, cpus, memory, cache, seedUrl, extraDrives = [] })
   "-daemonize",
 ];
 
-const startQemu = (options) => {
-  const started = run("qemu-system-x86_64", qemuArgs(options));
-  return started.code === 0
-    ? null
-    : `qemu-system-x86_64 exited ${started.code}: ${lastLine(started.stderr)}`;
+// A copy outlives the process that started it (SLNT-1326). QEMU daemonizes, but a daemon stays in
+// its starter's cgroup, and stopping that cgroup's unit kills every process in it: on 24 Nov the
+// daily run's three copies died when T3 stopped the scope of the thread that ran `vm up`, as it does
+// when a thread ends a turn with no background command. So `vm up` asks the user's systemd manager
+// to start QEMU as a transient service of its own. The manager forks it, so it works from an ssh
+// session as well as from a scope under the manager, where a `--scope` would have to move a process
+// out of a cgroup the user does not own. `--collect` removes the unit once QEMU exits, cleanly or not,
+// so `vm down` (which stops QEMU by its pid) and a start that fails leave none behind. A host with no
+// user manager reachable starts QEMU as before, in the starter's cgroup, and `vm up` says so.
+//
+// Only a copy gets a unit. `vm build` and `vm slot` drive their VM from start to end and the VM is
+// no use without that driver: a build whose starter dies leaves the master as it was, and the next
+// build deletes the VM's directory and starts over, whereas a build VM that outlived its starter
+// would be one nobody stops.
+
+/** The transient unit a copy's QEMU runs in, one per copies directory and slot. */
+export const unitOf = (root, slot) =>
+  `mend-check-vm-${createHash("sha256").update(root).digest("hex").slice(0, 8)}-${slot}.service`;
+
+/** Whether the user's systemd manager answers, so a copy can run in a unit of its own. */
+const userManager = () =>
+  /^(running|degraded|starting|initializing)$/.test(
+    run("systemctl", ["--user", "is-system-running"]).stdout.trim(),
+  );
+
+/** systemd-run's arguments for a copy's QEMU in `unit`: it returns once QEMU has daemonized. */
+export const unitArgs = (unit, dir, slot, args) => [
+  "--user",
+  `--unit=${unit}`,
+  `--description=Mend check VM ${hostOf(slot)} (${dir})`,
+  "--collect",
+  "--quiet",
+  "--service-type=forking",
+  `--property=PIDFile=${join(dir, "qemu.pid")}`,
+  `--property=StandardError=file:${join(dir, "qemu.log")}`,
+  "--",
+  "qemu-system-x86_64",
+  ...args,
+];
+
+/**
+ * Starts QEMU, in `unit` when one is given. Returns null once it runs, or what went wrong.
+ */
+const startQemu = (options, unit = null) => {
+  if (unit === null) {
+    const started = run("qemu-system-x86_64", qemuArgs(options));
+    return started.code === 0
+      ? null
+      : `qemu-system-x86_64 exited ${started.code}: ${lastLine(started.stderr)}`;
+  }
+  const started = run("systemd-run", unitArgs(unit, options.dir, options.slot, qemuArgs(options)));
+  if (started.code === 0) return null;
+  let said = "";
+  try {
+    said = lastLine(readFileSync(join(options.dir, "qemu.log"), "utf8"));
+  } catch {
+    // QEMU never ran: systemd-run's own message says why.
+  }
+  return `qemu-system-x86_64 in ${unit} failed: ${said || lastLine(started.stderr)}`;
+};
+
+/** Stops a copy's unit if it is still loaded; a no-op once QEMU has gone and the unit with it. */
+const stopUnit = (unit) => {
+  if (unit) run("systemctl", ["--user", "stop", unit]);
 };
 
 const waitForSsh = async (ssh, timeoutMs) => {
@@ -896,102 +956,140 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
       next: ["pnpm verify vm list"],
     };
   }
+  const unit = userManager() ? unitOf(root, slot) : null;
+  // Until the copy is healthy it is this `vm up`'s: a starter stopped on the way (its scope stopped,
+  // Ctrl-C, a closed terminal) takes the half-started copy with it, unit and all, rather than leave
+  // a VM nobody started a check on. Only SIGKILL gets past this, and leaves what `vm down` removes.
+  const abandon = (signal) => {
+    stopUnit(unit);
+    const pid = qemuPid(dir);
+    if (pid !== null) process.kill(pid, "SIGKILL");
+    if (boatSlot !== null) releaseSlot(root, boatSlot, slot);
+    rmSync(dir, { recursive: true, force: true });
+    writeSshConfig(p);
+    process.exit(128 + (osConstants.signals[signal] ?? 15));
+  };
+  const signals = ["SIGTERM", "SIGINT", "SIGHUP"];
   const fail = async (id, title, detail) => {
     steps.push(step(id, title, "failed", detail));
     keepFailure(root, slot, dir);
     if (boatSlot !== null && qemuPid(dir) !== null) runPhase(root, slot, "tailnet-down", [], dir);
     await stopQemu(dir);
+    stopUnit(unit);
     if (boatSlot !== null) releaseSlot(root, boatSlot, slot);
     return { steps, next: [`pnpm verify vm down ${slot}`], copy: { slot, dir } };
   };
-  const overlay = overlayOf(p, dir);
-  if (overlay.code !== 0) return fail("disk", "The copy's disk", lastLine(overlay.stderr));
-  writeSshConfig(p);
-  const qemu = startQemu({
-    dir,
-    slot,
-    cpus,
-    memory,
-    cache: "unsafe",
-    extraDrives: boatSlot === null ? [] : slotDriveArgs(root, boatSlot),
-  });
-  if (qemu) return fail("boot", "Boot the copy", qemu);
-  const ssh = sshRunner(boxSshArgs(root, slot));
-  if (!(await waitForSsh(ssh, 120_000)))
-    return fail("boot", "Boot the copy", `no ssh in 120s; serial log ${join(dir, "serial.log")}`);
-  const booted = seconds(started);
-  steps.push(step("boot", "Boot the copy", "passed", `ssh answered ${booted}s after vm up`));
-  const url = urlOf(slot);
-  const web = runPhase(root, slot, "web", [addressOf(slot)], dir);
-  if (web.code !== 0) return fail("web", "Mend's web port forwarded", lastLine(web.out));
-  const setup = ssh(`mend server setup --offline --url ${url} 2>&1 | tail -5`);
-  if (setup.code !== 0)
-    return fail("url", `mend server setup --url ${url}`, lastLine(setup.stdout));
-  const healthy = await waitForHealth(url, 300_000);
-  if (!healthy.ok) return fail("health", "Mend answers health", healthy.seen);
-  let boatOn_ = null;
-  if (boatSlot !== null) {
-    const boatAt = Date.now();
-    boatOn_ = boatOn(
-      root,
-      boxSshArgs(root, slot),
-      (name, args) => runPhase(root, slot, name, args, dir),
-      boatSlot,
-      dir,
+  const boot = async () => {
+    const overlay = overlayOf(p, dir);
+    if (overlay.code !== 0) return fail("disk", "The copy's disk", lastLine(overlay.stderr));
+    writeSshConfig(p);
+    const qemu = startQemu(
+      {
+        dir,
+        slot,
+        cpus,
+        memory,
+        cache: "unsafe",
+        extraDrives: boatSlot === null ? [] : slotDriveArgs(root, boatSlot),
+      },
+      unit,
     );
-    if (boatOn_.error)
-      return fail("boat", `Boat through slot ${boatSlot}'s own Funnel`, boatOn_.error);
-    const back = await waitForHealth(url, 300_000);
-    if (!back.ok)
-      return fail(
-        "boat",
-        `Boat through slot ${boatSlot}'s own Funnel`,
-        `Mend after setup: ${back.seen}`,
-      );
+    if (qemu) return fail("boot", "Boot the copy", qemu);
+    const ssh = sshRunner(boxSshArgs(root, slot));
+    if (!(await waitForSsh(ssh, 120_000)))
+      return fail("boot", "Boot the copy", `no ssh in 120s; serial log ${join(dir, "serial.log")}`);
+    const booted = seconds(started);
     steps.push(
       step(
-        "boat",
-        `Boat through slot ${boatSlot}'s own Funnel`,
+        "boot",
+        "Boot the copy",
         "passed",
-        `${boatOn_.sessionUrl} and ${boatOn_.blobUrl} in ${seconds(boatAt)}s; ${boatOn_.certSeen}; VM 131's deployment; ${boatOn_.journals}; ${boatOn_.answeredAfter}`,
+        `ssh answered ${booted}s after vm up; ${
+          unit === null
+            ? "no user systemd manager answers, so QEMU runs in this command's cgroup and stops with its scope or session"
+            : `QEMU runs in ${unit}, so it outlives this command and its scope`
+        }`,
       ),
     );
-    // The check above asked from inside the copy, over the tailnet; a Boat VM comes through Funnel.
-    const outside = await funnelFromOutside(boatOn_.dnsName);
-    if (!outside.ok)
-      return fail("funnel", "The copy's Funnel from outside the tailnet", outside.detail);
+    const url = urlOf(slot);
+    const web = runPhase(root, slot, "web", [addressOf(slot)], dir);
+    if (web.code !== 0) return fail("web", "Mend's web port forwarded", lastLine(web.out));
+    const setup = ssh(`mend server setup --offline --url ${url} 2>&1 | tail -5`);
+    if (setup.code !== 0)
+      return fail("url", `mend server setup --url ${url}`, lastLine(setup.stdout));
+    const healthy = await waitForHealth(url, 300_000);
+    if (!healthy.ok) return fail("health", "Mend answers health", healthy.seen);
+    let boatOn_ = null;
+    if (boatSlot !== null) {
+      const boatAt = Date.now();
+      boatOn_ = boatOn(
+        root,
+        boxSshArgs(root, slot),
+        (name, args) => runPhase(root, slot, name, args, dir),
+        boatSlot,
+        dir,
+      );
+      if (boatOn_.error)
+        return fail("boat", `Boat through slot ${boatSlot}'s own Funnel`, boatOn_.error);
+      const back = await waitForHealth(url, 300_000);
+      if (!back.ok)
+        return fail(
+          "boat",
+          `Boat through slot ${boatSlot}'s own Funnel`,
+          `Mend after setup: ${back.seen}`,
+        );
+      steps.push(
+        step(
+          "boat",
+          `Boat through slot ${boatSlot}'s own Funnel`,
+          "passed",
+          `${boatOn_.sessionUrl} and ${boatOn_.blobUrl} in ${seconds(boatAt)}s; ${boatOn_.certSeen}; VM 131's deployment; ${boatOn_.journals}; ${boatOn_.answeredAfter}`,
+        ),
+      );
+      // The check above asked from inside the copy, over the tailnet; a Boat VM comes through Funnel.
+      const outside = await funnelFromOutside(boatOn_.dnsName);
+      if (!outside.ok)
+        return fail("funnel", "The copy's Funnel from outside the tailnet", outside.detail);
+      steps.push(
+        step("funnel", "The copy's Funnel from outside the tailnet", "passed", outside.detail),
+      );
+    }
+    const total = seconds(started);
     steps.push(
-      step("funnel", "The copy's Funnel from outside the tailnet", "passed", outside.detail),
+      step(
+        "health",
+        "Mend answers health",
+        "passed",
+        `${url} healthy ${total}s after vm up (${master.version})`,
+      ),
     );
-  }
-  const total = seconds(started);
-  steps.push(
-    step(
-      "health",
-      "Mend answers health",
-      "passed",
-      `${url} healthy ${total}s after vm up (${master.version})`,
-    ),
-  );
-  writeFileSync(
-    join(dir, "copy.json"),
-    `${JSON.stringify({ slot, url, ssh: boxSshArgs(root, slot).join(" "), startedAt: new Date(started).toISOString(), healthySeconds: total, master, boat: boatOn_ ? { slot: boatSlot, session: boatOn_.sessionUrl, blob: boatOn_.blobUrl } : null }, null, 2)}\n`,
-    { mode: 0o600 },
-  );
-  return {
-    steps,
-    next: [
-      `export MEND_VERIFY_BOX_SSH='${boxSshArgs(root, slot).join(" ")}' MEND_VERIFY_OUTER_URL=${url}`,
-      `pnpm verify vm down ${slot}   # when the check ends`,
-    ],
-    copy: {
-      slot,
-      url,
-      ssh: boxSshArgs(root, slot).join(" "),
-      healthySeconds: total,
-      bootSeconds: booted,
-    },
+    writeFileSync(
+      join(dir, "copy.json"),
+      `${JSON.stringify({ slot, url, ssh: boxSshArgs(root, slot).join(" "), startedAt: new Date(started).toISOString(), healthySeconds: total, master, unit, boat: boatOn_ ? { slot: boatSlot, session: boatOn_.sessionUrl, blob: boatOn_.blobUrl } : null }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    return {
+      steps,
+      next: [
+        `export MEND_VERIFY_BOX_SSH='${boxSshArgs(root, slot).join(" ")}' MEND_VERIFY_OUTER_URL=${url}`,
+        `pnpm verify vm down ${slot}   # when the check ends`,
+      ],
+      copy: {
+        slot,
+        url,
+        ssh: boxSshArgs(root, slot).join(" "),
+        healthySeconds: total,
+        bootSeconds: booted,
+        unit,
+      },
+    };
   };
+  for (const signal of signals) process.on(signal, abandon);
+  try {
+    return await boot();
+  } finally {
+    for (const signal of signals) process.off(signal, abandon);
+  }
 };
 
 /** vm down <n>|--all: stops a copy's VM and deletes its disk and directory. */
@@ -1017,6 +1115,9 @@ export const vmDown = async ({ root = vmRoot(), slot, all }) => {
         : [];
     if (record.boat && qemuPid(dir) !== null) runPhase(root, each, "tailnet-down", [], dir);
     const stopped = await stopQemu(dir);
+    // QEMU gone, its unit goes with it (--collect); stopping it by name also covers a copy whose
+    // qemu.pid is unreadable but whose unit still runs.
+    stopUnit(record.unit ?? (userManager() ? unitOf(root, each) : null));
     // The slot is free once its VM is gone: QEMU's lock on the slot's disk went with it.
     const held = slotOfCopy(root, each);
     if (held !== null) releaseSlot(root, held, each);
@@ -1225,6 +1326,9 @@ export const vmList = ({ root = vmRoot() }) => {
     return {
       slot,
       running: qemuPid(dir) !== null,
+      // null for a copy started before SLNT-1326 or on a host with no user manager: it stops with
+      // the scope or session that started it.
+      unit: record.unit ?? null,
       url: urlOf(slot),
       ssh: boxSshArgs(root, slot).join(" "),
       ageHours,
@@ -1249,7 +1353,7 @@ export const vmList = ({ root = vmRoot() }) => {
         `copy-${copy.slot}`,
         `Copy ${copy.slot}`,
         "passed",
-        `${copy.running ? "running" : "not running"} · ${copy.url} · ${copy.ageHours === null ? "starting" : `${copy.ageHours.toFixed(1)} h`}${copy.onOlderMaster ? ` · on the master before (${copy.onOlderMaster})` : ""}${copy.ageHours !== null && copy.ageHours > STALE_HOURS ? " · stale: pnpm verify vm down " + copy.slot : ""}`,
+        `${copy.running ? "running" : "not running"} · ${copy.url} ·${copy.running && copy.ageHours !== null ? (copy.unit ? ` ${copy.unit} ·` : " dies with the process that started it ·") : ""} ${copy.ageHours === null ? "starting" : `${copy.ageHours.toFixed(1)} h`}${copy.onOlderMaster ? ` · on the master before (${copy.onOlderMaster})` : ""}${copy.ageHours !== null && copy.ageHours > STALE_HOURS ? " · stale: pnpm verify vm down " + copy.slot : ""}`,
       ),
     ),
   ];

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,8 @@ import {
   LOGIN_CLAIM,
   masterHostKey,
   SLOTS,
+  unitArgs,
+  unitOf,
   urlOf,
   vmBuild,
   vmDown,
@@ -95,6 +98,70 @@ test("vm down removes a copy whose VM is gone, and rewrites the ssh config witho
       [[2, false]],
     );
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a copy's QEMU runs in a transient unit of its own, named for its copies directory and slot", () => {
+  assert.match(unitOf("/a", 1), /^mend-check-vm-[0-9a-f]{8}-1\.service$/);
+  assert.notEqual(unitOf("/a", 1), unitOf("/a", 2));
+  assert.notEqual(unitOf("/a", 1), unitOf("/b", 1));
+  const args = unitArgs(unitOf("/a", 3), "/a/copies/3", 3, ["-name", "mend-check-3", "-daemonize"]);
+  // The user's manager forks QEMU, waits for it to daemonize, and drops the unit once it exits.
+  for (const flag of ["--user", "--collect", "--service-type=forking"])
+    assert.ok(args.includes(flag));
+  assert.ok(args.includes("--property=PIDFile=/a/copies/3/qemu.pid"));
+  assert.deepEqual(args.slice(args.indexOf("--")), [
+    "--",
+    "qemu-system-x86_64",
+    "-name",
+    "mend-check-3",
+    "-daemonize",
+  ]);
+});
+
+test("vm list names a running copy's unit, and says when a copy has none", async () => {
+  const root = scratch();
+  const fakes = [];
+  try {
+    for (const [slot, unit] of [
+      [1, unitOf(root, 1)],
+      [2, null],
+    ]) {
+      const dir = join(root, "copies", String(slot));
+      mkdirSync(dir, { recursive: true });
+      // A process whose command line names the copy's disk reads as its QEMU.
+      const fake = spawn(process.execPath, [
+        "-e",
+        "setTimeout(() => {}, 60000)",
+        join(dir, "disk.qcow2"),
+      ]);
+      fakes.push(fake);
+      writeFileSync(join(dir, "qemu.pid"), String(fake.pid));
+      writeFileSync(
+        join(dir, "copy.json"),
+        JSON.stringify({ slot, startedAt: new Date().toISOString(), unit }),
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const list = vmList({ root });
+    assert.deepEqual(
+      list.copies.map((copy) => [copy.slot, copy.running, copy.unit]),
+      [
+        [1, true, unitOf(root, 1)],
+        [2, true, null],
+      ],
+    );
+    assert.match(
+      list.steps.find((s) => s.id === "copy-1").detail,
+      /mend-check-vm-[0-9a-f]{8}-1\.service/,
+    );
+    assert.match(
+      list.steps.find((s) => s.id === "copy-2").detail,
+      /dies with the process that started it/,
+    );
+  } finally {
+    for (const fake of fakes) fake.kill();
     rmSync(root, { recursive: true, force: true });
   }
 });
