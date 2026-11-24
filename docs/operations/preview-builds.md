@@ -258,6 +258,19 @@ unchanged. No other check holds a copy, so a hold is always free, and `release` 
 evidence scan: `vm down` deletes the copy. The checker's CLI follows the copy through `MEND_URL`, as
 on the box.
 
+**A copy outlives what started it** (SLNT-1326). `vm up` starts the copy's QEMU as a transient
+service in the user's systemd manager, `mend-check-vm-<hash of the copies directory>-<n>.service`,
+so it runs in a cgroup of its own. Until then QEMU stayed in the cgroup of whatever ran `vm up`. On
+24 Nov 2026 the daily run lost all three copies when T3 stopped the scope of the thread that started
+them, as it does when a thread ends a turn with no background command. The unit goes away when QEMU
+exits (`--collect`), so `vm down` and a failed start leave none. A `vm up` stopped by a signal
+before its copy is healthy (its scope stopped, Ctrl-C) stops the VM and removes the copy. `vm list`
+names each copy's unit. On a host with no user manager reachable, `vm up` starts QEMU as before,
+says so, and `vm list` marks the copy `dies with the process that started it`. Run over ssh, that
+needs lingering for the user (`loginctl enable-linger <user>`), so the manager outlives the ssh
+session. `vm build` and `vm slot` keep their VM in their own process: it is no use without the
+command driving it, and a build stopped partway leaves the master as it was.
+
 Everything private (the master, the copies, what was copied from VM 131, the VMs' key) lives in
 `~/.local/share/mend-check-vms`, mode 0700, outside any checkout; `MEND_CHECK_VMS` moves it.
 
