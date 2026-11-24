@@ -166,10 +166,12 @@ describe.skipIf(postgres.skip)("project secrets named like a provider login, in 
         return (yield* secrets.sealedForLaunch(project)).secrets;
       }),
     );
-    expect(launched).toEqual([
-      { name: "ANTHROPIC_API_KEY", sealedValue: "sealed:old-claude" },
-      { name: "OPENAI_API_KEY", sealedValue: "sealed:old-codex" },
-      { name: "STRIPE_API_KEY", sealedValue: "sealed:stripe" },
+    expect(
+      launched.map(({ name, sealedValue, brokered }) => ({ name, sealedValue, brokered })),
+    ).toEqual([
+      { name: "ANTHROPIC_API_KEY", sealedValue: "sealed:old-claude", brokered: null },
+      { name: "OPENAI_API_KEY", sealedValue: "sealed:old-codex", brokered: null },
+      { name: "STRIPE_API_KEY", sealedValue: "sealed:stripe", brokered: null },
     ]);
 
     const replaced = await refusal(
@@ -211,7 +213,7 @@ describe.skipIf(postgres.skip)("project secrets named like a provider login, in 
         return yield* secrets.sealedForLaunch(project);
       }),
     );
-    expect(after.secrets).toEqual([
+    expect(after.secrets.map(({ name, sealedValue }) => ({ name, sealedValue }))).toEqual([
       { name: "LEGACY_OPENAI_KEY", sealedValue: "sealed:old-codex" },
       { name: "STRIPE_API_KEY", sealedValue: "sealed:stripe" },
     ]);

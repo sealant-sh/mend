@@ -23,6 +23,7 @@ export * from "./follow-up-delivery.ts";
 export * from "./git-transport.ts";
 export * from "./git-policy.ts";
 export * from "./access-policy.ts";
+export * from "./access-policy-enforcement.ts";
 export * from "./workspace-git-hooks.ts";
 export * from "./harness-state.ts";
 export { backfillFromNative } from "./native-backfill.ts";

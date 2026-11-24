@@ -1,6 +1,11 @@
 import { HttpApi } from "effect/http-api";
 
 import { accessKeysGroup } from "./access-keys.ts";
+import {
+  accessPoliciesGroup,
+  projectAccessPolicyGroup,
+  worktreeAccessPolicyGroup,
+} from "./access-policies.ts";
 import { accountsGroup } from "./accounts.ts";
 import { agentMemoryGroup } from "./agent-memory.ts";
 import { boatKeyGroup, personBoatKeyGroup, serverBoatKeyGroup } from "./boat-key.ts";
@@ -76,6 +81,7 @@ export const MendApi = HttpApi.make("mend")
   .add(boatKeyGroup)
   .add(personBoatKeyGroup)
   .add(serverBoatKeyGroup)
+  .add(accessPoliciesGroup)
   .add(operatorGroup)
   .add(foldersGroup)
   .add(settingsGroup)
@@ -96,6 +102,7 @@ export const MendApi = HttpApi.make("mend")
   .add(gitKeysGroup)
   .add(projectEnvironmentGroup)
   .add(projectSecretsGroup)
+  .add(projectAccessPolicyGroup)
   .add(projectClusterBindingsGroup)
   .add(projectMountsGroup)
   .add(projectLinksGroup)
@@ -108,6 +115,7 @@ export const MendApi = HttpApi.make("mend")
   .add(pagesGroup)
   .add(pageViewGroup)
   .add(worktreesGroup)
+  .add(worktreeAccessPolicyGroup)
   .add(projectLocalWorktreesGroup)
   .add(previewsGroup)
   .add(screensGroup)

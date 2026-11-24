@@ -353,6 +353,9 @@ export const byWorkspaceCreator = (
       act(workspace.id)(client.captureReplan(workspace, options)),
     expireWorkspace: (workspaceId, ttlSeconds) =>
       act(workspaceId)(client.expireWorkspace(workspaceId, ttlSeconds)),
+    // A workspace's network policy is its worktree's: Mend's own server applies it, for anyone.
+    applyNetworkPolicy: (workspace, options) => client.applyNetworkPolicy(workspace, options),
+    revokeAccess: (workspace, options) => client.revokeAccess(workspace, options),
     diffCommits: (workspaceId, base, head) =>
       act(workspaceId)(client.diffCommits(workspaceId, base, head)),
     // A harness run spends the workspace's logins: its creator's alone.

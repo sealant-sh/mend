@@ -16,7 +16,19 @@ import { Schema } from "effect";
  */
 export interface HotFingerprintInputs {
   /** Standbys must match the worktree's runtime choice; null or omitted keeps sealant selection. */
-  readonly runtime?: "docker" | "boat" | null;
+  readonly runtime?: "docker" | "host-vm" | "boat" | null;
+  /**
+   * The canonical hash of the Access policy rules the standby was created under (its network
+   * policy is create-time-fixed): it serves only a worktree that pinned the same rules. Null or
+   * omitted: Standard, as before Access policies.
+   */
+  readonly accessPolicyHash?: string | null;
+  /**
+   * The Brokered secrets the standby's egress proxy holds, as a digest of their ids and bind
+   * hosts (`brokeredDigestOf`): a standby serves only a launch that would deliver exactly them.
+   * Null or omitted: none.
+   */
+  readonly brokeredSecrets?: string | null;
   /**
    * The sealant Boat account a Boat standby runs in (SLNT-790): a standby is a paid VM in that
    * account, so it serves only a launch that would name the same one. Null or omitted: the
@@ -72,6 +84,25 @@ export interface HotFingerprintInputs {
 
 const encodeWorkspaceImage = Schema.encodeSync(WorkspaceImage);
 
+/**
+ * A deterministic digest of the Brokered secrets a launch delivers: each id with its bind hosts,
+ * sorted. Null when there are none.
+ */
+export const brokeredDigestOf = (
+  secrets: ReadonlyArray<{ readonly id: string; readonly bindHosts: ReadonlyArray<string> }>,
+): string | null =>
+  secrets.length === 0
+    ? null
+    : createHash("sha256")
+        .update(
+          JSON.stringify(
+            secrets
+              .map((secret) => [secret.id, [...secret.bindHosts].toSorted()] as const)
+              .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+          ),
+        )
+        .digest("hex");
+
 /** An image without a screen hashes as before the switch existed, so its standbys stay claimable. */
 const fingerprintedImage = (image: WorkspaceImage) =>
   Object.fromEntries(
@@ -96,6 +127,10 @@ export const hotFingerprint = (
   const canonical = {
     ...(inputs.runtime == null ? {} : { runtime: inputs.runtime }),
     ...(inputs.boatAccountId == null ? {} : { boatAccountId: inputs.boatAccountId }),
+    // Absent under Standard and without Brokered secrets, so a standby made before Access
+    // policies hashes as it did.
+    ...(inputs.accessPolicyHash == null ? {} : { accessPolicyHash: inputs.accessPolicyHash }),
+    ...(inputs.brokeredSecrets == null ? {} : { brokeredSecrets: inputs.brokeredSecrets }),
     ...(standby.layout === "person"
       ? { harnessLayout: { layout: standby.layout, imageKey: standby.imageKey } }
       : {}),

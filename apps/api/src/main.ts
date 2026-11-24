@@ -52,6 +52,7 @@ import {
   ResourcesRepoLive,
   ResourceLoadsRepoLive,
   SessionRepositoriesRepoLive,
+  AccessPoliciesRepoLive,
   AuditEventsRepoLive,
   SessionControlEventsRepoLive,
   SessionSharedControlRepoLive,
@@ -246,6 +247,9 @@ import {
   ResourceRuntimeLive,
   WorktreeServiceRestartsLive,
   ProtocolHostLive,
+  AccessPoliciesFromDatabase,
+  LaunchExecutorSocketsFromEnv,
+  AccessPolicyEnforcementLive,
   McpAppRequestsLive,
   ScreenHostLive,
   type Screens,
@@ -416,6 +420,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SetupRunsRepoLive,
   SessionRunsRepoLive,
   CheckpointsRepoLive,
+  AccessPoliciesRepoLive,
   AuditEventsRepoLive,
   SessionControlEventsRepoLive,
   SessionSharedControlRepoLive,
@@ -1073,6 +1078,9 @@ const MainLive = Layer.unwrap(
           ),
           TerminalProjectsLive,
           ProjectPreviewsLive.pipe(Layer.provideMerge(ProjectLocalWorktreesLive)),
+          // "Apply updated policy" and a revocation's push to running workspaces (ADR 0025's
+          // 2026-11-24 amendment), through sealant.
+          AccessPolicyEnforcementLive,
         ),
       ),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.
@@ -1186,7 +1194,21 @@ const MainLive = Layer.unwrap(
           Layer.provideMerge(SealantLiveFromEnv.pipe(Layer.provide(SealantIdentityStoreLive))),
         ),
       ),
-      Layer.provide(DatabaseLive),
+      // The database, and over it the stored Access policies (ADR 0025's 2026-11-24 amendment).
+      // These fill two references the session engine, its launches, the Git signer and the MCP
+      // dispatcher's Executor tools read, which otherwise read Standard: so they are provided
+      // beneath every layer that builds or calls one, not merged beside them. One step, as
+      // `pipe` takes at most twenty.
+      // And the executors' own sockets (SLNT-1332), where the bundle serves the control root: the
+      // engine binds them for every launch, on the registry the session channel answers from.
+      Layer.provide(
+        Layer.mergeAll(
+          AccessPoliciesFromDatabase,
+          LaunchExecutorSocketsFromEnv.pipe(
+            Layer.provide(Layer.merge(SessionChannelRegistryLayer, BlobStoreConfigLive)),
+          ),
+        ).pipe(Layer.provideMerge(DatabaseLive)),
+      ),
     );
   }),
 ).pipe(Layer.provide(DeploymentConfigLive));

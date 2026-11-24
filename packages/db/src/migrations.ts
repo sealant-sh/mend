@@ -6012,4 +6012,59 @@ export const migrations = {
         ADD CONSTRAINT user_session_defaults_harness_check
         CHECK (harness IN ('claude', 'codex', 'antigravity', 'opencode', 'pi', 'shell'))`;
   }),
+  // Access policies (SLNT-1331; agent-home `docs/workspace-isolation-architecture.md` §7–§8, ADR
+  // 0025's 2026-11-24 amendment). Organization → Access policies holds owners' templates (the
+  // built-in Standard is no row). Every project gets its own copy of Standard, which an owner may
+  // replace with a copy of a template; a worktree pins the rules it starts with (NULL on rows from
+  // before: they read as Standard). Revocations are durable tombstones that win over every pin.
+  // A project secret is Direct (as before) or Brokered: a header, bind hosts and a placeholder.
+  // `host-vm` joins the runtimes a worktree and an organization may name.
+  "0243_access_policies": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE IF NOT EXISTS access_policies (
+      id text PRIMARY KEY,
+      organization_id text NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+      name text NOT NULL,
+      revision integer NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      rules jsonb NOT NULL,
+      created_by_user_id text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CHECK (id <> 'standard')
+    )`;
+    yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS access_policies_organization_name_key
+      ON access_policies (organization_id, lower(name))`;
+    yield* sql`CREATE TABLE IF NOT EXISTS access_revocations (
+      id text PRIMARY KEY,
+      organization_id text NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+      policy_id text,
+      kind text NOT NULL CHECK (kind IN ('host', 'secret', 'all')),
+      target text,
+      revoked_by_user_id text NOT NULL,
+      revoked_at timestamptz NOT NULL DEFAULT now(),
+      CHECK ((kind = 'all') = (target IS NULL))
+    )`;
+    yield* sql`CREATE INDEX IF NOT EXISTS access_revocations_organization_idx
+      ON access_revocations (organization_id, revoked_at)`;
+    yield* sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS access_policy jsonb NOT NULL
+      DEFAULT '{"rules":{"mode":"standard","allowHosts":[],"gitTransport":"read-write","allowExecutorTools":true,"allowBrokeredSecrets":false,"requireVmIsolation":false,"allowedPrivateEgress":[]},"source":{"policyId":"standard","name":"Standard","revision":1}}'::jsonb`;
+    yield* sql`ALTER TABLE worktrees ADD COLUMN IF NOT EXISTS access_policy jsonb`;
+    yield* sql`ALTER TABLE project_secrets ADD COLUMN IF NOT EXISTS delivery text NOT NULL
+      DEFAULT 'direct' CHECK (delivery IN ('direct', 'brokered'))`;
+    yield* sql`ALTER TABLE project_secrets ADD COLUMN IF NOT EXISTS brokered_binding jsonb`;
+    yield* sql`ALTER TABLE project_secrets ADD COLUMN IF NOT EXISTS placeholder text`;
+    yield* sql`ALTER TABLE project_secrets DROP CONSTRAINT IF EXISTS project_secrets_delivery_shape_check`;
+    yield* sql`ALTER TABLE project_secrets ADD CONSTRAINT project_secrets_delivery_shape_check
+      CHECK ((delivery = 'direct' AND brokered_binding IS NULL AND placeholder IS NULL)
+        OR (delivery = 'brokered' AND brokered_binding IS NOT NULL AND placeholder IS NOT NULL))`;
+    yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS project_secrets_placeholder_key
+      ON project_secrets (placeholder) WHERE placeholder IS NOT NULL`;
+    yield* sql`ALTER TABLE worktrees DROP CONSTRAINT IF EXISTS worktrees_session_runtime_check`;
+    yield* sql`ALTER TABLE worktrees ADD CONSTRAINT worktrees_session_runtime_check
+      CHECK (session_runtime IN ('docker', 'host-vm', 'boat'))`;
+    yield* sql`ALTER TABLE organization_settings
+      DROP CONSTRAINT IF EXISTS organization_settings_session_runtime_check`;
+    yield* sql`ALTER TABLE organization_settings ADD CONSTRAINT organization_settings_session_runtime_check
+      CHECK (session_runtime IN ('docker', 'host-vm', 'boat'))`;
+  }),
 };

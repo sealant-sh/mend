@@ -90,6 +90,12 @@ const ABSENT_ON_PURPOSE = {
   MEND_BLOB_STORE_PUBLIC_URL: "S3's own endpoint is what presigned URLs name",
   SEALANT_DOCKER_WORKSPACE_NETWORK: "no workspace container is ever attached to a network here",
   SEALANT_RESOURCE_CALLERS: "caller-owned Docker services are unavailable on the MicroVM runtime",
+  SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS:
+    "no Docker workspace runs here, so none gets a network of its own",
+  SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS: "no Docker workspace network for a container to join",
+  MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS:
+    "MicroVM workspaces are not behind the Docker private-range guard",
+  MEND_HOST_PUBLIC_IPS: "MicroVM workspaces are not behind the Docker private-range guard",
 };
 
 test(

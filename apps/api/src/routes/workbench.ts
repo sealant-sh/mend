@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 
 import {
+  AccessPolicyOwnersOnly,
+  AccessPolicyRejected,
   ChangeDiff,
   ChangedFileView,
   ChangeStats,
@@ -159,6 +161,8 @@ import {
   type WorktreeId,
 } from "@mend/domain";
 import {
+  type BrokeredSecretBinding,
+  brokeredSecretBindingProblems,
   PROJECT_NAME_PATTERN,
   ProjectName,
   DiffDigest,
@@ -2196,18 +2200,54 @@ export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSec
     )
     .handle("create", ({ params, payload }) =>
       Effect.gen(function* () {
-        yield* (yield* ProjectAccess).manageProject(params.id);
+        const project = yield* (yield* ProjectAccess).manageProject(params.id);
         const secrets = yield* ProjectSecretsRepo;
         yield* rejectSecretValue(payload.value);
+        const delivery = payload.delivery;
+        if (delivery?.mode === "brokered") {
+          const problems = brokeredSecretBindingProblems(delivery.binding);
+          if (problems.length > 0) {
+            return yield* new AccessPolicyRejected({
+              message: "The secret was not added: fix what is listed and try again.",
+              problems,
+            });
+          }
+        }
         const sealedValue = yield* sealSecret(payload.value);
-        const result = yield* secrets.create(params.id, { name: payload.name, sealedValue }).pipe(
-          Effect.catchTags({
-            ProjectNotFoundError: () => new NotFound({ id: params.id }),
-            ProjectEnvironmentInvalidInputError: (error) => rejectEnvironment(error),
-            ProjectEnvironmentDuplicateNameError: (error) => rejectEnvironment(error),
-            ProjectEnvironmentLimitError: (error) => rejectEnvironment(error),
-          }),
-        );
+        // Brokered from its first write: no launch ever reads it as Direct.
+        const result = yield* secrets
+          .create(params.id, {
+            name: payload.name,
+            sealedValue,
+            ...(delivery?.mode === "brokered"
+              ? { delivery: { mode: "brokered" as const, binding: delivery.binding } }
+              : {}),
+          })
+          .pipe(
+            Effect.catchTags({
+              ProjectNotFoundError: () => new NotFound({ id: params.id }),
+              ProjectEnvironmentInvalidInputError: (error) => rejectEnvironment(error),
+              ProjectEnvironmentDuplicateNameError: (error) => rejectEnvironment(error),
+              ProjectEnvironmentLimitError: (error) => rejectEnvironment(error),
+            }),
+          );
+        if (delivery?.mode === "brokered") {
+          const caller = yield* CurrentUser;
+          yield* (yield* AuditEventsRepo).record({
+            organizationId: project.organizationId,
+            actorUserId: caller.user.id,
+            action: "project.secret_brokered",
+            subjectType: "project",
+            subjectId: project.id,
+            data: {
+              secret: payload.name,
+              headerName: delivery.binding.headerName,
+              bindHosts: delivery.binding.bindHosts.join(","),
+              previousHeaderName: null,
+              previousBindHosts: null,
+            },
+          });
+        }
         // A name lives in exactly one lane: the secret now owns it.
         yield* evictPlaintextCopy(params.id, payload.name);
         yield* rewarmHotSessions(params.id);
@@ -2272,8 +2312,115 @@ export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSec
         yield* rewarmHotSessions(params.id);
         return new ProjectSecretMutationResult({ secret: null, revision: result.revision });
       }),
+    )
+    .handle("setDelivery", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const access = yield* ProjectAccess;
+        const project = yield* access.manageProject(params.id);
+        const caller = yield* CurrentUser;
+        const secrets = yield* ProjectSecretsRepo;
+        const { delivery } = payload;
+        if (delivery.mode === "brokered") {
+          const problems = brokeredSecretBindingProblems(delivery.binding);
+          if (problems.length > 0) {
+            return yield* new AccessPolicyRejected({
+              message: "The secret was not made Brokered: fix what is listed and try again.",
+              problems,
+            });
+          }
+        }
+        const current = yield* secrets.deliveryOf(params.id, params.secretId);
+        if (current === null) return yield* new NotFound({ id: params.secretId });
+        const isOwner = (yield* access.viewer())?.role === "owner";
+        if (delivery.mode === "brokered") {
+          // Where an approved Brokered secret goes is the approval: a new header or bind host
+          // could hand the value to a host its owner never chose, so only an owner moves it.
+          if (
+            current.binding !== null &&
+            !sameBrokeredBinding(current.binding, delivery.binding) &&
+            !isOwner
+          ) {
+            return yield* new AccessPolicyOwnersOnly({
+              message: `Only an Organization Owner changes where a Brokered secret's value goes. ${current.name} keeps its header and bind hosts; ask an owner to change them.`,
+            });
+          }
+        } else {
+          // Turning a Brokered secret back to Direct puts its value into the workspace's
+          // environment, where the agent reads it: an Organization Owner's call.
+          if (current.delivery === "brokered" && !isOwner) {
+            return yield* new AccessPolicyOwnersOnly({
+              message: `Only an Organization Owner turns a Brokered secret back to Direct, which puts ${current.name}'s value into the workspace's environment. Ask one to make this change.`,
+            });
+          }
+        }
+        const result = yield* secrets
+          .setDelivery(params.id, params.secretId, {
+            delivery:
+              delivery.mode === "brokered"
+                ? { mode: "brokered", binding: delivery.binding }
+                : { mode: "direct" },
+            expectedRevision: payload.expectedRevision,
+          })
+          .pipe(
+            Effect.catchTags({
+              ProjectNotFoundError: () => new NotFound({ id: params.id }),
+              ProjectSecretNotFoundError: () => new NotFound({ id: params.secretId }),
+              ProjectEnvironmentStaleWriteError: (error) =>
+                new EnvironmentStaleWrite({
+                  variableId: error.variableId,
+                  currentRevision: error.currentRevision,
+                }),
+              ProjectEnvironmentInvalidInputError: (error) =>
+                new AccessPolicyRejected({
+                  message: "The secret was not made Brokered: fix what is listed and try again.",
+                  problems: error.issues.map((issue) => issue.message),
+                }),
+            }),
+          );
+        const brokered = delivery.mode === "brokered";
+        if (brokered || result.previous === "brokered") {
+          yield* (yield* AuditEventsRepo).record({
+            organizationId: project.organizationId,
+            actorUserId: caller.user.id,
+            action: brokered ? "project.secret_brokered" : "project.secret_unbrokered",
+            subjectType: "project",
+            subjectId: project.id,
+            // The secret's name and where its value may go, never the value or placeholder.
+            data:
+              delivery.mode === "brokered"
+                ? {
+                    secret: result.secret.name,
+                    headerName: delivery.binding.headerName,
+                    bindHosts: delivery.binding.bindHosts.join(","),
+                    previousHeaderName: current.binding?.headerName ?? null,
+                    previousBindHosts: current.binding?.bindHosts.join(",") ?? null,
+                  }
+                : { secret: result.secret.name },
+          });
+        }
+        yield* rewarmHotSessions(params.id);
+        return new ProjectSecretMutationResult({
+          secret: result.secret,
+          revision: result.revision,
+        });
+      }),
     ),
 );
+
+/** Whether two Brokered bindings send a secret to the same places, in any order. */
+const sameValues = (x: ReadonlyArray<string> | undefined, y: ReadonlyArray<string> | undefined) =>
+  JSON.stringify((x ?? []).map((v) => v.toLowerCase()).toSorted()) ===
+  JSON.stringify((y ?? []).map((v) => v.toLowerCase()).toSorted());
+
+const sameBrokeredBinding = (a: BrokeredSecretBinding, b: BrokeredSecretBinding): boolean => {
+  const same = sameValues;
+  return (
+    a.headerName.toLowerCase() === b.headerName.toLowerCase() &&
+    same(a.bindHosts, b.bindHosts) &&
+    same(a.methods, b.methods) &&
+    same(a.pathPrefixes, b.pathPrefixes)
+  );
+};
 
 /**
  * Cluster bindings (`.plans/cluster-env-sources.md`): names only, on every install. Mutations are

@@ -7,11 +7,15 @@ services:
       MEND_NPM_MIRROR_URL: http://npm-mirror:4873/
       SEALANT_DOCKER_REGISTRY_MIRRORS: http://docker-mirror:5000
       SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER: mend-docker-mirror
+      # Each mirror joins every workspace's own network, under its service name.
+      SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS: >-
+        mend-npm-mirror:npm-mirror,mend-docker-mirror:docker-mirror
 
   # Read-through cache of registry.npmjs.org (npm-mirror.conf). Size-capped, and it leaves
   # 5g free on its disk; the least recently used tarballs go first. No credential sent.
   npm-mirror:
     image: nginx:1.29-alpine
+    container_name: mend-npm-mirror
     hostname: npm-mirror
     restart: unless-stopped
     environment:

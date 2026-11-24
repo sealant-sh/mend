@@ -605,6 +605,24 @@ describe("what stands in a fresh install's way", () => {
     expect(daemon.mutations()).toEqual([]);
   });
 
+  it("counts the host VM runtime's volumes, named outright under the project, as leftovers", async () => {
+    const daemon = new DockerDaemon();
+    daemon.volumes.set("mend-vm-images", project);
+    daemon.volumes.set("mend-vm-data", project);
+    const found = await findServerOldData(daemon, input.dockerContext);
+    if (found._tag !== "ok" || found.value?._tag !== "leftovers")
+      throw new Error("expected leftovers");
+    expect([...found.value.leftovers.volumes].toSorted()).toEqual([
+      "mend-vm-data",
+      "mend-vm-images",
+    ]);
+    const lines: Array<string> = [];
+    expect(
+      await removeServerLeftovers(daemon, found.value.leftovers, (line) => lines.push(line)),
+    ).toEqual([]);
+    expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({ _tag: "ok" });
+  });
+
   it("refuses Mend's own network or container while something runs on it, naming what", async () => {
     const daemon = new DockerDaemon();
     daemon.networks.set("mend_default", project);

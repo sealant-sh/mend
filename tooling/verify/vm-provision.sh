@@ -222,6 +222,13 @@ git)
   systemctl daemon-reload
   systemctl enable --now mend-box-git >/dev/null 2>&1
   systemctl restart mend-box-git
+  # Workspaces run on networks of their own behind sealant's private-range guard (SLNT-1331), and
+  # this gateway is a private address: the server opens it to them, from Mend's next start.
+  env_file=/root/.config/mend/active/server.env
+  if [[ -f $env_file ]]; then
+    sed -i '/^MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS=/d' "$env_file"
+    printf 'MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS=%s/32\n' "$gw" >>"$env_file"
+  fi
   say "git service on git://$gw:9418"
   ;;
 seal)

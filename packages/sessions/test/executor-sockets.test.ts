@@ -1,8 +1,11 @@
+import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
+import * as https from "node:https";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as tls from "node:tls";
 
 import { SessionChannelTokensRepo, SessionChannelTokensRepoMemory } from "@mend/db";
 import { SessionId } from "@mend/domain";
@@ -14,11 +17,15 @@ import type { SessionCaptureApi } from "../src/capture-channel.ts";
 import {
   CAPTURE_SOCKET_NAME,
   classifyCaptureSocketRequest,
+  executorScopeOf,
+  clientHelloServerName,
   ExecutorSockets,
   executorSocketsAt,
   objectStoreEndpointOf,
+  objectStoreOfConfig,
   SESSION_SOCKET_NAME,
 } from "../src/executor-sockets.ts";
+import { SCRIPT_TRANSPORT_PRELUDE } from "../src/script-transport.ts";
 import { SessionChannelRegistry, SessionChannelRegistryLive } from "../src/session-channel.ts";
 import type { SessionSocketApi } from "../src/session-socket.ts";
 
@@ -397,8 +404,9 @@ describe("session.sock", () => {
     expect(served).toContain('[{"name":"web"}]');
   });
 
-  it("refuses no token, the launch's capture credential, and another launch's tokens", async () => {
-    for (const token of [null, launchToken, otherLaunchToken, otherLaunchPersonToken]) {
+  it("takes its own launch's token, which a shared layout's processes carry, and refuses none and another launch's", async () => {
+    expect(statusOf(await get("/recipes", launchToken))).toBe(200);
+    for (const token of [null, otherLaunchToken, otherLaunchPersonToken]) {
       expect(statusOf(await get("/recipes", token)), String(token)).toBe(401);
       expect(statusOf(await connect(token)), String(token)).toBe(401);
     }
@@ -449,5 +457,377 @@ describe("a recovery boot", () => {
     );
     expect(outcome._tag).toBe("ExecutorScopeError");
     expect(fs.existsSync(path.join(root, "..", "escape"))).toBe(false);
+  });
+});
+
+describe("the object store capture.sock relays to", () => {
+  it("is MEND_BLOB_STORE_PUBLIC_URL's, else MEND_BLOB_STORE's endpoint, scheme kept", () => {
+    expect(objectStoreEndpointOf("http://garage:3900", "https://s3.example.com")).toEqual({
+      hostname: "garage",
+      port: 3900,
+      protocol: "http",
+    });
+    expect(objectStoreEndpointOf(undefined, "http://garage:3900")).toEqual({
+      hostname: "garage",
+      port: 3900,
+      protocol: "http",
+    });
+    expect(objectStoreEndpointOf(undefined, "https://s3.example.com")).toEqual({
+      hostname: "s3.example.com",
+      port: 443,
+      protocol: "https",
+    });
+    expect(objectStoreEndpointOf(undefined, undefined)).toBeNull();
+  });
+
+  it("takes a Host without a port for an https store's default port", () => {
+    const s3 = objectStoreEndpointOf(undefined, "https://s3.example.com");
+    const put = (host: string) =>
+      classifyCaptureSocketRequest(
+        { method: "PUT", target: `/mend/k?${SIGNED_QUERY}`, headers: { host } },
+        s3,
+      );
+    expect(put("s3.example.com")).toEqual({ kind: "object" });
+    expect(put("s3.example.com:443")).toEqual({ kind: "object" });
+    expect(put("s3.example.com:80")).toMatchObject({ status: 403 });
+  });
+});
+
+describe("capture.sock and more than one Host", () => {
+  it("answers 400 to a request naming Host twice, and goes on serving", async () => {
+    const answer = await exchange(
+      capturePath,
+      `PUT /mend/k?${SIGNED_QUERY} HTTP/1.1\r\nHost: 127.0.0.1:${storePort}\r\n` +
+        `Host: garage:3903\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`,
+    );
+    expect(statusOf(answer)).toBe(400);
+    expect(
+      classifyCaptureSocketRequest(
+        {
+          method: "PUT",
+          target: `/k?${SIGNED_QUERY}`,
+          headers: { host: "garage:3900" },
+          rawHeaders: ["Host", "garage:3900", "host", "garage:3903"],
+        },
+        objectStoreEndpointOf("http://garage:3900"),
+      ),
+    ).toMatchObject({ status: 400 });
+    const heartbeat = await post(capturePath, "/lease.heartbeat", launchToken, {
+      worktree_id: "wt",
+      epoch: 1,
+    });
+    expect(statusOf(heartbeat)).toBe(200);
+  });
+});
+
+describe("binding one scope", () => {
+  it("binds one call at a time: the last asked is what the scope serves", async () => {
+    const scope = "sealant-run-3";
+    const dir = path.join(root, scope);
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const sockets = yield* ExecutorSockets;
+        yield* Effect.all(
+          [
+            sockets.bind({ scope, launchId: LAUNCH, mode: "normal" }),
+            sockets.bind({ scope, launchId: LAUNCH, mode: "recover" }),
+            sockets.bind({ scope, launchId: LAUNCH, mode: "normal" }),
+            sockets.bind({ scope, launchId: LAUNCH, mode: "recover" }),
+          ],
+          { concurrency: "unbounded" },
+        );
+      }),
+    );
+    expect(fs.readdirSync(dir)).toEqual([CAPTURE_SOCKET_NAME]);
+    const heartbeat = await post(
+      path.join(dir, CAPTURE_SOCKET_NAME),
+      "/lease.heartbeat",
+      launchToken,
+      {
+        worktree_id: "wt",
+        epoch: 1,
+      },
+    );
+    expect(statusOf(heartbeat)).toBe(200);
+  });
+
+  it("closes a Git tunnel the session socket handed over when the scope turns to recovery", async () => {
+    const scope = "sealant-run-4";
+    const session = SessionId.make("sess-executor-sockets-tunnel");
+    const launch = "launch-executor-4";
+    const holding: SessionSocketApi = {
+      ...sessionApi,
+      capture: undefined,
+      captureAs: undefined,
+      // The tunnel waits on Mend's signer, as one whose remote is slow to answer does.
+      gitTransport: () => Effect.never,
+      channelFor: () => Effect.succeed({ ok: true, api: holding }),
+    };
+    const person = await runtime.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* SessionChannelRegistry;
+        const tokens = yield* SessionChannelTokensRepo;
+        registry.register(session, holding);
+        const token = yield* tokens.issuePerson(launch, "account-anna");
+        yield* tokens.issue(session, launch);
+        const sockets = yield* ExecutorSockets;
+        yield* sockets.bind({ scope, launchId: launch, mode: "normal" });
+        return token;
+      }),
+    );
+    const tunnel = net.createConnection(path.join(root, scope, SESSION_SOCKET_NAME));
+    const closed = new Promise<void>((resolve) => tunnel.on("close", () => resolve()));
+    tunnel.on("error", () => undefined);
+    tunnel.write(
+      `CONNECT /git/transport HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${person}\r\n` +
+        `x-mend-session-id: ${session}\r\nx-mend-git-host: github.com\r\n` +
+        `x-mend-git-command: git-upload-pack 'acme/api.git'\r\n\r\n`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(tunnel.destroyed).toBe(false);
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const sockets = yield* ExecutorSockets;
+        yield* sockets.bind({ scope, launchId: launch, mode: "recover" });
+      }),
+    );
+    await closed;
+    expect(fs.readdirSync(path.join(root, scope))).toEqual([CAPTURE_SOCKET_NAME]);
+  });
+});
+
+describe("capture.sock in front of an https object store", () => {
+  // sealant-capture's capture dial (`transport.rs`) speaks TLS over the socket for an https
+  // presigned URL, naming the URL's host as its SNI: the relay passes those bytes to the store.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-xs-tls-"));
+  const key = path.join(dir, "key.pem");
+  const cert = path.join(dir, "cert.pem");
+  const seen: Array<{ readonly method: string; readonly url: string; readonly host: string }> = [];
+  let tlsStore: https.Server;
+  let tlsRuntime: ManagedRuntime.ManagedRuntime<ExecutorSockets, never>;
+  const scope = "sealant-run-tls";
+  const socketPath = path.join(dir, "sockets", scope, CAPTURE_SOCKET_NAME);
+
+  beforeAll(async () => {
+    execFileSync(
+      "openssl",
+      [
+        "req",
+        "-x509",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:prime256v1",
+        "-nodes",
+      ].concat(
+        [
+          "-keyout",
+          key,
+          "-out",
+          cert,
+          "-subj",
+          "/CN=localhost",
+          "-addext",
+          "subjectAltName=DNS:localhost",
+        ],
+        ["-days", "1"],
+      ),
+      { stdio: "ignore" },
+    );
+    tlsStore = https.createServer(
+      { key: fs.readFileSync(key), cert: fs.readFileSync(cert) },
+      (request, response) => {
+        seen.push({
+          method: request.method ?? "",
+          url: request.url ?? "",
+          host: request.headers.host ?? "",
+        });
+        request.resume();
+        request.on("end", () => {
+          response.writeHead(200, { etag: '"etag-tls"' });
+          response.end();
+        });
+      },
+    );
+    await new Promise<void>((resolve) => tlsStore.listen(0, "127.0.0.1", resolve));
+    const address = tlsStore.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    tlsRuntime = ManagedRuntime.make(
+      executorSocketsAt(path.join(dir, "sockets")).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            SessionChannelRegistryLive,
+            SessionChannelTokensRepoMemory,
+            BlobStoreConfig.layerFor(
+              { kind: "dir", root: path.join(dir, "blobs") },
+              `https://localhost:${port}`,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tlsRuntime.runPromise(
+      Effect.gen(function* () {
+        const sockets = yield* ExecutorSockets;
+        yield* sockets.bind({ scope, launchId: LAUNCH, mode: "normal" });
+      }),
+    );
+  });
+
+  afterAll(async () => {
+    await tlsRuntime.dispose();
+    await new Promise<void>((resolve) => tlsStore.close(() => resolve()));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const overTls = (servername: string, request: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const client = tls.connect({
+        socket: net.createConnection(socketPath),
+        servername,
+        ca: fs.readFileSync(cert),
+      });
+      let answer = "";
+      client.setEncoding("utf8");
+      client.on("secureConnect", () => client.write(request));
+      client.on("data", (chunk: string) => (answer += chunk));
+      client.on("end", () => resolve(answer));
+      client.on("close", () => resolve(answer));
+      client.on("error", reject);
+    });
+
+  it("relays TLS naming the store to it unchanged, its certificate checked end to end", async () => {
+    const answer = await overTls(
+      "localhost",
+      `PUT /mend/k?${SIGNED_QUERY} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n` +
+        `Connection: close\r\n\r\nhi`,
+    );
+    expect(statusOf(answer)).toBe(200);
+    expect(answer).toContain('"etag-tls"');
+    expect(seen).toEqual([{ method: "PUT", url: `/mend/k?${SIGNED_QUERY}`, host: "localhost" }]);
+  });
+
+  it("closes TLS that names another host, and reaches nothing", async () => {
+    const before = seen.length;
+    const answer = await overTls(
+      "garage",
+      `GET / HTTP/1.1\r\nHost: garage\r\nConnection: close\r\n\r\n`,
+    ).catch(() => "");
+    expect(answer).toBe("");
+    expect(seen).toHaveLength(before);
+  });
+
+  it("still serves plain HTTP capture routes beside it", async () => {
+    const answer = await exchange(
+      socketPath,
+      `POST /lease.heartbeat HTTP/1.1\r\nHost: mend:3106\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}`,
+    );
+    // No credential: refused by the capture route's own check, so the HTTP path was taken.
+    expect(statusOf(answer)).toBe(401);
+  });
+});
+
+describe("a TLS ClientHello's server name", () => {
+  it("is read from the record, and answers undefined until the record is whole", () => {
+    expect(clientHelloServerName(Buffer.from([0x47, 0x45, 0x54, 0x20, 0x2f]))).toBeNull();
+    expect(clientHelloServerName(Buffer.from([0x16, 0x03, 0x01]))).toBeUndefined();
+    expect(
+      clientHelloServerName(Buffer.from([0x16, 0x03, 0x01, 0x00, 0x40, 0x01])),
+    ).toBeUndefined();
+  });
+});
+
+describe("a workspace process on session.sock", () => {
+  it("speaks the channel through it with its token, as MEND_SESSION_SOCKET names it", async () => {
+    const script = `${SCRIPT_TRANSPORT_PRELUDE}
+const options = transportOptions("GET", "/recipes");
+transportClient()
+  .request(options, (response) => {
+    let body = "";
+    response.on("data", (chunk) => (body += chunk));
+    response.on("end", () => process.stdout.write(transport.kind + " " + response.statusCode + " " + body));
+  })
+  .end();
+`;
+    // Run beside this process, not blocking it: the socket's server answers from here.
+    const answer = await new Promise<string>((resolve, reject) =>
+      execFile(
+        process.execPath,
+        ["-e", script],
+        {
+          env: {
+            PATH: process.env["PATH"] ?? "",
+            MEND_SESSION_SOCKET: sessionPath,
+            MEND_SESSION_ID: SESSION,
+            MEND_SESSION_TOKEN: launchToken,
+            MEND_SESSION_ENDPOINT: "http://mend.invalid:3106",
+          },
+          encoding: "utf8",
+          timeout: 20_000,
+        },
+        (error, stdout) => {
+          if (error === null) resolve(stdout);
+          else reject(error);
+        },
+      ),
+    );
+    expect(answer).toBe('session-socket 200 [{"name":"web"}]');
+  });
+});
+
+describe("binding a scope again as it stands", () => {
+  it("leaves it serving, its open connections kept", async () => {
+    const scope = "mend-rebind-scope";
+    const socketPath = path.join(root, scope, SESSION_SOCKET_NAME);
+    await runtime.runPromise(
+      Effect.flatMap(ExecutorSockets, (sockets) =>
+        sockets.bind({ scope, launchId: LAUNCH, mode: "normal" }),
+      ),
+    );
+    const held = net.createConnection(socketPath);
+    await new Promise<void>((resolve) => held.once("connect", () => resolve()));
+    await runtime.runPromise(
+      Effect.flatMap(ExecutorSockets, (sockets) =>
+        sockets.bind({ scope, launchId: LAUNCH, mode: "normal" }),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(held.destroyed).toBe(false);
+    held.destroy();
+    expect(executorScopeOf("launch-1")).toMatch(/^mend-[0-9a-f]{24}$/);
+    expect(executorScopeOf("launch-1")).toBe(executorScopeOf("launch-1"));
+  });
+});
+
+describe("the store capture.sock relays to, from the configuration", () => {
+  it("is the origin of the URLs its presigner mints, else the public URL as it is", async () => {
+    expect(
+      await Effect.runPromise(
+        objectStoreOfConfig({
+          target: {
+            kind: "s3",
+            bucket: "mend",
+            endpoint: "http://garage:3900",
+            region: "garage",
+            forcePathStyle: true,
+          },
+          publicUrl: "http://garage:3900",
+        }),
+      ),
+    ).toEqual({ hostname: "garage", port: 3900, protocol: "http" });
+    expect(
+      await Effect.runPromise(
+        objectStoreOfConfig({ target: { kind: "dir", root: "/tmp/blobs" }, publicUrl: undefined }),
+      ),
+    ).toBeNull();
+  });
+
+  it("serves a capture route by plain HTTP whatever host it names, as a plan over the socket asks", () => {
+    expect(
+      classifyCaptureSocketRequest(
+        { method: "POST", target: "/plan.get", headers: { host: "mend:3106" } },
+        { hostname: "mend.captures.s3.eu-west-1.amazonaws.com", port: 443, protocol: "https" },
+      ),
+    ).toEqual({ kind: "capture", route: "/plan.get" });
   });
 });

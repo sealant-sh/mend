@@ -1,3 +1,4 @@
+import type { SessionRuntime } from "@mend/domain";
 import {
   boatKeyCreateCommand,
   type BoatKeyReport,
@@ -167,7 +168,7 @@ export const REMOVAL_FACTS: ReadonlyArray<string> = [
 
 /** Where Boat is used: the organization's runtime, set on the Runtime page. */
 export const runtimeLine = (
-  runtime: "boat" | "docker" | null,
+  runtime: SessionRuntime | null,
   organization: string,
 ): { readonly lead: string; readonly rest: string } => {
   switch (runtime) {
@@ -179,6 +180,11 @@ export const runtimeLine = (
     case "docker":
       return {
         lead: `${organization}'s sessions run on Docker now, so none uses this key until the runtime is Boat.`,
+        rest: "You choose the runtime on the Runtime page.",
+      };
+    case "host-vm":
+      return {
+        lead: `${organization}'s sessions run on this server's KVM now, so none uses this key until the runtime is Boat.`,
         rest: "You choose the runtime on the Runtime page.",
       };
     case null:

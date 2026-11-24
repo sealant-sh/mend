@@ -115,18 +115,18 @@ organization's audit log records it.
 Workspaces reach their session over a mounted Unix socket by default, or over a network channel when
 `MEND_SESSION_ENDPOINT_LISTEN` is set.
 
-| Variable                         | Default                                                  | What it does                                                                                                                                                                                                                                                     |
-| -------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEND_SESSION_RUNTIME`           | Docker installs: `docker`; Kubernetes: sealant selection | Where an organization's new session workspaces run until its owner chooses: `docker` or `boat`. Saved by `mend server setup --session-runtime`. Existing worktrees keep their choice. Boat requests are explicit and refused if unavailable; no Docker fallback. |
-| `MEND_SESSION_RUNTIMES`          | unset: the one runtime `MEND_SESSION_RUNTIME` names      | The runtimes organizations may choose among, comma separated: `docker`, `boat` or `docker,boat`. `MEND_SESSION_RUNTIME` must be one of them; unset, it is the first. Saved by `mend server setup --session-runtimes`.                                            |
-| `MEND_DEPLOYMENT_MODE`           | `local`                                                  | `local` or `kubernetes`. In `kubernetes`, the session engine refuses to start without a network channel.                                                                                                                                                         |
-| `MEND_SESSION_ENDPOINT_LISTEN`   | unset                                                    | `host:port` the network session channel listens on.                                                                                                                                                                                                              |
-| `MEND_SESSION_ENDPOINT_URL`      | unset                                                    | The address workspaces use to reach the channel. Required with `MEND_SESSION_ENDPOINT_LISTEN`.                                                                                                                                                                   |
-| `MEND_SESSION_ENDPOINT_TLS_CERT` | unset                                                    | The channel's certificate file. Set with `MEND_SESSION_ENDPOINT_TLS_KEY`, and the URL must then be `https`.                                                                                                                                                      |
-| `MEND_SESSION_ENDPOINT_TLS_KEY`  | unset                                                    | The channel's private key file.                                                                                                                                                                                                                                  |
-| `MEND_SESSION_ENDPOINT_CA_FILE`  | unset                                                    | PEM roots workspaces verify the channel's certificate against, when a private CA signed it.                                                                                                                                                                      |
-| `MEND_BLOB_STORE_CA_FILE`        | unset                                                    | PEM roots workspaces verify the bucket's certificate against.                                                                                                                                                                                                    |
-| `MEND_EXECUTOR_NETWORK`          | unset                                                    | `private` states that executors reach the channel and the bucket over a network you control, so plain HTTP may be dialled. The only accepted value.                                                                                                              |
+| Variable                         | Default                                                  | What it does                                                                                                                                                                                                                                                                                                  |
+| -------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_SESSION_RUNTIME`           | Docker installs: `docker`; Kubernetes: sealant selection | Where an organization's new session workspaces run until its owner chooses: `docker`, `host-vm` or `boat`. Saved by `mend server setup --session-runtime`, which offers `docker` and `boat`. Existing worktrees keep their choice. Boat requests are explicit and refused if unavailable; no Docker fallback. |
+| `MEND_SESSION_RUNTIMES`          | unset: the one runtime `MEND_SESSION_RUNTIME` names      | The runtimes organizations may choose among, comma separated, from `docker`, `host-vm` and `boat`, such as `docker,boat`. `MEND_SESSION_RUNTIME` must be one of them; unset, it is the first. Saved by `mend server setup --session-runtimes`.                                                                |
+| `MEND_DEPLOYMENT_MODE`           | `local`                                                  | `local` or `kubernetes`. In `kubernetes`, the session engine refuses to start without a network channel.                                                                                                                                                                                                      |
+| `MEND_SESSION_ENDPOINT_LISTEN`   | unset                                                    | `host:port` the network session channel listens on.                                                                                                                                                                                                                                                           |
+| `MEND_SESSION_ENDPOINT_URL`      | unset                                                    | The address workspaces use to reach the channel. Required with `MEND_SESSION_ENDPOINT_LISTEN`.                                                                                                                                                                                                                |
+| `MEND_SESSION_ENDPOINT_TLS_CERT` | unset                                                    | The channel's certificate file. Set with `MEND_SESSION_ENDPOINT_TLS_KEY`, and the URL must then be `https`.                                                                                                                                                                                                   |
+| `MEND_SESSION_ENDPOINT_TLS_KEY`  | unset                                                    | The channel's private key file.                                                                                                                                                                                                                                                                               |
+| `MEND_SESSION_ENDPOINT_CA_FILE`  | unset                                                    | PEM roots workspaces verify the channel's certificate against, when a private CA signed it.                                                                                                                                                                                                                   |
+| `MEND_BLOB_STORE_CA_FILE`        | unset                                                    | PEM roots workspaces verify the bucket's certificate against.                                                                                                                                                                                                                                                 |
+| `MEND_EXECUTOR_NETWORK`          | unset                                                    | `private` states that executors reach the channel and the bucket over a network you control, so plain HTTP may be dialled. The only accepted value.                                                                                                                                                           |
 
 ## Tenancy, git and services
 
@@ -148,6 +148,59 @@ Workspaces reach their session over a mounted Unix socket by default, or over a 
 | Variable                             | Default                                         | What it does                                                                                                                                                                                                     |
 | ------------------------------------ | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SEALANT_DOCKER_NETWORK_GUARD_IMAGE` | the Mend image's pinned `busybox:1.37@sha256:…` | The image the Sealant worker runs in each workspace to refuse the cloud metadata address. Set by the Mend image; `mend server setup` preloads the same image (its `dev.sealant.mend.network-guard-image` label). |
+
+## Workspace networks
+
+On the Docker install each workspace gets a `/28` network of its own, carved from one range, behind
+a guard that refuses the private ranges, link-local addresses, the metadata addresses and the host's
+public addresses. A workspace reaches neither Postgres, Garage's admin port nor another workspace.
+Workspaces no longer join `mend_default`, the Compose project's network, and nothing of it joins
+theirs. A workspace reaches Mend through two Unix sockets Mend serves in the workspace's own
+directory of the `mend-control` volume (`MEND_EXECUTOR_CONTROL_ROOT`, which the bundle sets):
+`capture.sock`, for its captures and the object store's presigned requests, and `session.sock`, for
+the session channel. A restart or upgrade of Mend serves them again for every workspace still
+running. A workspace kept for recovery has `capture.sock` alone.
+
+The compose file reads these from the `.env` beside it. `mend server setup` writes none of them, so
+its installs keep the defaults; set them as in
+[Set them on the Docker install](#set-them-on-the-docker-install).
+
+| Variable                               | Default                              | What it does                                                                                                                                                                                                                                                |
+| -------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_WORKSPACE_EGRESS_SUBNETS`        | `10.233.0.0/16`                      | The IPv4 range workspace networks are carved from, as `SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS`. Needs Docker Engine 25 or newer. Sealant removes a workspace's network only under the setting it was made with, so change it only while no workspace runs. |
+| `MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS` | empty                                | Comma-separated private addresses and blocks, IPv4 or IPv6, that workspaces may still reach behind the guard, such as a company registry or a database in the same network. Mend also reads it as the most an Access policy may allow. Empty allows none.   |
+| `MEND_HOST_PUBLIC_IPS`                 | empty, which sealant reads as `auto` | Comma-separated public addresses of the host the guard refuses, and `auto` for the ones on its interfaces. A cloud host's public address behind 1:1 NAT is on no interface, so list it beside `auto`: `auto,203.0.113.7`. `none` reads none.                |
+
+The Mend container hands the worker the two address lists under sealant's names
+(`SEALANT_OPERATOR_ALLOWED_PRIVATE_EGRESS`, `SEALANT_HOST_PUBLIC_IPS`), and only when they are set.
+`SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS` names what joins each workspace network, as
+`container:alias`, comma separated: each mirror when it runs, and nothing else. The Sealant API
+reaches each workspace's egress proxy through the control sockets' directory, to apply a policy
+change or a revoked secret to a running workspace.
+
+### Host VM workspaces
+
+`host-vm` boots each workspace in a virtual machine of its own on this server's KVM. It needs one
+more Compose file, `compose.host-vm.yaml`, merged after `compose.v2.yaml`. The overlay mounts two
+volumes, `mend-vm-images` (base disks, one per workspace image) and `mend-vm-data` (each VM's data
+disk), at `/var/lib/mend/vm-images` and `/var/lib/mend/vm-data`, and adds both roots to
+`SEALANT_DOCKER_VOLUME_MAPPINGS`. Compose makes the volumes; setup claims neither.
+`MEND_VM_IMAGES_VOLUME_NAME` and `MEND_VM_DATA_VOLUME_NAME` rename them. Without the overlay, the
+bundle maps the store and the control sockets only, as before.
+
+When the saved config's session runtimes name `host-vm`, `mend server setup` writes the overlay into
+the install's generation, and every start, restart and upgrade runs it. A Compose install you run
+yourself adds it by hand:
+
+```sh
+docker compose -f compose.v2.yaml -f compose.host-vm.yaml up -d
+```
+
+When `MEND_SESSION_RUNTIMES` or `MEND_SESSION_RUNTIME` names `host-vm`, the Mend container hands the
+worker `SEALANT_HOST_VM_IMAGE_DIR` and `SEALANT_HOST_VM_DATA_DIR`. It refuses to start when
+`host-vm` is named without the overlay's two mappings, or when
+`SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS` is unset: each VM runs behind an egress proxy on a network
+of its own. `mend server setup` does not offer `host-vm` yet.
 
 ## Package and image mirrors
 
@@ -385,12 +438,13 @@ business: `--edge <host>` writes the edge overlay and its Caddyfile into the gen
 their variables to the container, reading each value from `server.env`; the mirrors are
 `compose.mirrors.yaml`, which also hands the container `MEND_NPM_MIRROR_URL`,
 `SEALANT_DOCKER_REGISTRY_MIRRORS` and `SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER` for each mirror
-that runs; `--t3-gateway` writes `compose.t3.yaml`, which sets `MEND_T3_GATEWAY_ENABLED=true`; and
-`--workspace-image-keep` and `--workspace-image-min-age` write `compose.workspace-images.yaml`,
-which sets `WORKSPACE_IMAGE_RETAINED_PLANS` and `WORKSPACE_IMAGE_MIN_AGE_HOURS` with the values
-written in the overlay itself, not in `server.env`; `--workspace-memory` and
-`--workspace-docker-memory` write `compose.workspace-memory.yaml`, which sets
-`SEALANT_DOCKER_WORKSPACE_MEMORY_LIMIT` and `SEALANT_DOCKER_SERVICE_MEMORY_LIMIT` the same way.
+that runs, and a `SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS` that adds the mirrors to what joins
+each workspace network; `--t3-gateway` writes `compose.t3.yaml`, which sets
+`MEND_T3_GATEWAY_ENABLED=true`; and `--workspace-image-keep` and `--workspace-image-min-age` write
+`compose.workspace-images.yaml`, which sets `WORKSPACE_IMAGE_RETAINED_PLANS` and
+`WORKSPACE_IMAGE_MIN_AGE_HOURS` with the values written in the overlay itself, not in `server.env`;
+`--workspace-memory` and `--workspace-docker-memory` write `compose.workspace-memory.yaml`, which
+sets `SEALANT_DOCKER_WORKSPACE_MEMORY_LIMIT` and `SEALANT_DOCKER_SERVICE_MEMORY_LIMIT` the same way.
 
 What `server.env` holds, all read by the compose files:
 

@@ -3,7 +3,7 @@
   "composeTemplate": "compose.v2.yaml",
   "environmentTemplate": "bundle.env.example",
   "mendImageRepository": "ghcr.io/sealant-sh/mend",
-  "sealantVersion": "0.40.0-next.933",
+  "sealantVersion": "0.40.0-next.938",
   "runtimeContainers": ["mend", "postgres", "garage"],
   "canonicalPaths": {
     "store": "/var/lib/mend/store",
@@ -19,7 +19,7 @@
     "label": "dev.sealant.mend.installation",
     "identity": "SHA-256 of the persisted identity.env bytes",
     "externalVolumes": ["mend-store", "mend-control", "mend-garage"],
-    "policy": "Setup claims the anchor before creating other volumes or starting Compose. Reject mismatched ownership and existing unclaimed Mend data; never replace credentials to adopt it. mend-garage is claimed the same way when the bundle carries Garage; a generation without it (an install from before the capture store) verifies without it."
+    "policy": "Setup claims the anchor before creating other volumes or starting Compose. Reject mismatched ownership and existing unclaimed Mend data; never replace credentials to adopt it. mend-garage is claimed the same way when the bundle carries Garage; a generation without it (an install from before the capture store) verifies without it. mend-vm-images and mend-vm-data, which only compose.host-vm.yaml declares, are Compose's own volumes, not external: setup claims neither."
   },
   "dockerVolumeMappings": [
     {
@@ -31,6 +31,29 @@
       "volumeName": "mend-control"
     }
   ],
+  "hostVm": {
+    "composeOverlay": "compose.host-vm.yaml",
+    "when": "Only when MEND_SESSION_RUNTIMES or MEND_SESSION_RUNTIME names host-vm. mend server setup writes the overlay into a generation whose saved config names it; compose.v2.yaml alone keeps the two mappings above, which a released Mend image checks.",
+    "canonicalPaths": {
+      "vmImages": "/var/lib/mend/vm-images",
+      "vmData": "/var/lib/mend/vm-data"
+    },
+    "canonicalVolumes": {
+      "vmImages": "mend-vm-images",
+      "vmData": "mend-vm-data"
+    },
+    "dockerVolumeMappings": [
+      {
+        "logicalRoot": "/var/lib/mend/vm-images",
+        "volumeName": "mend-vm-images"
+      },
+      {
+        "logicalRoot": "/var/lib/mend/vm-data",
+        "volumeName": "mend-vm-data"
+      }
+    ],
+    "note": "The overlay's SEALANT_DOCKER_VOLUME_MAPPINGS is the base two followed by these two, and it mounts both volumes into the mend container."
+  },
   "requiredSecrets": {
     "hex32Bytes": [
       "MEND_POSTGRES_ADMIN_PASSWORD",
@@ -56,13 +79,13 @@
     }
   },
   "bootstrap": {
-    "sealantMigrations": "node /opt/sealant/api/dist/migrate.js from sealant-api 0.40.0-next.933",
+    "sealantMigrations": "node /opt/sealant/api/dist/migrate.js from sealant-api 0.40.0-next.938",
     "servicePrincipal": "SEALANT_SERVICE_KEY configures the platform principal; Mend provisions each user through public @sealant/sdk users.ensure on first use",
     "jobQueue": "pg-boss inside sealant_control_plane (schema pgboss); created by the Sealant API/worker on first start"
   },
   "workspaceImages": {
     "store": "host Docker Engine",
-    "note": "Sealant builds workspace images through the mounted Docker socket and launches them from the same Engine by image id. No registry runs and no port is published for one. Workspace containers must reach mend:3106 and garage:3900 on the Compose network."
+    "note": "Sealant builds workspace images through the mounted Docker socket and launches them from the same Engine by image id. No registry runs and no port is published for one. Each workspace is on a network of its own, from 10.233.0.0/16 (MEND_WORKSPACE_EGRESS_SUBNETS), and reaches Mend and Garage only through capture.sock and session.sock, which Mend serves in the workspace's control scope (MEND_EXECUTOR_CONTROL_ROOT). Workspaces never join mend_default."
   },
   "derivedSecrets": {
     "MEND_GARAGE_RPC_SECRET": "HMAC-SHA256(BETTER_AUTH_SECRET, 'mend-garage-rpc-secret'), hex",
@@ -78,7 +101,7 @@
     "init": "mend server setup/start run `garage layout assign`, `layout apply`, `bucket create mend`, `key import`, `bucket allow` through `docker compose exec -T garage`, idempotently, after `up --wait`",
     "sessionEndpoint": "http://mend:3106 on the Compose network (not published)",
     "publicUrl": "http://garage:3900 on the Compose network (not published)",
-    "workspaceNetwork": "mend_default \u2014 set as SEALANT_DOCKER_WORKSPACE_NETWORK; the Sealant 0.40.0-next.933 runtime attaches workspace containers to it",
+    "workspaceNetwork": "a /28 network of each workspace's own, from 10.233.0.0/16 (SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS); the Sealant 0.40.0-next.938 runtime joins nothing of the Compose network to it, never mend_default; the executor reaches Mend and Garage through capture.sock and session.sock, which Mend serves in its control scope under /run/sealant/sockets",
     "idleMemoryMiB": 7.5
   }
 }

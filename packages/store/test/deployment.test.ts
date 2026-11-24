@@ -4,13 +4,15 @@ import { resolveDeploymentConfig, resolveExecutorTransport } from "../src/deploy
 
 describe("resolveDeploymentConfig", () => {
   it("offers the one runtime a server set up before organizations chose names, and refuses unknown choices", () => {
-    for (const runtime of ["docker", "boat"] as const) {
+    for (const runtime of ["docker", "host-vm", "boat"] as const) {
       expect(resolveDeploymentConfig({ MEND_SESSION_RUNTIME: runtime }).sessionRuntimes).toEqual({
         offered: [runtime],
         default: runtime,
       });
     }
-    expect(() => resolveDeploymentConfig({ MEND_SESSION_RUNTIME: "auto" })).toThrow(/docker.*boat/);
+    expect(() => resolveDeploymentConfig({ MEND_SESSION_RUNTIME: "auto" })).toThrow(
+      'MEND_SESSION_RUNTIME must be "docker", "host-vm" or "boat".',
+    );
   });
   it("offers the listed runtimes with the default the operator names, else the first", () => {
     expect(
@@ -25,10 +27,16 @@ describe("resolveDeploymentConfig", () => {
     expect(resolveDeploymentConfig({ MEND_SESSION_RUNTIMES: "boat,boat" }).sessionRuntimes).toEqual(
       { offered: ["boat"], default: "boat" },
     );
+    expect(
+      resolveDeploymentConfig({
+        MEND_SESSION_RUNTIMES: "docker, host-vm,boat",
+        MEND_SESSION_RUNTIME: "host-vm",
+      }).sessionRuntimes,
+    ).toEqual({ offered: ["docker", "host-vm", "boat"], default: "host-vm" });
   });
   it("refuses a list it cannot read and a default the list does not offer", () => {
     expect(() => resolveDeploymentConfig({ MEND_SESSION_RUNTIMES: "docker,vm" })).toThrow(
-      /MEND_SESSION_RUNTIMES/,
+      'MEND_SESSION_RUNTIMES must list one or more of "docker", "host-vm" and "boat", separated by commas, got "docker,vm".',
     );
     expect(() => resolveDeploymentConfig({ MEND_SESSION_RUNTIMES: " , " })).toThrow(
       /MEND_SESSION_RUNTIMES/,
@@ -46,7 +54,7 @@ describe("resolveDeploymentConfig", () => {
         }).sessionRuntimes,
       ).toBeNull();
     }
-    for (const runtime of ["docker", "boat"] as const) {
+    for (const runtime of ["docker", "host-vm", "boat"] as const) {
       expect(
         resolveDeploymentConfig({
           MEND_DEPLOYMENT_MODE: "kubernetes",

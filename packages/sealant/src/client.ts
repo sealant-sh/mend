@@ -31,6 +31,12 @@ import type {
   WorkspaceRuntimes as SdkWorkspaceRuntimes,
 } from "@sealant/sdk";
 import type { SshKey, WorkspaceSshInfo } from "@sealant/sdk";
+import type {
+  AccessRevoked,
+  ApplyNetworkPolicyOptions,
+  NetworkPolicyApplied,
+  RevokeAccessOptions,
+} from "@sealant/sdk";
 import {
   archiveConnectedAccountOp,
   archiveSshKeyOp,
@@ -468,6 +474,44 @@ export const runtimeResourceIdOf = (
   );
 };
 
+/** An executor's control scope and the launch it serves (SLNT-1332). */
+export interface ExecutorScope {
+  readonly controlScope: string;
+  readonly launchId: string;
+  /** `retained`: kept for recovery, whose boot dials `capture.sock` alone. */
+  readonly retained: boolean;
+}
+
+const scopeOfRuntime = (runtime: unknown): ExecutorScope | null => {
+  if (typeof runtime !== "object" || runtime === null) return null;
+  const controlScope: unknown = Reflect.get(runtime, "controlScope");
+  const launchId: unknown = Reflect.get(runtime, "launchId");
+  return typeof controlScope === "string" &&
+    controlScope !== "" &&
+    typeof launchId === "string" &&
+    launchId !== ""
+    ? { controlScope, launchId, retained: Reflect.get(runtime, "status") === "retained" }
+    : null;
+};
+
+/**
+ * The control scope the workspace's current executor mounts at `/run/sealant`, with the launch it
+ * belongs to, as sealant reports it (`runtime.controlScope`, `runtime.launchId`); null on a runtime
+ * with no scope, or an SDK that cannot say.
+ */
+export const executorScopeOfWorkspace = (
+  workspace: object,
+): Effect.Effect<ExecutorScope | null, SealantPlatformError> => {
+  const launch: unknown = Reflect.get(workspace, "launch");
+  const launched =
+    typeof launch === "object" && launch !== null
+      ? scopeOfRuntime(Reflect.get(launch, "runtime"))
+      : null;
+  if (launched !== null) return Effect.succeed(launched);
+  if (!readsRuntime(workspace)) return Effect.succeed(null);
+  return wrap(() => workspace.runtime()).pipe(Effect.map(scopeOfRuntime));
+};
+
 /**
  * Whether an executor ever ran for the workspace's current launch: `launched` when its handle saw
  * one become ready or sealant reports a runtime, `never` when sealant reports none (sealant keeps a
@@ -823,6 +867,19 @@ export interface SealantClientShape {
   readonly bootedImage: (
     workspace: Workspace,
   ) => Effect.Effect<string | null, SealantPlatformError>;
+  /**
+   * Replace a running workspace's network policy and brokered secrets ("Apply updated policy").
+   * Revocations sealant holds still win over anything listed here.
+   */
+  readonly applyNetworkPolicy: (
+    workspace: Workspace,
+    options: ApplyNetworkPolicyOptions,
+  ) => Effect.Effect<NetworkPolicyApplied, SealantPlatformError>;
+  /** Durably revoke brokered secrets, hosts or every grant of a workspace. */
+  readonly revokeAccess: (
+    workspace: Workspace,
+    options: RevokeAccessOptions,
+  ) => Effect.Effect<AccessRevoked, SealantPlatformError>;
   /** Re-arm the workspace TTL and return the platform's exact resulting expiry. */
   readonly expireWorkspace: (
     workspaceId: string,
@@ -1094,6 +1151,16 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       ) => wrap(() => workspace.capture.replan(options)),
     );
 
+    const applyNetworkPolicy = Effect.fn("SealantClient.applyNetworkPolicy")(
+      (workspace: Workspace, options: ApplyNetworkPolicyOptions) =>
+        wrap(() => workspace.applyNetworkPolicy(options)),
+    );
+
+    const revokeAccess = Effect.fn("SealantClient.revokeAccess")(
+      (workspace: Workspace, options: RevokeAccessOptions) =>
+        wrap(() => workspace.revokeAccess(options)),
+    );
+
     const expireWorkspace = Effect.fn("SealantClient.expireWorkspace")(
       (workspaceId: string, ttlSeconds: number) =>
         expireWorkspaceOp(workspaceId, { ownerUserId, ttlSeconds }).pipe(
@@ -1339,6 +1406,8 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       runtimeResourceId,
       launchedRuntime,
       captureReplan,
+      applyNetworkPolicy,
+      revokeAccess,
       expireWorkspace,
       getSession,
       sessionOutput,
@@ -1946,6 +2015,9 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
         via((c) => c.runtimeResourceId(workspace, launchId)),
       launchedRuntime: (workspace) => via((c) => c.launchedRuntime(workspace)),
       captureReplan: (workspace, options) => via((c) => c.captureReplan(workspace, options)),
+      applyNetworkPolicy: (workspace, options) =>
+        via((c) => c.applyNetworkPolicy(workspace, options)),
+      revokeAccess: (workspace, options) => via((c) => c.revokeAccess(workspace, options)),
       expireWorkspace: (workspaceId, ttlSeconds) =>
         via((c) => c.expireWorkspace(workspaceId, ttlSeconds)),
       getSession: (workspace, sessionId) => via((c) => c.getSession(workspace, sessionId)),

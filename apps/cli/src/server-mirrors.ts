@@ -7,8 +7,8 @@
  * Both live in the server config and render into the generation like the edge (server-edge.ts):
  * `compose.mirrors.yaml` names the services and hands Mend their addresses, `npm-mirror.conf` is
  * the npm mirror's nginx configuration, and `server.env` carries the values. Neither publishes a
- * port on the host: workspaces reach them on the Compose network, and the Docker mirror is
- * connected to each workspace's own Docker network by Sealant
+ * port on the host. Each workspace is on a network of its own, and Sealant joins both mirrors to it
+ * under their service names (`SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS`); the Docker mirror is also connected to each workspace's own Docker network
  * (`SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER`).
  *
  * Neither decides what is installed. The package manager checks every tarball against its
@@ -28,6 +28,8 @@ export const NPM_MIRROR_URL = "http://npm-mirror:4873/";
 export const DOCKER_MIRROR_URL = "http://docker-mirror:5000";
 /** The Docker mirror's fixed container name, which Sealant connects to each workspace network. */
 export const DOCKER_MIRROR_CONTAINER = "mend-docker-mirror";
+/** The npm mirror's fixed container name, which Sealant joins to each workspace's own network. */
+export const NPM_MIRROR_CONTAINER = "mend-npm-mirror";
 /** The npm mirror's default size cap, in nginx's units. */
 export const DEFAULT_NPM_MIRROR_MAX_SIZE = "10g";
 /** How long after a fetch the Docker mirror deletes a layer's data (manifests and tags stay). */
@@ -141,6 +143,7 @@ const npmMirrorService = (): ReadonlyArray<string> => [
   `  # ${MIRROR_MIN_FREE} free on its disk; the least recently used tarballs go first. No credential sent.`,
   "  npm-mirror:",
   `    image: ${NPM_MIRROR_IMAGE}`,
+  `    container_name: ${NPM_MIRROR_CONTAINER}`,
   "    hostname: npm-mirror",
   "    restart: unless-stopped",
   "    environment:",
@@ -199,6 +202,16 @@ const dockerMirrorService = (mirrors: ServerMirrors): ReadonlyArray<string> => [
 ];
 
 /**
+ * What joins every workspace's own network once the mirrors run: each mirror under its service
+ * name, so `npm-mirror:4873` and `docker-mirror:5000` resolve there.
+ */
+const workspaceMirrorContainers = (mirrors: ServerMirrors): string =>
+  [
+    ...(mirrors.npm === null ? [] : [`${NPM_MIRROR_CONTAINER}:npm-mirror`]),
+    ...(mirrors.docker === null ? [] : [`${DOCKER_MIRROR_CONTAINER}:docker-mirror`]),
+  ].join(",");
+
+/**
  * `compose.mirrors.yaml`: the mirrors this install runs, and the addresses Mend hands sessions.
  * Absent when both are off, and the install renders as it did before the mirrors existed.
  */
@@ -218,6 +231,9 @@ export const renderMirrorsOverlay = (mirrors: ServerMirrors | undefined): string
           `      SEALANT_DOCKER_REGISTRY_MIRRORS: ${DOCKER_MIRROR_URL}`,
           `      SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER: ${DOCKER_MIRROR_CONTAINER}`,
         ]),
+    "      # Each mirror joins every workspace's own network, under its service name.",
+    "      SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS: >-",
+    `        ${workspaceMirrorContainers(mirrors)}`,
     "",
     ...(mirrors.npm === null ? [] : [...npmMirrorService(), ""]),
     ...(mirrors.docker === null ? [] : [...dockerMirrorService(mirrors), ""]),

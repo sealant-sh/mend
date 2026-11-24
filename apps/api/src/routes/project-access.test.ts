@@ -183,6 +183,13 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "boatKey.fullCheck",
   "boatKey.chooseWallet",
   "boatKey.disconnect",
+  // The caller's organization's Access policies: members read, Organization Owners write and
+  // revoke (access-policies.test.ts).
+  "accessPolicies.list",
+  "accessPolicies.create",
+  "accessPolicies.update",
+  "accessPolicies.remove",
+  "accessPolicies.revoke",
   // The caller's own Boat key in their active organization, and nobody else's: boat-key.test.ts.
   "personBoatKey.status",
   "personBoatKey.connect",
@@ -669,6 +676,33 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-manage", "DELETE", "/secrets/secret-1", { expectedRevision: 1 })(
     "projectSecrets.remove",
   ),
+  // Who may turn a Brokered secret back to Direct, beyond managing: access-policies.test.ts.
+  project("project-manage", "PUT", "/secrets/secret-1/delivery", {
+    delivery: {
+      mode: "brokered",
+      binding: { headerName: "Authorization", bindHosts: ["api.example.com"] },
+    },
+    expectedRevision: 1,
+  })("projectSecrets.setDelivery"),
+  project("project-read", "GET", "/access-policy")("projectAccessPolicy.get"),
+  // Who may assign an elevated policy, beyond managing: access-policies.test.ts.
+  project("project-manage", "PUT", "/access-policy", { policyId: "standard" })(
+    "projectAccessPolicy.set",
+  ),
+  child(
+    "project-read",
+    "worktree",
+    "GET",
+    "/api/worktrees",
+    "/access-policy",
+  )("worktreeAccessPolicy.get"),
+  child(
+    "project-read",
+    "worktree",
+    "POST",
+    "/api/worktrees",
+    "/access-policy/apply",
+  )("worktreeAccessPolicy.apply"),
   project("project-read", "GET", "/cluster-bindings")("projectClusterBindings.get"),
   project("project-manage", "POST", "/cluster-bindings", {
     kind: "secret",
@@ -1268,6 +1302,15 @@ const ADMITTED: Readonly<
   // Cipher encrypt masks update.
   "projectSecrets.update": { status: 500, calls: ["cipher.encrypt"] },
   "projectSecrets.remove": { status: 500, calls: ["secrets.remove"] },
+  // The secret's delivery is read first: changing an approved Brokered one takes an owner.
+  "projectSecrets.setDelivery": { status: 500, calls: ["secrets.deliveryOf"] },
+  "projectAccessPolicy.get": { status: 500, calls: ["accessPolicies.projectPolicy"] },
+  "projectAccessPolicy.set": { status: 500, calls: ["accessPolicies.byId"] },
+  "worktreeAccessPolicy.get": { status: 500, calls: ["accessPolicies.revocationsForProject"] },
+  "worktreeAccessPolicy.apply": {
+    status: 500,
+    calls: ["accessPolicyEnforcement.applyUpdatedPolicy"],
+  },
   "projectClusterBindings.get": { status: 500, calls: ["clusterBindings.snapshot"] },
   "projectClusterBindings.add": { status: 500, calls: ["clusterBindings.add"] },
   "projectClusterBindings.remove": { status: 500, calls: ["clusterBindings.remove"] },

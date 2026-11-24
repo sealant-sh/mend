@@ -80,6 +80,9 @@ const workspaceRecording = (
     image: never,
     processUser: never,
     sshAsRoot: never,
+    applyNetworkPolicy: never,
+    revokeAccess: never,
+    networkPolicy: never,
     phase: never,
     dotfiles: {
       apply: async (options) => {

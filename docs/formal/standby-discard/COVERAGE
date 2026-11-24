@@ -141,7 +141,36 @@
 # repository or one the session holds, read through `sessionRepositoryOrigins`). None touches
 # drainHotWorkspace, the hot pool, claimHotSession, a claimed standby's adoption or
 # HotWorkspacesRepo, so no action models it. --quick tlx run at 696d5e14ad35: every row as expected.
-sync 696d5e14ad35db16d1209f5a29948cca1427aa0e
+# 3b2ab9e9d7 is the SLNT-1331 branch on main at 920f191281. SLNT-1331 changed engine.ts inside
+# claimHotSession and provisionHotWorkspace's create only in what they compute, not in what they
+# call: claimHotSession's fingerprint inputs add the claiming worktree's Access policy hash and
+# whether Brokered secrets ride the standby (`hotInputsFor`'s pin), still one
+# `hotWorkspaces.claim` (CScan, CTake, CNone); provisionWorkspace refuses a launch its policy's
+# runtime cannot hold to before any create, which for a standby ends in the existing
+# `hotWorkspaces.setFailed` (RProvFailed). The rest of the launch (the network policy and Brokered
+# secrets on the create) makes no hot-pool, claim, retire, drain or session-process call, so no
+# action models it. --quick tlx run at 920f191281 plus this tree: every row as expected.
+# 007f727ba2 is the same branch after its R1 fixes. claimHotSession's fingerprint inputs now name
+# the delivered Brokered secrets and the revocations that reach the worktree (still one
+# `hotWorkspaces.claim`: CScan, CTake, CNone). provisionWorkspace tells a new executor the
+# organization's revocations right after its create; when that fails it stops the executor
+# without `discardUnsaved` (or hands it to the caller's `abandon`) and fails the launch, which
+# for a standby ends in the existing `hotWorkspaces.setFailed` (RProvFailed). No new hot-pool,
+# claim, retire, drain or discard call, so no action changes. tlx run at 007f727ba2: every row
+# as expected.
+# c5d5e3bcf8 is the same branch with each executor's sockets served (SLNT-1332). In the covered
+# functions: replanClaimedStandby binds the claimed standby's control scope before it asks the
+# re-plan (an idempotent bind of Mend's own sockets, no platform call that the model watches);
+# drainHotWorkspace closes a standby's scope beside its socket and tokens once its end is
+# confirmed (DEnded); the boot pass that binds running executors' scopes again runs before
+# `resume` and reads only. None is a hot-pool, claim, retire, drain or discard call, so no action
+# changes. tlx run at c5d5e3bcf8: every row as expected.
+# fb43876304 is the same branch after its R2 fixes. In the covered functions: the boot pass that
+# binds running executors' scopes again now also reads Service processes and open forwards and
+# ends before `resume` (reads and Mend's own sockets only); provisionWorkspace names the capture
+# plan's URL over the socket. No hot-pool, claim, retire, drain or discard call changes, so no
+# action changes. tlx run at fb43876304: every row as expected.
+sync fb43876304800ffd084827b6adaf34cbcfe86029
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

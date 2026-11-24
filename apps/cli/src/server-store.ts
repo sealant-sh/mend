@@ -48,6 +48,8 @@ export interface ServerFiles {
   readonly workspaceImages?: string;
   /** compose.workspace-memory.yaml: the memory limits of each session's workspace. */
   readonly workspaceMemory?: string;
+  /** compose.host-vm.yaml: the host VM runtime's volumes, when the config names host-vm. */
+  readonly hostVm?: string;
   /** npm-mirror.conf: the npm mirror's nginx configuration, mounted read-only. */
   readonly npmMirrorConf?: string;
   /** docker-mirror-guard.sh: the Docker mirror's entrypoint, which bounds its cache. */
@@ -250,6 +252,7 @@ const optionalFileKeys = [
   "mirrors",
   "workspaceImages",
   "workspaceMemory",
+  "hostVm",
   "npmMirrorConf",
   "dockerMirrorGuard",
   "t3Gateway",
@@ -274,6 +277,7 @@ const fileNames = {
   mirrors: "compose.mirrors.yaml",
   workspaceImages: "compose.workspace-images.yaml",
   workspaceMemory: "compose.workspace-memory.yaml",
+  hostVm: "compose.host-vm.yaml",
   npmMirrorConf: "npm-mirror.conf",
   dockerMirrorGuard: "docker-mirror-guard.sh",
   t3Gateway: "compose.t3.yaml",
@@ -309,6 +313,7 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   mirrors: 0o600,
   workspaceImages: 0o600,
   workspaceMemory: 0o600,
+  hostVm: 0o600,
   npmMirrorConf: 0o644,
   dockerMirrorGuard: 0o644,
   t3Gateway: 0o600,
@@ -500,6 +505,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
   const mirrors = optional("mirrors");
   const workspaceImages = optional("workspaceImages");
   const workspaceMemory = optional("workspaceMemory");
+  const hostVm = optional("hostVm");
   const npmMirrorConf = optional("npmMirrorConf");
   const dockerMirrorGuard = optional("dockerMirrorGuard");
   const t3Gateway = optional("t3Gateway");
@@ -523,6 +529,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     ...(mirrors === undefined ? {} : { mirrors }),
     ...(workspaceImages === undefined ? {} : { workspaceImages }),
     ...(workspaceMemory === undefined ? {} : { workspaceMemory }),
+    ...(hostVm === undefined ? {} : { hostVm }),
     ...(npmMirrorConf === undefined ? {} : { npmMirrorConf }),
     ...(dockerMirrorGuard === undefined ? {} : { dockerMirrorGuard }),
     ...(t3Gateway === undefined ? {} : { t3Gateway }),

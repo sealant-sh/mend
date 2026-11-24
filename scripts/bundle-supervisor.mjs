@@ -16,6 +16,9 @@ import { supervise } from "./process-supervisor.mjs";
 const READY_FILE = "/run/mend-bundle/ready";
 const STORE_ROOT = "/var/lib/mend/store";
 const SOCKET_ROOT = "/run/sealant/sockets";
+/** Where the host VM runtime keeps its base disks and each VM's data disk (compose.host-vm.yaml). */
+export const VM_IMAGES_ROOT = "/var/lib/mend/vm-images";
+export const VM_DATA_ROOT = "/var/lib/mend/vm-data";
 
 const required = (name) => {
   const value = process.env[name]?.trim();
@@ -48,27 +51,9 @@ const parseConfiguration = async () => {
     throw new Error("MEND_ALLOWED_ORIGINS must be a JSON array of exact URL origins");
   }
 
-  const mappingsText = required("SEALANT_DOCKER_VOLUME_MAPPINGS");
-  let mappings;
-  try {
-    mappings = JSON.parse(mappingsText);
-  } catch {
-    throw new Error("SEALANT_DOCKER_VOLUME_MAPPINGS must be valid JSON");
-  }
-  const roots = new Map(
-    Array.isArray(mappings)
-      ? mappings.map((mapping) => [mapping?.logicalRoot, mapping?.volumeName])
-      : [],
-  );
-  if (
-    mappings?.length !== 2 ||
-    typeof roots.get(STORE_ROOT) !== "string" ||
-    typeof roots.get(SOCKET_ROOT) !== "string"
-  ) {
-    throw new Error(
-      `SEALANT_DOCKER_VOLUME_MAPPINGS must map only ${STORE_ROOT} and ${SOCKET_ROOT} to named volumes`,
-    );
-  }
+  const { vmRoots } = volumeMappingRoots(required("SEALANT_DOCKER_VOLUME_MAPPINGS"));
+  // Before anything starts: a host-vm runtime named without its disks or its networks never boots.
+  hostVmEnvironment(process.env, vmRoots);
   if (required("SEALANT_MOUNT_ALLOWED_STORE_ROOTS") !== STORE_ROOT) {
     throw new Error(`SEALANT_MOUNT_ALLOWED_STORE_ROOTS must be exactly ${STORE_ROOT}`);
   }
@@ -86,6 +71,9 @@ const parseConfiguration = async () => {
   await Promise.all([
     mkdir(STORE_ROOT, { recursive: true }),
     mkdir(SOCKET_ROOT, { recursive: true }),
+    ...(vmRoots
+      ? [VM_IMAGES_ROOT, VM_DATA_ROOT].map((root) => mkdir(root, { recursive: true }))
+      : []),
     mkdir("/var/lib/mend/config", { recursive: true }),
     mkdir("/var/lib/mend/ssh", { recursive: true }),
     mkdir("/run/mend-bundle", { recursive: true }),
@@ -100,6 +88,95 @@ const parseConfiguration = async () => {
     serviceKey: required("SEALANT_SERVICE_KEY"),
     credentialsKey: required("SEALANT_CREDENTIALS_KEY"),
     gatewayToken: required("WORKSPACE_SSH_GATEWAY_TOKEN"),
+    vmRoots,
+  };
+};
+
+/**
+ * The roots `SEALANT_DOCKER_VOLUME_MAPPINGS` lowers to named volumes: exactly the store and the
+ * control sockets, or those two and both of the host VM runtime's roots. `vmRoots` says which.
+ * Anything else, one VM root without the other included, is refused with what it must be.
+ *
+ * @param {string} mappingsText
+ * @returns {{ vmRoots: boolean }}
+ */
+export const volumeMappingRoots = (mappingsText) => {
+  let mappings;
+  try {
+    mappings = JSON.parse(mappingsText);
+  } catch {
+    throw new Error("SEALANT_DOCKER_VOLUME_MAPPINGS must be valid JSON");
+  }
+  const named = Array.isArray(mappings)
+    ? mappings.map((mapping) =>
+        typeof mapping?.volumeName === "string" && mapping.volumeName !== ""
+          ? mapping?.logicalRoot
+          : undefined,
+      )
+    : [];
+  const matches = (roots) =>
+    named.length === roots.length &&
+    new Set(named).size === roots.length &&
+    roots.every((root) => named.includes(root));
+  if (matches([STORE_ROOT, SOCKET_ROOT])) return { vmRoots: false };
+  if (matches([STORE_ROOT, SOCKET_ROOT, VM_IMAGES_ROOT, VM_DATA_ROOT])) return { vmRoots: true };
+  throw new Error(
+    `SEALANT_DOCKER_VOLUME_MAPPINGS must map ${STORE_ROOT} and ${SOCKET_ROOT} to named volumes, and nothing else but both ${VM_IMAGES_ROOT} and ${VM_DATA_ROOT} (never one of them alone)`,
+  );
+};
+
+/**
+ * Whether `MEND_SESSION_RUNTIMES` (a comma-separated list) or `MEND_SESSION_RUNTIME` names
+ * `host-vm`, the runtime that boots each workspace in a microVM on this server's KVM.
+ *
+ * @param {Readonly<Record<string, string | undefined>>} environment
+ */
+export const namesHostVm = (environment) =>
+  [environment.MEND_SESSION_RUNTIMES, environment.MEND_SESSION_RUNTIME]
+    .flatMap((value) => (value ?? "").split(","))
+    .some((runtime) => runtime.trim() === "host-vm");
+
+/**
+ * The worker's host VM directories, only when this install runs `host-vm` sessions: Mend names the
+ * runtime (`MEND_SESSION_RUNTIMES` or `MEND_SESSION_RUNTIME`) and the compose file maps both VM
+ * roots. An install that names no host-vm stays on Docker alone, its VM volumes unused, until an
+ * owner opts in. Naming host-vm without the VM roots mapped, or without per-workspace networks
+ * (`SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS`, which each VM's egress proxy needs), is refused.
+ *
+ * @param {Readonly<Record<string, string | undefined>>} environment
+ * @param {boolean} vmRoots whether SEALANT_DOCKER_VOLUME_MAPPINGS maps both VM roots
+ * @returns {Record<string, string>}
+ */
+export const hostVmEnvironment = (environment, vmRoots) => {
+  if (!namesHostVm(environment)) return {};
+  if (!vmRoots)
+    throw new Error(
+      `host-vm sessions are on (MEND_SESSION_RUNTIMES or MEND_SESSION_RUNTIME), but SEALANT_DOCKER_VOLUME_MAPPINGS maps no ${VM_IMAGES_ROOT} and ${VM_DATA_ROOT}. Add compose.host-vm.yaml after compose.v2.yaml, or take host-vm out of the session runtimes.`,
+    );
+  if ((environment.SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS?.trim() ?? "") === "")
+    throw new Error(
+      "host-vm sessions are on (MEND_SESSION_RUNTIMES or MEND_SESSION_RUNTIME), but SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS is unset: each VM boots behind an egress proxy on a network of its own. Set MEND_WORKSPACE_EGRESS_SUBNETS, or take host-vm out of the session runtimes.",
+    );
+  return { SEALANT_HOST_VM_IMAGE_DIR: VM_IMAGES_ROOT, SEALANT_HOST_VM_DATA_DIR: VM_DATA_ROOT };
+};
+
+/**
+ * The private-range guard's two operator settings, for the worker: `MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS`
+ * (what workspaces may still reach, which Mend's API also reads as the ceiling of an Access policy)
+ * and `MEND_HOST_PUBLIC_IPS` (the host's public addresses the guard refuses), under sealant's
+ * names. Only a value that is set, and only with per-workspace networks: sealant refuses either
+ * without `SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS`.
+ *
+ * @param {Readonly<Record<string, string | undefined>>} environment
+ * @returns {Record<string, string>}
+ */
+export const workspaceEgressEnvironment = (environment) => {
+  if ((environment.SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS?.trim() ?? "") === "") return {};
+  const allowed = environment.MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS?.trim() ?? "";
+  const hostIps = environment.MEND_HOST_PUBLIC_IPS?.trim() ?? "";
+  return {
+    ...(allowed === "" ? {} : { SEALANT_OPERATOR_ALLOWED_PRIVATE_EGRESS: allowed }),
+    ...(hostIps === "" ? {} : { SEALANT_HOST_PUBLIC_IPS: hostIps }),
   };
 };
 
@@ -343,7 +420,7 @@ const startBundle = async (supervisor) => {
     SEALANT_CREDENTIALS_KEY: configuration.credentialsKey,
   };
 
-  console.log("[bundle] applying Sealant 0.40.0-next.933 migrations from its published API image");
+  console.log("[bundle] applying Sealant 0.40.0-next.938 migrations from its published API image");
   await supervisor.run(
     baseSpecification("sealant-migrate", ["node", "/opt/sealant/api/dist/migrate.js"], {
       DATABASE_URL: configuration.sealantDatabaseUrl,
@@ -362,6 +439,9 @@ const startBundle = async (supervisor) => {
       WORKSPACE_SSH_GATEWAY_PORT: process.env.MEND_SSH_PORT ?? "2222",
       WORKSPACE_SSH_GATEWAY_USERNAME_PREFIX: "ws",
       SEALANT_SERVICE_KEYS: configuration.serviceKey,
+      // Where it reaches each workspace's egress proxy (proxy-admin.sock), to apply a policy change
+      // or a revoked secret to a running workspace.
+      WORKSPACE_CONTROL_SOCKET_HOST_DIR: SOCKET_ROOT,
     }),
   );
   await supervisor.start(
@@ -371,6 +451,8 @@ const startBundle = async (supervisor) => {
       WORKSPACE_CONTROL_SOCKET_HOST_DIR: SOCKET_ROOT,
       ...previewSealantdEnvironment(process.env),
       ...workerQueueEnvironment(process.env),
+      ...workspaceEgressEnvironment(process.env),
+      ...hostVmEnvironment(process.env, configuration.vmRoots),
       ...boatGatewayEnvironment(
         process.env,
         await readFile("/proc/net/route", "utf8").catch(() => null),
@@ -398,6 +480,12 @@ const startBundle = async (supervisor) => {
       MEND_WEB_PORT: "3105",
       MEND_MODE: "all",
       MEND_STORE_ROOT: STORE_ROOT,
+      // Mend serves each Docker or host VM executor's capture.sock and session.sock in its own
+      // directory of the control root it shares with Sealant's worker (SLNT-1332). A bundle with
+      // no Docker runtime (MicroVMs on AWS) has no control root to share.
+      ...(process.env.DOCKER_RUNTIME_ENABLED?.trim() === "false"
+        ? {}
+        : { MEND_EXECUTOR_CONTROL_ROOT: SOCKET_ROOT }),
       // The default Compose endpoints stay on this host. Remote HTTPS endpoints explicitly
       // clear this statement so each workspace verifies TLS instead.
       MEND_EXECUTOR_NETWORK: process.env.MEND_EXECUTOR_NETWORK ?? "private",

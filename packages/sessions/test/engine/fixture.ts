@@ -89,6 +89,7 @@ import {
   CheckpointRestoreId,
   ProjectClusterBindingId,
   ProjectEnvironmentVariableId,
+  ProjectSecretId,
   OrganizationId,
   ProjectId,
   PreviewId,
@@ -109,6 +110,7 @@ import {
   type DotfilesRepository,
 } from "@mend/domain";
 import {
+  type BrokeredSecretBinding,
   CheckpointRestore,
   DEFAULT_MESSAGE_SETTINGS,
   type MessageSettings,
@@ -248,10 +250,18 @@ import type {
   WorkspaceCaptureStatus,
   WorkspacePhase,
   WorkspaceStatus,
+  ApplyNetworkPolicyOptions,
+  RevokeAccessOptions,
 } from "@sealant/sdk";
 import { Clock, Duration, Effect, Fiber, Layer, Logger, Stream, type Scope } from "effect";
 
-import { AccessPolicies, type AccessPolicySource } from "../../src/access-policy.ts";
+import {
+  AccessPolicies,
+  type AccessPolicySource,
+  AccessPolicyStore,
+  type AccessPolicyStoreShape,
+} from "../../src/access-policy.ts";
+import { type ExecutorSockets, LaunchExecutorSockets } from "../../src/executor-sockets.ts";
 import { HarnessLayoutConfig } from "../../src/harness-layout-steps.ts";
 import { ResourceStatusReads, ResourceStatusReadsNone } from "../../src/resources/status-reads.ts";
 import { WORKTREE_STAMP, WorktreeReads } from "../../src/worktree-reads.ts";
@@ -317,6 +327,8 @@ export const sealantDeadLayer = Layer.succeed(SealantClient, {
   findWorkspaceByKey: () => Effect.succeed({ kind: "unsupported" as const }),
   fenceWorkspaceCreate: () => Effect.succeed({ kind: "unsupported" as const }),
   captureReplan: () => Effect.die("not in test"),
+  applyNetworkPolicy: () => Effect.die("not in test"),
+  revokeAccess: () => Effect.die("not in test"),
   expireWorkspace: () => Effect.die("not in test"),
   getSession: () => Effect.die("not in test"),
   sessionOutput: () => Effect.die("not in test"),
@@ -480,6 +492,16 @@ export const sealantLaunchLayer = (
    * launched.
    */
   captureOps?: {
+    /** Every `applyNetworkPolicy` the engine sent, in order. */
+    readonly networkPolicyApplies?: Array<{
+      readonly workspaceId: string;
+      readonly options: ApplyNetworkPolicyOptions;
+    }>;
+    /** Every `revokeAccess` the engine sent, in order. */
+    readonly accessRevokes?: Array<{
+      readonly workspaceId: string;
+      readonly options: RevokeAccessOptions;
+    }>;
     readonly flushed?: string[];
     /** Every stop asked of the platform: a plain one (`drain`) or the owner's `discard`. */
     readonly stops?: Array<"drain" | "discard">;
@@ -510,6 +532,10 @@ export const sealantLaunchLayer = (
     };
     /** A faithful workspace hook: sealant has created the executor but no process has started yet. */
     readonly beforeCreate?: (options: CreateOptions) => Effect.Effect<void, SealantPlatformError>;
+    /** What a running workspace's egress proxy answers `applyNetworkPolicy`; `enforced` unless said. */
+    readonly networkPolicyEnforcement?: "enforced" | "pending" | "next-start";
+    /** What `workspace.runtime()` answers: the executor's control scope and launch, say. */
+    readonly runtimeInfo?: () => Awaited<ReturnType<Workspace["runtime"]>>;
     /** A faithful process hook: the harness writes through HOME after relocation. */
     readonly beforeOpen?: (argv: ReadonlyArray<string>) => void;
     /**
@@ -675,10 +701,19 @@ export const sealantLaunchLayer = (
     status: async () => captureOps?.status?.(terminated) ?? (terminated ? "stopped" : "ready"),
     // The engine reads the deadline, the executor and the drain through the fake client below.
     runtimeDeadline: async () => null,
-    runtime: async () => null,
+    runtime: async () => captureOps?.runtimeInfo?.() ?? null,
     publication: async () => null,
     processUser: async () => "supported",
     sshAsRoot: async () => {},
+    applyNetworkPolicy: async () => {
+      throw new Error("not in test");
+    },
+    revokeAccess: async () => {
+      throw new Error("not in test");
+    },
+    networkPolicy: async () => {
+      throw new Error("not in test");
+    },
     phase: async () => captureOps?.phase?.() ?? null,
     launch: undefined,
     recover: async () => {
@@ -912,6 +947,23 @@ export const sealantLaunchLayer = (
         ? Effect.die("capture.replan not in this test world")
         : captureOps.replan(target, options),
     expireWorkspace: renewWorkspace,
+    applyNetworkPolicy: (target, options) =>
+      Effect.sync(() => {
+        captureOps?.networkPolicyApplies?.push({ workspaceId: target.id, options });
+        return {
+          policyHash: options.networkPolicy.policyHash,
+          revocationWatermark: 0,
+          enforcement: captureOps?.networkPolicyEnforcement ?? ("enforced" as const),
+        };
+      }),
+    revokeAccess: (target, options) =>
+      Effect.sync(() => {
+        captureOps?.accessRevokes?.push({ workspaceId: target.id, options });
+        return {
+          revocationWatermark: captureOps?.accessRevokes?.length ?? 1,
+          enforcement: "enforced" as const,
+        };
+      }),
     getSession: (_workspace, id) => Effect.succeed(ptys.get(id) ?? initialPty),
     // Typed failure, not a defect: the settle-path harvest must degrade
     // quietly and still reach the workspace reap.
@@ -1438,7 +1490,8 @@ export const mcpServersLayerOf = (
 ): Layer.Layer<McpServersRepo> =>
   Layer.succeed(McpServersRepo, {
     forLaunch,
-    list: () => Effect.die("not in test"),
+    // A Restricted launch reads the person's servers for the hosts it allows them.
+    list: () => Effect.succeed([]),
     savedOf: (userId, name) =>
       forLaunch(userId).pipe(
         Effect.map((servers) => servers.find((server) => server.name === name) ?? null),
@@ -2741,7 +2794,15 @@ export const projectEnvironmentLayer = (
 
 /** Shared projectSecretsLayer fixture for engine scenarios. */
 export const projectSecretsLayer = (
-  read: () => { readonly revision: number; readonly secrets: Record<string, string> },
+  read: () => {
+    readonly revision: number;
+    readonly secrets: Record<string, string>;
+    /** Secrets (by name) that are Brokered: their binding and placeholder. */
+    readonly brokered?: Record<
+      string,
+      { readonly binding: BrokeredSecretBinding; readonly placeholder: string }
+    >;
+  },
 ) =>
   Layer.succeed(ProjectSecretsRepo, {
     snapshot: () =>
@@ -2753,13 +2814,20 @@ export const projectSecretsLayer = (
           revision: current.revision,
           secrets: Object.entries(current.secrets)
             .toSorted(([a], [b]) => a.localeCompare(b))
-            .map(([name, value]) => ({ name, sealedValue: `sealed:${value}` })),
+            .map(([name, value]) => ({
+              id: ProjectSecretId.make(`secret-${name}`),
+              name,
+              sealedValue: `sealed:${value}`,
+              brokered: current.brokered?.[name] ?? null,
+            })),
         };
       }),
     create: () => Effect.die("not in test"),
     update: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
     upsertByName: () => Effect.die("not in test"),
+    setDelivery: () => Effect.die("not in test"),
+    deliveryOf: () => Effect.succeed(null),
   });
 
 /**
@@ -3556,6 +3624,13 @@ export const worktreesLayer = (world: World) =>
       ),
     listByIds: (ids) =>
       Effect.succeed([...world.worktrees.values()].filter((worktree) => ids.includes(worktree.id))),
+    setAccessPolicy: (id, pin) =>
+      Effect.sync(() => {
+        const current = world.worktrees.get(id);
+        if (current !== undefined) {
+          world.worktrees.set(id, new Worktree({ ...current, accessPolicy: pin }));
+        }
+      }),
     setBase: (id, baseSha, baseRef) =>
       Effect.sync(() => {
         const current = world.worktrees.get(id);
@@ -4103,7 +4178,7 @@ const wrappedSessions = (
 /** Dependencies and persisted fixture state used by one engine scope. */
 interface EngineOptions {
   /** A server set up the old way (`MEND_SESSION_RUNTIME`): it offers this one runtime. */
-  readonly sessionRuntime?: "docker" | "boat" | null;
+  readonly sessionRuntime?: "docker" | "host-vm" | "boat" | null;
   /** What the server offers (`MEND_SESSION_RUNTIMES`); wins over `sessionRuntime`. */
   readonly sessionRuntimes?: SessionRuntimeOffer;
   /** Each organization's choice of where its new sessions run, by id; a test may change it. */
@@ -4202,6 +4277,10 @@ interface EngineOptions {
   readonly gitOpsLayer?: Layer.Layer<SessionGitOpsRepo>;
   /** Every session's worktree policy; `Standard` unless a test says. */
   readonly accessPolicies?: AccessPolicySource;
+  /** The projects' stored policies and revocations a launch reads; Standard unless a test says. */
+  readonly accessPolicyStore?: AccessPolicyStoreShape;
+  /** The executor sockets launches bind; none (the network channel) unless a test says. */
+  readonly launchSockets?: ExecutorSockets["Service"];
   /** Every account's signer; never connected unless a test says. */
   readonly agentBridgeLayer?: Layer.Layer<AgentBridge>;
   /** Mend's git verification of captures (capture mode); off — every capture unverified — unless a test says. */
@@ -4486,6 +4565,12 @@ export const withPreparedEngineEffect = <B, A, E>(
           options.accessPolicies === undefined
             ? Layer.empty
             : Layer.succeed(AccessPolicies, options.accessPolicies),
+          options.accessPolicyStore === undefined
+            ? Layer.empty
+            : Layer.succeed(AccessPolicyStore, options.accessPolicyStore),
+          options.launchSockets === undefined
+            ? Layer.empty
+            : Layer.succeed(LaunchExecutorSockets, options.launchSockets),
           options.agentBridgeLayer ?? agentBridgeStubLayer,
           options.gitOpsLayer ?? gitOpsStubLayer,
           changesLayer(world),

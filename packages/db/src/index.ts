@@ -20,6 +20,7 @@ export * from "./repos/upgrade-tickets.ts";
 export * from "./repos/session-control-events.ts";
 export * from "./repos/session-shared-control.ts";
 export * from "./repos/access-keys.ts";
+export * from "./repos/access-policies.ts";
 export * from "./repos/audit-events.ts";
 export * from "./repos/folders.ts";
 export * from "./repos/follow-ups.ts";

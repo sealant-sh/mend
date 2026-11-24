@@ -1,5 +1,5 @@
 # Mend bundle deployment contract v2. The long-running containers are Mend, official Postgres and
-# Garage. The Mend image supervises its web/API processes plus the Sealant 0.40.0-next.933 API, worker
+# Garage. The Mend image supervises its web/API processes plus the Sealant 0.40.0-next.938 API, worker
 # and SSH gateway. Sealant's job queue lives in Postgres and workspace images live in the host
 # Docker Engine. Garage is the capture store's bucket (docs/adr/0002-session-capture-store.md):
 # every session's work product ships there and the executor is disposable. Generate and persist
@@ -43,10 +43,18 @@ services:
       SEALANT_MOUNT_ALLOWED_STORE_ROOTS: /var/lib/mend/store
       SEALANT_DOCKER_VOLUME_MAPPINGS: >-
         [{"logicalRoot":"/var/lib/mend/store","volumeName":"${MEND_STORE_VOLUME_NAME:-mend-store}"},{"logicalRoot":"/run/sealant/sockets","volumeName":"${MEND_CONTROL_VOLUME_NAME:-mend-control}"}]
-      # Workspace containers must join this network to resolve `mend` and `garage` below; the
-      # Sealant Docker runtime does not attach them yet (PLATFORM-FEEDBACK.md 2026-09-13), so the
-      # value is set ahead of the runtime that reads it.
-      SEALANT_DOCKER_WORKSPACE_NETWORK: mend_default
+      # Each workspace gets a /28 network of its own from this range, behind a guard that refuses
+      # the private ranges, so it reaches neither Postgres, Garage's admin port nor another
+      # workspace. Workspaces no longer join mend_default.
+      SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS: ${MEND_WORKSPACE_EGRESS_SUBNETS:-10.233.0.0/16}
+      # A workspace reaches Mend and Garage through two Unix sockets Mend serves in the workspace's
+      # own directory of mend-control (capture.sock, session.sock; MEND_EXECUTOR_CONTROL_ROOT in
+      # the bundle), never over a network: nothing of the Compose network is on its own.
+      # Private addresses workspaces may still reach behind that guard, and the host's public
+      # addresses it refuses; both empty by default. Mend reads the first as the ceiling of what an
+      # Access policy may allow.
+      MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS: ${MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS:-}
+      MEND_HOST_PUBLIC_IPS: ${MEND_HOST_PUBLIC_IPS:-}
       # sealant creates one private caller network per organization's Executor; 4401 is never published.
       SEALANT_RESOURCE_CALLERS: >-
         [{"kind":"docker","name":"mend","container":"${MEND_CONTAINER_NAME:-mend-mend-1}","callbackPorts":[4401]}]
@@ -54,7 +62,8 @@ services:
       MEND_EXECUTOR_CALLER: mend
       MEND_EXECUTOR_CALLBACK_HOST: ${MEND_CONTAINER_NAME:-mend-mend-1}
       # The capture store (ADR-0002): the session channel executors call, and the bucket their
-      # presigned URLs name. Both are Compose service names, resolved on the project network.
+      # presigned URLs name. A Docker or host VM executor reaches both through capture.sock and
+      # session.sock; an executor elsewhere (Boat) through the published channel.
       MEND_SESSION_ENDPOINT_LISTEN: 0.0.0.0:3106
       MEND_SESSION_ENDPOINT_URL: http://mend:3106
       MEND_BLOB_STORE: s3://mend?endpoint=http://garage:3900&region=garage

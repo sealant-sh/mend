@@ -1,6 +1,8 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectSecretId, type ProjectId } from "@mend/domain";
 import {
+  type BrokeredSecretBinding,
+  brokeredSecretBindingProblems,
   formatProjectEnvironmentIssue,
   PROJECT_ENV_MAX_ENTRIES,
   ProjectSecret,
@@ -33,9 +35,23 @@ export class ProjectSecretNotFoundError extends Schema.TaggedError<ProjectSecret
  * (`@mend/store` SecretCipher), so this package never sees plaintext.
  */
 export interface SealedProjectSecret {
+  readonly id: ProjectSecretId;
   readonly name: string;
   readonly sealedValue: string;
+  /**
+   * Null: Direct, the value goes to the workspace's environment. Otherwise Brokered: the
+   * workspace gets `placeholder`, and only its egress proxy gets the value.
+   */
+  readonly brokered: {
+    readonly binding: BrokeredSecretBinding;
+    readonly placeholder: string;
+  } | null;
 }
+
+/** How a secret is to be delivered from now on. */
+export type ProjectSecretDeliveryInput =
+  | { readonly mode: "direct" }
+  | { readonly mode: "brokered"; readonly binding: BrokeredSecretBinding };
 
 export interface ProjectSecretMutation {
   readonly secret: ProjectSecret;
@@ -71,9 +87,14 @@ export class ProjectSecretsRepo extends Context.Service<
       { readonly revision: number; readonly secrets: ReadonlyArray<SealedProjectSecret> },
       ProjectNotFoundError
     >;
+    /** `delivery` Brokered writes the binding and placeholder in the same insert. */
     readonly create: (
       projectId: ProjectId,
-      input: { readonly name: string; readonly sealedValue: string },
+      input: {
+        readonly name: string;
+        readonly sealedValue: string;
+        readonly delivery?: ProjectSecretDeliveryInput;
+      },
     ) => Effect.Effect<ProjectSecretMutation, ProjectSecretWriteError>;
     /** Replace the value and/or rename; `sealedValue` null keeps the stored value (pure rename). */
     readonly update: (
@@ -104,6 +125,32 @@ export class ProjectSecretsRepo extends Context.Service<
       ProjectSecretMutation & { readonly action: "created" | "updated" },
       ProjectSecretWriteError
     >;
+    /**
+     * Make a secret Direct or Brokered. A Brokered secret keeps its placeholder across edits of
+     * its binding; one made Brokered gets a new one. Answers the delivery it had before, so the
+     * caller can hold a downgrade to an Organization Owner.
+     */
+    readonly setDelivery: (
+      projectId: ProjectId,
+      secretId: ProjectSecretId,
+      input: { readonly delivery: ProjectSecretDeliveryInput; readonly expectedRevision: number },
+    ) => Effect.Effect<
+      ProjectSecretMutation & { readonly previous: "direct" | "brokered" },
+      | ProjectNotFoundError
+      | ProjectSecretNotFoundError
+      | ProjectEnvironmentStaleWriteError
+      | ProjectEnvironmentInvalidInputError
+    >;
+    /** One secret's delivery as stored, or null when the project holds no such secret. */
+    readonly deliveryOf: (
+      projectId: ProjectId,
+      secretId: ProjectSecretId,
+    ) => Effect.Effect<{
+      readonly name: string;
+      readonly delivery: "direct" | "brokered";
+      /** The binding a Brokered secret has now; null for a Direct one. */
+      readonly binding: BrokeredSecretBinding | null;
+    } | null>;
   }
 >()("@mend/db/ProjectSecretsRepo") {}
 
@@ -115,9 +162,28 @@ const toSecret = (row: typeof projectSecrets.$inferSelect): ProjectSecret =>
     projectId: row.projectId,
     name: row.name,
     revision: row.revision,
+    delivery:
+      row.delivery === "brokered" && row.brokeredBinding !== null && row.placeholder !== null
+        ? { mode: "brokered", binding: row.brokeredBinding, placeholder: row.placeholder }
+        : { mode: "direct" },
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   });
+
+const PLACEHOLDER_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+/** `mend_sec_` and 24 random characters: what a Brokered secret's variable holds. */
+export const newBrokeredPlaceholder = (): string => {
+  let out = "";
+  while (out.length < 24) {
+    for (const byte of crypto.getRandomValues(new Uint8Array(32))) {
+      // 252 is the largest multiple of 36 under 256; a byte above it is drawn again, so no
+      // character is likelier than another.
+      if (byte < 252 && out.length < 24) out += PLACEHOLDER_ALPHABET[byte % 36];
+    }
+  }
+  return `mend_sec_${out}`;
+};
 
 const validateName = (name: string): Effect.Effect<void, ProjectEnvironmentInvalidInputError> => {
   const issue = validateProjectSecretName(name);
@@ -204,19 +270,48 @@ export const ProjectSecretsRepoLive: Layer.Layer<
       if (first === undefined) return yield* new ProjectNotFoundError({ projectId });
       return {
         revision: first.secretRevision,
-        secrets: rows.flatMap((row) =>
-          row.secret === null
-            ? []
-            : [{ name: row.secret.name, sealedValue: row.secret.sealedValue }],
-        ),
+        secrets: rows.flatMap((row): Array<SealedProjectSecret> => {
+          const secret = row.secret;
+          if (secret === null) return [];
+          return [
+            {
+              id: secret.id,
+              name: secret.name,
+              sealedValue: secret.sealedValue,
+              brokered:
+                secret.delivery === "brokered" &&
+                secret.brokeredBinding !== null &&
+                secret.placeholder !== null
+                  ? { binding: secret.brokeredBinding, placeholder: secret.placeholder }
+                  : null,
+            },
+          ];
+        }),
       };
     });
 
     const create = Effect.fn("ProjectSecretsRepo.create")(function* (
       projectId: ProjectId,
-      input: { readonly name: string; readonly sealedValue: string },
+      input: {
+        readonly name: string;
+        readonly sealedValue: string;
+        readonly delivery?: ProjectSecretDeliveryInput;
+      },
     ) {
       yield* validateName(input.name);
+      const delivery = input.delivery;
+      if (delivery?.mode === "brokered") {
+        const problems = brokeredSecretBindingProblems(delivery.binding);
+        if (problems.length > 0) {
+          return yield* new ProjectEnvironmentInvalidInputError({
+            issues: problems.map((message) => ({
+              field: "value" as const,
+              rule: "brokered-binding",
+              message,
+            })),
+          });
+        }
+      }
       const result = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -238,6 +333,13 @@ export const ProjectSecretsRepoLive: Layer.Layer<
                 projectId,
                 name: input.name,
                 sealedValue: input.sealedValue,
+                ...(delivery?.mode === "brokered"
+                  ? {
+                      delivery: "brokered" as const,
+                      brokeredBinding: delivery.binding,
+                      placeholder: newBrokeredPlaceholder(),
+                    }
+                  : {}),
               })
               .returning()
               .pipe(Effect.orDie);
@@ -387,6 +489,100 @@ export const ProjectSecretsRepoLive: Layer.Layer<
       return result;
     });
 
-    return { snapshot, sealedForLaunch, create, update, remove, upsertByName };
+    const setDelivery = Effect.fn("ProjectSecretsRepo.setDelivery")(function* (
+      projectId: ProjectId,
+      secretId: ProjectSecretId,
+      input: { readonly delivery: ProjectSecretDeliveryInput; readonly expectedRevision: number },
+    ) {
+      if (input.delivery.mode === "brokered") {
+        const problems = brokeredSecretBindingProblems(input.delivery.binding);
+        if (problems.length > 0) {
+          return yield* new ProjectEnvironmentInvalidInputError({
+            issues: problems.map((message) => ({
+              field: "value" as const,
+              rule: "brokered-binding",
+              message,
+            })),
+          });
+        }
+      }
+      const delivery = input.delivery;
+      const result = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* lockProject(tx, projectId);
+            const [current] = yield* tx
+              .select()
+              .from(projectSecrets)
+              .where(eq(projectSecrets.id, secretId))
+              .limit(1)
+              .pipe(Effect.orDie);
+            if (current === undefined || current.projectId !== projectId) {
+              return yield* new ProjectSecretNotFoundError({ secretId });
+            }
+            if (current.revision !== input.expectedRevision) {
+              return yield* new ProjectEnvironmentStaleWriteError({
+                variableId: secretId,
+                currentRevision: current.revision,
+              });
+            }
+            const [updated] = yield* tx
+              .update(projectSecrets)
+              .set(
+                delivery.mode === "direct"
+                  ? { delivery: "direct", brokeredBinding: null, placeholder: null }
+                  : {
+                      delivery: "brokered",
+                      brokeredBinding: delivery.binding,
+                      placeholder: current.placeholder ?? newBrokeredPlaceholder(),
+                    },
+              )
+              .where(eq(projectSecrets.id, secretId))
+              .returning()
+              .pipe(Effect.orDie);
+            if (updated === undefined) return yield* Effect.die("secret update lost the row");
+            const [bumped] = yield* tx
+              .update(projectSecrets)
+              .set({ revision: current.revision + 1, updatedAt: yield* DateTime.nowAsDate })
+              .where(eq(projectSecrets.id, secretId))
+              .returning()
+              .pipe(Effect.orDie);
+            if (bumped === undefined) return yield* Effect.die("secret update lost the row");
+            const revision = yield* bumpAggregate(tx, projectId);
+            return { secret: toSecret(bumped), revision, previous: current.delivery };
+          }),
+        )
+        .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
+      yield* notifyEvent(sqlClient, { type: "project", projectId });
+      return result;
+    });
+
+    const deliveryOf = Effect.fn("ProjectSecretsRepo.deliveryOf")(function* (
+      projectId: ProjectId,
+      secretId: ProjectSecretId,
+    ) {
+      const [row] = yield* db
+        .select({
+          name: projectSecrets.name,
+          delivery: projectSecrets.delivery,
+          binding: projectSecrets.brokeredBinding,
+        })
+        .from(projectSecrets)
+        .where(and(eq(projectSecrets.id, secretId), eq(projectSecrets.projectId, projectId)))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row ?? null;
+    });
+
+    return {
+      snapshot,
+      sealedForLaunch,
+      create,
+      update,
+      remove,
+      upsertByName,
+      setDelivery,
+      deliveryOf,
+    };
   }),
 );

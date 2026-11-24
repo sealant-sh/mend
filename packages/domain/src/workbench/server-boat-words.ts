@@ -32,6 +32,7 @@ const observed = (at: Date): string => `observed ${minuteOf(at)}`;
 
 const RUNTIME_WORDS: Readonly<Record<SessionRuntime, string>> = {
   docker: "this server's Docker",
+  "host-vm": "this server's KVM",
   boat: "Boat",
 };
 

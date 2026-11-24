@@ -1,9 +1,11 @@
 import * as net from "node:net";
 
+import type { SessionRuntime } from "@mend/domain";
 import { writePreviewPorts } from "@mend/network";
 
 import { BOAT_COMPOSE_FILE, type ServerBoat } from "./server-boat.ts";
 import { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY, T3_GATEWAY_CADDYFILE } from "./server-edge-files.ts";
+import { HOST_VM_COMPOSE_FILE, namesHostVm } from "./server-host-vm.ts";
 import { MIRRORS_COMPOSE_FILE, runsMirrors, type ServerMirrors } from "./server-mirrors.ts";
 import {
   REMOTE_ENDPOINTS_COMPOSE_FILE,
@@ -90,9 +92,9 @@ export const isDeclarableItem = (value: string): value is DeclarableItem =>
 
 /** What a server config says about how the install is reached and for whom. */
 export interface ServerPosture {
-  readonly sessionRuntime?: "docker" | "boat";
+  readonly sessionRuntime?: SessionRuntime;
   /** The runtimes organizations may choose among; absent, the server offers `sessionRuntime`. */
-  readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
+  readonly sessionRuntimes?: ReadonlyArray<SessionRuntime>;
   /** The name the edge's certificate is for; absent, no edge runs. */
   readonly edgeHost?: string;
   readonly exposure?: Exposure;
@@ -509,6 +511,7 @@ export const composeOverlays = (
   ...(runsMirrors(posture.mirrors) ? [MIRRORS_COMPOSE_FILE] : []),
   ...(posture.workspaceImages === undefined ? [] : [WORKSPACE_IMAGES_COMPOSE_FILE]),
   ...(posture.workspaceMemory === undefined ? [] : [WORKSPACE_MEMORY_COMPOSE_FILE]),
+  ...(namesHostVm(posture) ? [HOST_VM_COMPOSE_FILE] : []),
   ...(posture.t3GatewayPort === undefined ? [] : [T3_GATEWAY_COMPOSE_FILE]),
   ...(posture.preview === undefined ? [] : [PREVIEW_COMPOSE_FILE]),
   ...(posture.remoteEndpoints === undefined ? [] : [REMOTE_ENDPOINTS_COMPOSE_FILE]),

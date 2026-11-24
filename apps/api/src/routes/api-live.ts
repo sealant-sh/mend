@@ -70,6 +70,11 @@ import { loginOf } from "../github-identity.ts";
 import { instanceIdOf } from "../instance-id.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AccessKeysGroupLive } from "./access-keys.ts";
+import {
+  AccessPoliciesGroupLive,
+  ProjectAccessPolicyGroupLive,
+  WorktreeAccessPolicyGroupLive,
+} from "./access-policies.ts";
 import { AgentMemoryGroupLive } from "./agent-memory.ts";
 import { BoatKeyGroupLive, PersonBoatKeyGroupLive } from "./boat-key.ts";
 import { ConversationsGroupLive } from "./conversations.ts";
@@ -855,7 +860,17 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(ProjectsGroupLive),
   Layer.provide(GitKeysGroupLive),
   Layer.provide(ProjectEnvironmentGroupLive),
-  Layer.provide(Layer.mergeAll(ProjectSecretsGroupLive, ProjectClusterBindingsGroupLive)),
+  Layer.provide(
+    Layer.mergeAll(
+      ProjectSecretsGroupLive,
+      ProjectClusterBindingsGroupLive,
+      // Access policies (ADR 0025's 2026-11-24 amendment): the organization's, a project's copy
+      // and a worktree's pin.
+      AccessPoliciesGroupLive,
+      ProjectAccessPolicyGroupLive,
+      WorktreeAccessPolicyGroupLive,
+    ),
+  ),
   Layer.provide(Layer.mergeAll(ProjectMountsGroupLive, ProjectLinksGroupLive)),
   Layer.provide(Layer.mergeAll(ProjectRecipesGroupLive, ResourcesGroupLive)),
   Layer.provide(ReferencesGroupLive),

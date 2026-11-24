@@ -69,7 +69,7 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
       throw new Error("expected an installation");
     const { present: _present, ...unobserved } = plan.server;
     expect(planLines({ ...plan, server: unobserved }, f.configDir).join("\n")).toContain(
-      `containers mend, postgres, garage, edge, npm-mirror, docker-mirror · volumes mend-store, mend-control, mend-garage, mend-config, mend-ssh, mend-postgres, mend-edge-data, mend-edge-config, mend-npm-mirror, mend-docker-mirror · image ghcr.io/sealant-sh/mend:0.23.0 · the edge for ${host}`,
+      `containers mend, postgres, garage, edge, npm-mirror, docker-mirror · volumes mend-store, mend-control, mend-garage, mend-config, mend-ssh, mend-postgres, mend-vm-images, mend-vm-data, mend-edge-data, mend-edge-config, mend-npm-mirror, mend-docker-mirror · image ghcr.io/sealant-sh/mend:0.23.0 · the edge for ${host}`,
     );
     const outcome = await executeUninstall(runtime, plan);
     expect(outcome.failures).toEqual([]);

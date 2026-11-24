@@ -26,8 +26,9 @@ registry.npmjs.org, the same as one written without it.
 ## On the Docker install
 
 `mend server setup` runs it as the `npm-mirror` service, on by default, and `mend server upgrade`
-adds it to an install from before it. The service publishes no host port. Sessions reach it at
-`http://npm-mirror:4873/` on the Compose network, and Mend receives that address as
+adds it to an install from before it. The service publishes no host port. Each session's workspace
+is on a network of its own, and Sealant joins the mirror's container, `mend-npm-mirror`, to every
+one of them, so sessions reach it at `http://npm-mirror:4873/`. Mend receives that address as
 `MEND_NPM_MIRROR_URL`.
 
 ```sh

@@ -2,10 +2,11 @@ import {
   findWorkspaceSecretEnvReservedRule,
   providerLoginEnvNames,
 } from "@sealant/api-contracts/workspace-environment";
-import { Record, Schema } from "effect";
+import { Effect, Record, Schema } from "effect";
 
 import { ProjectId, ProjectSecretId } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
+import { ProjectSecretDeliveryView } from "./access-policy.ts";
 import { CREDENTIAL_PROVIDER_LABELS } from "./default-login.ts";
 import {
   PROJECT_ENV_MAX_NAME_LENGTH,
@@ -30,6 +31,15 @@ export class ProjectSecret extends Schema.Class<ProjectSecret>("ProjectSecret")(
   name: Schema.String,
   /** Integer row revision; stale-write checks compare against it. The value never appears. */
   revision: Schema.Int,
+  /**
+   * `direct`: the value reaches the workspace's environment at launch. `brokered`: the workspace
+   * holds only a placeholder, and its egress proxy puts the value in one header on requests to the
+   * bound hosts (agent-home `workspace-isolation-architecture.md` §7.2).
+   */
+  delivery: ProjectSecretDeliveryView.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed({ mode: "direct" as const })),
+    Schema.withConstructorDefault(Effect.succeed({ mode: "direct" as const })),
+  ),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}
