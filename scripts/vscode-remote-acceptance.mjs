@@ -131,7 +131,7 @@ const main = async () => {
   const port = 3105;
   const sshPort = 2222;
 
-  const daemon = await startDind({ name: `${id}-dind`, scratch, home, context, clientEnv });
+  const daemon = await startDind({ name: `${id}-dind`, scratch, home, context, clientEnv, log });
   dind = daemon.dind;
   const { host, inner } = daemon;
   const origin = `http://${host}:${port}`;

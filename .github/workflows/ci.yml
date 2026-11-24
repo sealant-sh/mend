@@ -637,7 +637,7 @@ jobs:
           scripts/verify-stack/lifecycle.resources.e2e.test.mjs
           scripts/verify-stack/lifecycle.recording.e2e.test.mjs
           scripts/vscode-acceptance-evidence.test.mjs scripts/ci-bounded.test.mjs
-          .agents/skills/verify/scripts/leaks.test.mjs
+          scripts/vscode-remote-world.test.mjs .agents/skills/verify/scripts/leaks.test.mjs
           .agents/skills/verify/scripts/leaks.closed-roots.test.mjs
           .agents/skills/verify/scripts/leaks.frames.test.mjs
           .agents/skills/verify/scripts/slots.test.mjs .agents/skills/verify/scripts/guard.test.mjs

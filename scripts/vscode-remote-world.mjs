@@ -159,14 +159,53 @@ export const makeScratch = (prefix, root = path.join(os.homedir(), ".cache")) =>
   return { scratch, home, configHome, sshDir, handWritten, clientEnv };
 };
 
+// The cloud metadata addresses Sealant's workspace egress guard refuses as a Docker DNS server
+// (sealant's METADATA_EGRESS_ADDRESSES). 168.63.129.16 is Azure's WireServer, the resolver GitHub's
+// hosted runners hand Docker on some runner images (SLNT-1340).
+const METADATA_RESOLVERS = new Set(["169.254.169.254", "fd00:ec2::254", "168.63.129.16"]);
+/** What the world's daemon resolves through instead, where this machine's resolver is one. */
+const PUBLIC_RESOLVERS = ["1.1.1.1", "8.8.8.8"];
+
+/** The `nameserver` lines of a resolv.conf that are cloud metadata addresses. */
+export const metadataResolvers = (resolvConf) =>
+  lines(resolvConf)
+    .map((line) => /^\s*nameserver\s+(\S+)/.exec(line)?.[1])
+    .filter((server) => server !== undefined && METADATA_RESOLVERS.has(server.toLowerCase()));
+
+/**
+ * The resolvers the world's daemon is given: none (it keeps what this machine's Docker hands a
+ * container) unless that is a cloud metadata address. The daemon passes its own resolvers on to
+ * every workspace's Docker DNS, and Sealant's egress guard rightly refuses a workspace whose DNS
+ * forwards to a metadata address, so the session would never start for a reason outside Mend.
+ * Read from a container on this machine's Docker, as the daemon's own container would be.
+ */
+const worldResolvers = async () => {
+  const resolvConf = await docker([
+    "run",
+    "--rm",
+    "--entrypoint",
+    "cat",
+    DIND_IMAGE,
+    "/etc/resolv.conf",
+  ]);
+  const metadata = metadataResolvers(resolvConf);
+  return metadata.length === 0 ? null : { metadata, resolvers: PUBLIC_RESOLVERS };
+};
+
 /**
  * The Docker-in-Docker daemon: privileged, the run's HOME bind-mounted at the same path (the
  * generation's files are bind-mounted by host path, as Docker Desktop shares /Users on a Mac),
- * and a Docker context on this machine that reaches it through its socket.
+ * and a Docker context on this machine that reaches it through its socket. Public resolvers where
+ * this machine's Docker resolves through a cloud metadata address (`worldResolvers`).
  */
-export const startDind = async ({ name, scratch, home, context, clientEnv }) => {
+export const startDind = async ({ name, scratch, home, context, clientEnv, log = () => {} }) => {
   const socketDir = path.join(scratch, "dind-run");
   fs.mkdirSync(socketDir);
+  const dns = await worldResolvers();
+  if (dns !== null)
+    log(
+      `this machine's Docker resolves through ${dns.metadata.join(", ")}, a cloud metadata address the workspace egress guard refuses; the world's daemon resolves through ${dns.resolvers.join(" and ")}`,
+    );
   const dind = await docker([
     "run",
     "-d",
@@ -182,6 +221,7 @@ export const startDind = async ({ name, scratch, home, context, clientEnv }) => 
     ...(refuseDockerHub
       ? DOCKER_HUB_HOSTS.flatMap((host) => ["--add-host", `${host}:0.0.0.0`])
       : []),
+    ...(dns === null ? [] : dns.resolvers.flatMap((server) => ["--dns", server])),
     DIND_IMAGE,
     "dockerd",
     "--host=unix:///var/run/docker.sock",
