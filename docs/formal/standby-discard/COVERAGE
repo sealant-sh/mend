@@ -134,7 +134,14 @@
 # and the set of hook harnesses those read. None touches drainHotWorkspace, the hot pool,
 # claimHotSession, a claimed standby's adoption or HotWorkspacesRepo, so no action models it. Full
 # tlx run at 7106d12aee46: every row as expected (`code` 129,386,795 states, 228 s on four workers).
-sync 7106d12aee46f217064b147bca4b7ae49e6b3b1d
+# 696d5e14ad35 is SLNT-1319 on main at 8a304806e6 (whose covered files since 7106d12aee46 carry
+# only #1953's squash, which the line before accounted for). engine.ts reads the worktree's Access
+# policy (`AccessPolicies`) once at build, and the session channel's `gitTransport` decides each op
+# with `decideGitTransport` (the policy's `gitTransport` cap, a push bound to the project's own
+# repository or one the session holds, read through `sessionRepositoryOrigins`). None touches
+# drainHotWorkspace, the hot pool, claimHotSession, a claimed standby's adoption or
+# HotWorkspacesRepo, so no action models it. --quick tlx run at 696d5e14ad35: every row as expected.
+sync 696d5e14ad35db16d1209f5a29948cca1427aa0e
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
