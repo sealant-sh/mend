@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as https from "node:https";
@@ -17,12 +17,14 @@ import type { SessionCaptureApi } from "../src/capture-channel.ts";
 import {
   CAPTURE_SOCKET_NAME,
   classifyCaptureSocketRequest,
+  executorScopeOf,
   clientHelloServerName,
   ExecutorSockets,
   executorSocketsAt,
   objectStoreEndpointOf,
   SESSION_SOCKET_NAME,
 } from "../src/executor-sockets.ts";
+import { SCRIPT_TRANSPORT_PRELUDE } from "../src/script-transport.ts";
 import { SessionChannelRegistry, SessionChannelRegistryLive } from "../src/session-channel.ts";
 import type { SessionSocketApi } from "../src/session-socket.ts";
 
@@ -401,8 +403,9 @@ describe("session.sock", () => {
     expect(served).toContain('[{"name":"web"}]');
   });
 
-  it("refuses no token, the launch's capture credential, and another launch's tokens", async () => {
-    for (const token of [null, launchToken, otherLaunchToken, otherLaunchPersonToken]) {
+  it("takes its own launch's token, which a shared layout's processes carry, and refuses none and another launch's", async () => {
+    expect(statusOf(await get("/recipes", launchToken))).toBe(200);
+    for (const token of [null, otherLaunchToken, otherLaunchPersonToken]) {
       expect(statusOf(await get("/recipes", token)), String(token)).toBe(401);
       expect(statusOf(await connect(token)), String(token)).toBe(401);
     }
@@ -730,5 +733,67 @@ describe("a TLS ClientHello's server name", () => {
     expect(
       clientHelloServerName(Buffer.from([0x16, 0x03, 0x01, 0x00, 0x40, 0x01])),
     ).toBeUndefined();
+  });
+});
+
+describe("a workspace process on session.sock", () => {
+  it("speaks the channel through it with its token, as MEND_SESSION_SOCKET names it", async () => {
+    const script = `${SCRIPT_TRANSPORT_PRELUDE}
+const options = transportOptions("GET", "/recipes");
+transportClient()
+  .request(options, (response) => {
+    let body = "";
+    response.on("data", (chunk) => (body += chunk));
+    response.on("end", () => process.stdout.write(transport.kind + " " + response.statusCode + " " + body));
+  })
+  .end();
+`;
+    // Run beside this process, not blocking it: the socket's server answers from here.
+    const answer = await new Promise<string>((resolve, reject) =>
+      execFile(
+        process.execPath,
+        ["-e", script],
+        {
+          env: {
+            PATH: process.env["PATH"] ?? "",
+            MEND_SESSION_SOCKET: sessionPath,
+            MEND_SESSION_ID: SESSION,
+            MEND_SESSION_TOKEN: launchToken,
+            MEND_SESSION_ENDPOINT: "http://mend.invalid:3106",
+          },
+          encoding: "utf8",
+          timeout: 20_000,
+        },
+        (error, stdout) => {
+          if (error === null) resolve(stdout);
+          else reject(error);
+        },
+      ),
+    );
+    expect(answer).toBe('session-socket 200 [{"name":"web"}]');
+  });
+});
+
+describe("binding a scope again as it stands", () => {
+  it("leaves it serving, its open connections kept", async () => {
+    const scope = "mend-rebind-scope";
+    const socketPath = path.join(root, scope, SESSION_SOCKET_NAME);
+    await runtime.runPromise(
+      Effect.flatMap(ExecutorSockets, (sockets) =>
+        sockets.bind({ scope, launchId: LAUNCH, mode: "normal" }),
+      ),
+    );
+    const held = net.createConnection(socketPath);
+    await new Promise<void>((resolve) => held.once("connect", () => resolve()));
+    await runtime.runPromise(
+      Effect.flatMap(ExecutorSockets, (sockets) =>
+        sockets.bind({ scope, launchId: LAUNCH, mode: "normal" }),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(held.destroyed).toBe(false);
+    held.destroy();
+    expect(executorScopeOf("launch-1")).toMatch(/^mend-[0-9a-f]{24}$/);
+    expect(executorScopeOf("launch-1")).toBe(executorScopeOf("launch-1"));
   });
 });

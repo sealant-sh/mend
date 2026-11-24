@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as https from "node:https";
@@ -7,7 +8,7 @@ import * as path from "node:path";
 import { SessionChannelTokensRepo } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import { BlobStoreConfig } from "@mend/store";
-import { Config, Effect, Layer, Schema, type Scope } from "effect";
+import { Config, Effect, Layer, Option, Schema, type Scope } from "effect";
 import * as Context from "effect/Context";
 
 import {
@@ -357,6 +358,28 @@ export class ExecutorSockets extends Context.Service<
   }
 >()("@mend/sessions/ExecutorSockets") {}
 
+/**
+ * The executor sockets a launch binds, or null where Mend does not serve the control root
+ * (`MEND_EXECUTOR_CONTROL_ROOT` unset: `pnpm dev`, a test's world, a Kubernetes install). Then a
+ * launch names no control scope and its executor reaches Mend over the network channel, as
+ * before.
+ */
+export const LaunchExecutorSockets: Context.Reference<ExecutorSockets["Service"] | null> =
+  Context.Reference<ExecutorSockets["Service"] | null>("@mend/sessions/LaunchExecutorSockets", {
+    defaultValue: () => null,
+  });
+
+/** Where a Docker workspace's processes reach `session.sock` (its scope is at `/run/sealant`). */
+export const WORKSPACE_SESSION_SOCKET = "/run/sealant/session.sock";
+
+/**
+ * The control scope Mend names for a launch: `mend-` and 24 hex characters of the launch id's
+ * SHA-256. The launch id is random, so the scope cannot be guessed, it is the same each time Mend
+ * asks (a restart re-binds it), and its sockets' paths stay far below the 107-byte limit.
+ */
+export const executorScopeOf = (launchId: string): string =>
+  `mend-${createHash("sha256").update(launchId).digest("hex").slice(0, 24)}`;
+
 /** A container name, which is what a `mend-control` subpath is: never `..`, never a path. */
 const SCOPE_SHAPE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
@@ -432,6 +455,11 @@ const makeExecutorSockets = (
       blobStore.target.kind === "s3" ? blobStore.target.endpoint : undefined,
     );
     const bound = new Map<string, ReadonlyArray<net.Server>>();
+    /** What each scope serves now: whose launch, and whether it boots to recover. */
+    const bindings = new Map<
+      string,
+      { readonly launchId: string; readonly mode: "normal" | "recover" }
+    >();
     /**
      * Each scope's upgraded connections (a Git tunnel, an `Upgrade`): once handed over they are
      * no longer the server's, so `closeAllConnections` would leave them open past their scope.
@@ -592,15 +620,12 @@ const makeExecutorSockets = (
     };
 
     const sessionServer = (scope: string, launchId: string): http.Server => {
-      // A person's token only (docs/adr/0016, decision 4): the launch's own token is the capture
-      // credential, which reaches capture.sock and nothing else. Captures travel over
+      // A token of this executor's launch, never none (docs/adr/0016, decision 4): a person's, or
+      // the launch's own, which a shared layout's processes carry. A recovery boot has no
+      // session.sock, so its capture credential reaches captures alone. Captures travel over
       // capture.sock: the routes this socket serves carry none.
       const handlers = tokenChannelHandlers(async (headers) => {
-        const auth = await authenticateChannelRequest(
-          headers,
-          { tokens, registry },
-          { launchId, personOnly: true },
-        );
+        const auth = await authenticateChannelRequest(headers, { tokens, registry }, { launchId });
         if (!auth.ok) return auth;
         const api: SessionSocketApi = { ...auth.api, capture: undefined, captureAs: undefined };
         return { ...auth, api };
@@ -653,6 +678,7 @@ const makeExecutorSockets = (
         binding.scope,
         servers.map((entry) => entry.server),
       );
+      bindings.set(binding.scope, { launchId: binding.launchId, mode: binding.mode });
       return servers.map((entry) => entry.path);
     };
 
@@ -667,8 +693,25 @@ const makeExecutorSockets = (
         // recovery keeps no session connection open.
         try: () =>
           inTurn(binding.scope, () => {
+            // Asked again as it stands (a claim, a restart's sweep): left serving, its connections
+            // kept.
+            const current = bindings.get(binding.scope);
+            const dir = path.join(root, binding.scope);
+            if (
+              current !== undefined &&
+              current.launchId === binding.launchId &&
+              current.mode === binding.mode &&
+              fs.existsSync(path.join(dir, CAPTURE_SOCKET_NAME))
+            ) {
+              return Promise.resolve(
+                [
+                  CAPTURE_SOCKET_NAME,
+                  ...(binding.mode === "recover" ? [] : [SESSION_SOCKET_NAME]),
+                ].map((name) => path.join(dir, name)),
+              );
+            }
             close(binding.scope);
-            return bindIn(path.join(root, binding.scope), binding);
+            return bindIn(dir, binding);
           }),
         catch: (cause) =>
           new ExecutorScopeError({
@@ -682,6 +725,7 @@ const makeExecutorSockets = (
       yield* Effect.promise(() =>
         inTurn(scope, async () => {
           close(scope);
+          bindings.delete(scope);
           fs.rmSync(path.join(root, scope, CAPTURE_SOCKET_NAME), { force: true });
           fs.rmSync(path.join(root, scope, SESSION_SOCKET_NAME), { force: true });
         }),
@@ -740,5 +784,25 @@ export const ExecutorSocketsLive: Layer.Layer<
     Config.withDefault(EXECUTOR_CONTROL_ROOT_DEFAULT),
     Effect.orElseSucceed(() => EXECUTOR_CONTROL_ROOT_DEFAULT),
     Effect.map(executorSocketsAt),
+  ),
+);
+
+/**
+ * The executor sockets launches bind, where Mend serves the control root: the bundle names it
+ * (`MEND_EXECUTOR_CONTROL_ROOT`, the `mend-control` volume Mend shares with sealant's worker).
+ * Unset, launches bind none (`LaunchExecutorSockets` reads null) and reach Mend over the network.
+ */
+export const LaunchExecutorSocketsFromEnv: Layer.Layer<
+  never,
+  never,
+  SessionChannelRegistry | SessionChannelTokensRepo | BlobStoreConfig
+> = Layer.unwrap(
+  Config.option(Config.String("MEND_EXECUTOR_CONTROL_ROOT")).pipe(
+    Effect.orElseSucceed(() => Option.none<string>()),
+    Effect.map((root) =>
+      Option.isNone(root) || root.value.trim() === ""
+        ? Layer.empty
+        : Layer.effect(LaunchExecutorSockets, makeExecutorSockets(root.value.trim())),
+    ),
   ),
 );

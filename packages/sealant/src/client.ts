@@ -474,6 +474,44 @@ export const runtimeResourceIdOf = (
   );
 };
 
+/** An executor's control scope and the launch it serves (SLNT-1332). */
+export interface ExecutorScope {
+  readonly controlScope: string;
+  readonly launchId: string;
+  /** `retained`: kept for recovery, whose boot dials `capture.sock` alone. */
+  readonly retained: boolean;
+}
+
+const scopeOfRuntime = (runtime: unknown): ExecutorScope | null => {
+  if (typeof runtime !== "object" || runtime === null) return null;
+  const controlScope: unknown = Reflect.get(runtime, "controlScope");
+  const launchId: unknown = Reflect.get(runtime, "launchId");
+  return typeof controlScope === "string" &&
+    controlScope !== "" &&
+    typeof launchId === "string" &&
+    launchId !== ""
+    ? { controlScope, launchId, retained: Reflect.get(runtime, "status") === "retained" }
+    : null;
+};
+
+/**
+ * The control scope the workspace's current executor mounts at `/run/sealant`, with the launch it
+ * belongs to, as sealant reports it (`runtime.controlScope`, `runtime.launchId`); null on a runtime
+ * with no scope, or an SDK that cannot say.
+ */
+export const executorScopeOfWorkspace = (
+  workspace: object,
+): Effect.Effect<ExecutorScope | null, SealantPlatformError> => {
+  const launch: unknown = Reflect.get(workspace, "launch");
+  const launched =
+    typeof launch === "object" && launch !== null
+      ? scopeOfRuntime(Reflect.get(launch, "runtime"))
+      : null;
+  if (launched !== null) return Effect.succeed(launched);
+  if (!readsRuntime(workspace)) return Effect.succeed(null);
+  return wrap(() => workspace.runtime()).pipe(Effect.map(scopeOfRuntime));
+};
+
 /**
  * Whether an executor ever ran for the workspace's current launch: `launched` when its handle saw
  * one become ready or sealant reports a runtime, `never` when sealant reports none (sealant keeps a

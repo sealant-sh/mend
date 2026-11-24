@@ -95,13 +95,9 @@ test("each workspace gets a network of its own, which Mend and Garage join, neve
   assert.equal(mend.SEALANT_DOCKER_WORKSPACE_NETWORK, undefined);
   assert.ok(!Object.values(mend).includes("mend_default"));
   assert.equal(mend.SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS, "10.233.0.0/16");
-  assert.equal(
-    mend.SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS,
-    "mend-mend-1:mend,mend-garage-1:garage",
-  );
-  // The names that list joins are the containers' own.
-  assert.equal(compose.services.mend.container_name, "mend-mend-1");
-  assert.equal(compose.services.garage.container_name, "mend-garage-1");
+  // Nothing of the Compose network joins a workspace's: Mend and Garage are reached through the
+  // executor's own sockets (capture.sock, session.sock), never over a network.
+  assert.equal(mend.SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS, undefined);
   // The guard's settings reach the bundle under Mend's names, empty by default; the supervisor
   // hands the worker only what is set.
   assert.equal(mend.MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS, "");
@@ -114,7 +110,7 @@ test("each workspace gets a network of its own, which Mend and Garage join, neve
   ]);
   assert.equal(
     mirrors.services.mend.environment.SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS,
-    "mend-mend-1:mend,mend-garage-1:garage,mend-npm-mirror:npm-mirror,mend-docker-mirror:docker-mirror",
+    "mend-npm-mirror:npm-mirror,mend-docker-mirror:docker-mirror",
   );
   assert.equal(mirrors.services["npm-mirror"].container_name, "mend-npm-mirror");
   assert.equal(mirrors.services["docker-mirror"].container_name, "mend-docker-mirror");
@@ -716,6 +712,11 @@ test("the Sealant API and worker both reach the control sockets' directory", asy
   );
   assert.match(api, /WORKSPACE_CONTROL_SOCKET_HOST_DIR: SOCKET_ROOT,/);
   assert.match(worker, /WORKSPACE_CONTROL_SOCKET_HOST_DIR: SOCKET_ROOT,/);
+  // Mend serves the executors' sockets in the same control root (SLNT-1332).
+  assert.match(
+    supervisor.slice(supervisor.indexOf('baseSpecification("mend-api"')),
+    /MEND_EXECUTOR_CONTROL_ROOT: SOCKET_ROOT/,
+  );
   assert.match(worker, /\.\.\.workspaceEgressEnvironment\(process\.env\),/);
   assert.match(worker, /\.\.\.hostVmEnvironment\(process\.env, configuration\.vmRoots\),/);
   assert.doesNotMatch(api, /workspaceEgressEnvironment|hostVmEnvironment/);

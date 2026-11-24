@@ -420,7 +420,7 @@ const startBundle = async (supervisor) => {
     SEALANT_CREDENTIALS_KEY: configuration.credentialsKey,
   };
 
-  console.log("[bundle] applying Sealant 0.40.0-next.936 migrations from its published API image");
+  console.log("[bundle] applying Sealant 0.40.0-next.937 migrations from its published API image");
   await supervisor.run(
     baseSpecification("sealant-migrate", ["node", "/opt/sealant/api/dist/migrate.js"], {
       DATABASE_URL: configuration.sealantDatabaseUrl,
@@ -480,6 +480,12 @@ const startBundle = async (supervisor) => {
       MEND_WEB_PORT: "3105",
       MEND_MODE: "all",
       MEND_STORE_ROOT: STORE_ROOT,
+      // Mend serves each Docker or host VM executor's capture.sock and session.sock in its own
+      // directory of the control root it shares with Sealant's worker (SLNT-1332). A bundle with
+      // no Docker runtime (MicroVMs on AWS) has no control root to share.
+      ...(process.env.DOCKER_RUNTIME_ENABLED?.trim() === "false"
+        ? {}
+        : { MEND_EXECUTOR_CONTROL_ROOT: SOCKET_ROOT }),
       // The default Compose endpoints stay on this host. Remote HTTPS endpoints explicitly
       // clear this statement so each workspace verifies TLS instead.
       MEND_EXECUTOR_NETWORK: process.env.MEND_EXECUTOR_NETWORK ?? "private",

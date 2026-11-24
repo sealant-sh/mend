@@ -2,11 +2,14 @@
 "@sealant/mend": minor
 ---
 
-Workspaces no longer join `mend_default`, the network Postgres, Garage and Mend share. Each Docker
-workspace runs on a network of its own (from `MEND_WORKSPACE_EGRESS_SUBNETS`, `10.233.0.0/16` by
-default) behind sealant's private-range guard, with Mend, Garage and the mirrors joined to it, so a
-workspace can no longer reach Postgres or another workspace. Private destinations a workspace still
-needs are opened with `MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS`. Docker Engine 25 or newer is needed.
+Workspaces no longer join `mend_default`, the network Postgres, Garage and Mend share, and nothing
+of it joins theirs. Each Docker workspace runs on a network of its own (from
+`MEND_WORKSPACE_EGRESS_SUBNETS`, `10.233.0.0/16` by default) behind sealant's private-range guard,
+and reaches Mend and Garage through two Unix sockets Mend serves in its own directory of
+`mend-control`: `capture.sock` for captures and `session.sock` for the session channel. Mend serves
+them again for every running workspace after a restart or upgrade. Private destinations a workspace
+still needs are opened with `MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS`. Docker Engine 25 or newer is
+needed.
 
 Organizations get Access policies, read and written through the API (the pages follow): the built-in
 Standard and templates Organization Owners make, with Restricted egress, a Git transport cap,

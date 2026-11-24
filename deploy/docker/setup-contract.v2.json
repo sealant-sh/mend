@@ -3,7 +3,7 @@
   "composeTemplate": "compose.v2.yaml",
   "environmentTemplate": "bundle.env.example",
   "mendImageRepository": "ghcr.io/sealant-sh/mend",
-  "sealantVersion": "0.40.0-next.936",
+  "sealantVersion": "0.40.0-next.937",
   "runtimeContainers": ["mend", "postgres", "garage"],
   "canonicalPaths": {
     "store": "/var/lib/mend/store",
@@ -79,13 +79,13 @@
     }
   },
   "bootstrap": {
-    "sealantMigrations": "node /opt/sealant/api/dist/migrate.js from sealant-api 0.40.0-next.936",
+    "sealantMigrations": "node /opt/sealant/api/dist/migrate.js from sealant-api 0.40.0-next.937",
     "servicePrincipal": "SEALANT_SERVICE_KEY configures the platform principal; Mend provisions each user through public @sealant/sdk users.ensure on first use",
     "jobQueue": "pg-boss inside sealant_control_plane (schema pgboss); created by the Sealant API/worker on first start"
   },
   "workspaceImages": {
     "store": "host Docker Engine",
-    "note": "Sealant builds workspace images through the mounted Docker socket and launches them from the same Engine by image id. No registry runs and no port is published for one. Each workspace is on a network of its own, from 10.233.0.0/16 (MEND_WORKSPACE_EGRESS_SUBNETS), where it reaches mend:3106 and garage:3900: sealant joins the mend and garage containers to every workspace network under those aliases. Workspaces never join mend_default."
+    "note": "Sealant builds workspace images through the mounted Docker socket and launches them from the same Engine by image id. No registry runs and no port is published for one. Each workspace is on a network of its own, from 10.233.0.0/16 (MEND_WORKSPACE_EGRESS_SUBNETS), and reaches Mend and Garage only through capture.sock and session.sock, which Mend serves in the workspace's control scope (MEND_EXECUTOR_CONTROL_ROOT). Workspaces never join mend_default."
   },
   "derivedSecrets": {
     "MEND_GARAGE_RPC_SECRET": "HMAC-SHA256(BETTER_AUTH_SECRET, 'mend-garage-rpc-secret'), hex",
@@ -101,7 +101,7 @@
     "init": "mend server setup/start run `garage layout assign`, `layout apply`, `bucket create mend`, `key import`, `bucket allow` through `docker compose exec -T garage`, idempotently, after `up --wait`",
     "sessionEndpoint": "http://mend:3106 on the Compose network (not published)",
     "publicUrl": "http://garage:3900 on the Compose network (not published)",
-    "workspaceNetwork": "a /28 network of each workspace's own, from 10.233.0.0/16 (SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS); the Sealant 0.40.0-next.936 runtime joins mend and garage to each one under those aliases (SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS), never mend_default",
+    "workspaceNetwork": "a /28 network of each workspace's own, from 10.233.0.0/16 (SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS); the Sealant 0.40.0-next.937 runtime joins nothing of the Compose network to it, never mend_default; the executor reaches Mend and Garage through capture.sock and session.sock, which Mend serves in its control scope under /run/sealant/sockets",
     "idleMemoryMiB": 7.5
   }
 }

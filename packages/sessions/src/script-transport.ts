@@ -16,6 +16,9 @@ const https = require("node:https");
 const fs = require("node:fs");
 
 const SOCKET = "/run/mend/mend.sock";
+// The executor's session.sock (/run/sealant/session.sock on Docker): the session channel over a
+// Unix socket, each request with its token like the network endpoint's.
+const SESSION_SOCKET = process.env.MEND_SESSION_SOCKET || "";
 const ENDPOINT = process.env.MEND_SESSION_ENDPOINT || "";
 const SESSION_ID = process.env.MEND_SESSION_ID || "";
 // A person's process Mend started without its environment (a setup command, the dependency
@@ -35,12 +38,15 @@ const TOKEN = (() => {
   try { return fs.readFileSync(TOKEN_FILE, "utf8").trim(); } catch { return ""; }
 })();
 
-// Transport selection: the Docker bind mount first, then the Kubernetes network endpoint. A
-// person's process (a token file named) takes the endpoint alone.
+// Transport selection: the Docker bind mount first, then the executor's session.sock, then the
+// network endpoint. A person's process (a token file named) takes a token-carrying one alone.
 const transport = (() => {
   if (TOKEN_FILE === "" && fs.existsSync(SOCKET)) return { kind: "socket" };
   if (TOKEN_FILE !== "" && TOKEN === "") {
     return { kind: "broken", reason: "this process's Mend session token (" + TOKEN_FILE + ") cannot be read" };
+  }
+  if (SESSION_SOCKET !== "" && SESSION_ID !== "" && TOKEN !== "" && fs.existsSync(SESSION_SOCKET)) {
+    return { kind: "session-socket", path: SESSION_SOCKET };
   }
   if (ENDPOINT !== "" && SESSION_ID !== "" && TOKEN !== "") {
     let url;
@@ -52,7 +58,7 @@ const transport = (() => {
 
 const transportUnavailable = () => {
   if (transport.kind === "broken") return transport.reason;
-  return "no session channel in this workspace: /run/mend/mend.sock is not mounted and MEND_SESSION_ENDPOINT is not set";
+  return "no session channel in this workspace: /run/mend/mend.sock is not mounted, and neither MEND_SESSION_SOCKET nor MEND_SESSION_ENDPOINT is set";
 };
 
 const transportClient = () =>
@@ -62,6 +68,17 @@ const transportClient = () =>
 const transportOptions = (method, route, headers) => {
   if (transport.kind === "socket") {
     return { socketPath: SOCKET, method, path: route, headers: headers || {} };
+  }
+  if (transport.kind === "session-socket") {
+    return {
+      socketPath: transport.path,
+      method,
+      path: route,
+      headers: Object.assign(
+        { authorization: "Bearer " + TOKEN, "x-mend-session-id": SESSION_ID },
+        headers || {},
+      ),
+    };
   }
   if (transport.kind === "network") {
     return {
@@ -81,6 +98,8 @@ const transportOptions = (method, route, headers) => {
 const transportDownMessage = () =>
   transport.kind === "socket"
     ? "mend.sock is not answering — is the Mend server up?"
+    : transport.kind === "session-socket"
+    ? "the session socket (" + transport.path + ") is not answering — is the Mend server up?"
     : "the Mend session endpoint (" + transport.url.host + ") is not answering — is the Mend server up?";
 `;
 

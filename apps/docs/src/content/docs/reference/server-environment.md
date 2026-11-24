@@ -154,10 +154,12 @@ Workspaces reach their session over a mounted Unix socket by default, or over a 
 On the Docker install each workspace gets a `/28` network of its own, carved from one range, behind
 a guard that refuses the private ranges, link-local addresses, the metadata addresses and the host's
 public addresses. A workspace reaches neither Postgres, Garage's admin port nor another workspace.
-Workspaces no longer join `mend_default`, the Compose project's network. Sealant joins the `mend`
-and `garage` containers to every workspace network under those names, so the session channel
-(`mend:3106`) and captures (`garage:3900`) still answer there. That is interim: once sealant reports
-an executor's control scope, the capture and session sockets replace it.
+Workspaces no longer join `mend_default`, the Compose project's network, and nothing of it joins
+theirs. A workspace reaches Mend through two Unix sockets Mend serves in the workspace's own
+directory of the `mend-control` volume (`MEND_EXECUTOR_CONTROL_ROOT`, which the bundle sets):
+`capture.sock`, for its captures and the object store's presigned requests, and `session.sock`, for
+the session channel. A restart or upgrade of Mend serves them again for every workspace still
+running. A workspace kept for recovery has `capture.sock` alone.
 
 The compose file reads these from the `.env` beside it. `mend server setup` writes none of them, so
 its installs keep the defaults; set them as in
@@ -168,12 +170,11 @@ its installs keep the defaults; set them as in
 | `MEND_WORKSPACE_EGRESS_SUBNETS`        | `10.233.0.0/16`                      | The IPv4 range workspace networks are carved from, as `SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS`. Needs Docker Engine 25 or newer. Sealant removes a workspace's network only under the setting it was made with, so change it only while no workspace runs. |
 | `MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS` | empty                                | Comma-separated private addresses and blocks, IPv4 or IPv6, that workspaces may still reach behind the guard, such as a company registry or a database in the same network. Mend also reads it as the most an Access policy may allow. Empty allows none.   |
 | `MEND_HOST_PUBLIC_IPS`                 | empty, which sealant reads as `auto` | Comma-separated public addresses of the host the guard refuses, and `auto` for the ones on its interfaces. A cloud host's public address behind 1:1 NAT is on no interface, so list it beside `auto`: `auto,203.0.113.7`. `none` reads none.                |
-| `MEND_GARAGE_CONTAINER_NAME`           | `mend-garage-1`                      | The Garage container's name, which Sealant joins to each workspace network beside `MEND_CONTAINER_NAME` (`mend-mend-1`).                                                                                                                                    |
 
 The Mend container hands the worker the two address lists under sealant's names
 (`SEALANT_OPERATOR_ALLOWED_PRIVATE_EGRESS`, `SEALANT_HOST_PUBLIC_IPS`), and only when they are set.
 `SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS` names what joins each workspace network, as
-`container:alias`, comma separated: Mend and Garage, and each mirror when it runs. The Sealant API
+`container:alias`, comma separated: each mirror when it runs, and nothing else. The Sealant API
 reaches each workspace's egress proxy through the control sockets' directory, to apply a policy
 change or a revoked secret to a running workspace.
 

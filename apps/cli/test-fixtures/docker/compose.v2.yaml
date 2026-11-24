@@ -1,5 +1,5 @@
 # Mend bundle deployment contract v2. The long-running containers are Mend, official Postgres and
-# Garage. The Mend image supervises its web/API processes plus the Sealant 0.40.0-next.936 API, worker
+# Garage. The Mend image supervises its web/API processes plus the Sealant 0.40.0-next.937 API, worker
 # and SSH gateway. Sealant's job queue lives in Postgres and workspace images live in the host
 # Docker Engine. Garage is the capture store's bucket (docs/adr/0002-session-capture-store.md):
 # every session's work product ships there and the executor is disposable. Generate and persist
@@ -47,10 +47,9 @@ services:
       # the private ranges, so it reaches neither Postgres, Garage's admin port nor another
       # workspace. Workspaces no longer join mend_default.
       SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS: ${MEND_WORKSPACE_EGRESS_SUBNETS:-10.233.0.0/16}
-      # Interim: Mend and Garage join every workspace's network as `mend` and `garage`, so the
-      # session channel (mend:3106) and captures (garage:3900) still answer there. Once sealant
-      # reports an executor's control scope, capture.sock and session.sock replace this.
-      SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS: ${MEND_CONTAINER_NAME:-mend-mend-1}:mend,${MEND_GARAGE_CONTAINER_NAME:-mend-garage-1}:garage
+      # A workspace reaches Mend and Garage through two Unix sockets Mend serves in the workspace's
+      # own directory of mend-control (capture.sock, session.sock; MEND_EXECUTOR_CONTROL_ROOT in
+      # the bundle), never over a network: nothing of the Compose network is on its own.
       # Private addresses workspaces may still reach behind that guard, and the host's public
       # addresses it refuses; both empty by default. Mend reads the first as the ceiling of what an
       # Access policy may allow.
@@ -111,8 +110,6 @@ services:
   # footprint ≈ 7.5 MiB (measured 2026-09-13).
   garage:
     image: dxflrs/garage:v2.4.1
-    # Named, so Sealant can join it to each workspace's network (SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS).
-    container_name: ${MEND_GARAGE_CONTAINER_NAME:-mend-garage-1}
     hostname: garage
     restart: unless-stopped
     environment:

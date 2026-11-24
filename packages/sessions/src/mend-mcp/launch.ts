@@ -52,6 +52,7 @@ const CODEX_MCP_CONFIG = [
   "-c",
   `mcp_servers.${MEND_MCP_SERVER}.env_vars=${JSON.stringify([
     "MEND_SESSION_ENDPOINT",
+    "MEND_SESSION_SOCKET",
     "MEND_SESSION_ID",
     "MEND_SESSION_TOKEN",
     "MEND_SESSION_TOKEN_FILE",

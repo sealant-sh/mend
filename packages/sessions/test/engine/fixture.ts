@@ -261,6 +261,7 @@ import {
   AccessPolicyStore,
   type AccessPolicyStoreShape,
 } from "../../src/access-policy.ts";
+import { type ExecutorSockets, LaunchExecutorSockets } from "../../src/executor-sockets.ts";
 import { HarnessLayoutConfig } from "../../src/harness-layout-steps.ts";
 import { ResourceStatusReads, ResourceStatusReadsNone } from "../../src/resources/status-reads.ts";
 import { WORKTREE_STAMP, WorktreeReads } from "../../src/worktree-reads.ts";
@@ -531,6 +532,8 @@ export const sealantLaunchLayer = (
     };
     /** A faithful workspace hook: sealant has created the executor but no process has started yet. */
     readonly beforeCreate?: (options: CreateOptions) => Effect.Effect<void, SealantPlatformError>;
+    /** What `workspace.runtime()` answers: the executor's control scope and launch, say. */
+    readonly runtimeInfo?: () => Awaited<ReturnType<Workspace["runtime"]>>;
     /** A faithful process hook: the harness writes through HOME after relocation. */
     readonly beforeOpen?: (argv: ReadonlyArray<string>) => void;
     /**
@@ -696,7 +699,7 @@ export const sealantLaunchLayer = (
     status: async () => captureOps?.status?.(terminated) ?? (terminated ? "stopped" : "ready"),
     // The engine reads the deadline, the executor and the drain through the fake client below.
     runtimeDeadline: async () => null,
-    runtime: async () => null,
+    runtime: async () => captureOps?.runtimeInfo?.() ?? null,
     publication: async () => null,
     processUser: async () => "supported",
     sshAsRoot: async () => {},
@@ -4274,6 +4277,8 @@ interface EngineOptions {
   readonly accessPolicies?: AccessPolicySource;
   /** The projects' stored policies and revocations a launch reads; Standard unless a test says. */
   readonly accessPolicyStore?: AccessPolicyStoreShape;
+  /** The executor sockets launches bind; none (the network channel) unless a test says. */
+  readonly launchSockets?: ExecutorSockets["Service"];
   /** Every account's signer; never connected unless a test says. */
   readonly agentBridgeLayer?: Layer.Layer<AgentBridge>;
   /** Mend's git verification of captures (capture mode); off — every capture unverified — unless a test says. */
@@ -4561,6 +4566,9 @@ export const withPreparedEngineEffect = <B, A, E>(
           options.accessPolicyStore === undefined
             ? Layer.empty
             : Layer.succeed(AccessPolicyStore, options.accessPolicyStore),
+          options.launchSockets === undefined
+            ? Layer.empty
+            : Layer.succeed(LaunchExecutorSockets, options.launchSockets),
           options.agentBridgeLayer ?? agentBridgeStubLayer,
           options.gitOpsLayer ?? gitOpsStubLayer,
           changesLayer(world),

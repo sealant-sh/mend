@@ -248,6 +248,7 @@ import {
   WorktreeServiceRestartsLive,
   ProtocolHostLive,
   AccessPoliciesFromDatabase,
+  LaunchExecutorSocketsFromEnv,
   AccessPolicyEnforcementLive,
   McpAppRequestsLive,
   ScreenHostLive,
@@ -1198,7 +1199,16 @@ const MainLive = Layer.unwrap(
       // dispatcher's Executor tools read, which otherwise read Standard: so they are provided
       // beneath every layer that builds or calls one, not merged beside them. One step, as
       // `pipe` takes at most twenty.
-      Layer.provide(AccessPoliciesFromDatabase.pipe(Layer.provideMerge(DatabaseLive))),
+      // And the executors' own sockets (SLNT-1332), where the bundle serves the control root: the
+      // engine binds them for every launch, on the registry the session channel answers from.
+      Layer.provide(
+        Layer.mergeAll(
+          AccessPoliciesFromDatabase,
+          LaunchExecutorSocketsFromEnv.pipe(
+            Layer.provide(Layer.merge(SessionChannelRegistryLayer, BlobStoreConfigLive)),
+          ),
+        ).pipe(Layer.provideMerge(DatabaseLive)),
+      ),
     );
   }),
 ).pipe(Layer.provide(DeploymentConfigLive));

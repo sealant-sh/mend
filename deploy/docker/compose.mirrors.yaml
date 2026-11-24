@@ -7,9 +7,9 @@ services:
       MEND_NPM_MIRROR_URL: http://npm-mirror:4873/
       SEALANT_DOCKER_REGISTRY_MIRRORS: http://docker-mirror:5000
       SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER: mend-docker-mirror
-      # Joined to every workspace's own network: Mend and Garage, as in the base file, and each mirror.
+      # Each mirror joins every workspace's own network, under its service name.
       SEALANT_DOCKER_WORKSPACE_MIRROR_CONTAINERS: >-
-        ${MEND_CONTAINER_NAME:-mend-mend-1}:mend,${MEND_GARAGE_CONTAINER_NAME:-mend-garage-1}:garage,mend-npm-mirror:npm-mirror,mend-docker-mirror:docker-mirror
+        mend-npm-mirror:npm-mirror,mend-docker-mirror:docker-mirror
 
   # Read-through cache of registry.npmjs.org (npm-mirror.conf). Size-capped, and it leaves
   # 5g free on its disk; the least recently used tarballs go first. No credential sent.
