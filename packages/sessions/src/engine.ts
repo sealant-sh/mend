@@ -9781,7 +9781,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       .bind({
                         scope: reported.controlScope,
                         launchId: reported.launchId,
-                        mode: mode === "reported" ? (reported.retained ? "recover" : "normal") : mode,
+                        mode:
+                          mode === "reported" ? (reported.retained ? "recover" : "normal") : mode,
                       })
                       .pipe(Effect.asVoid),
               ),
