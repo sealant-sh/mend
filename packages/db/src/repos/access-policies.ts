@@ -20,6 +20,7 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { accessPolicies, accessRevocations, projects, worktrees } from "../schema/workbench.ts";
+import { projectListed } from "./projects.ts";
 import { isUniqueViolation } from "./unique-violation.ts";
 
 export class AccessPolicyNotFoundError extends Schema.TaggedError<AccessPolicyNotFoundError>()(
@@ -289,7 +290,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
       const [row] = yield* db
         .select({ accessPolicy: projects.accessPolicy })
         .from(projects)
-        .where(eq(projects.id, projectId))
+        .where(and(eq(projects.id, projectId), projectListed))
         .limit(1)
         .pipe(Effect.orDie);
       return row === undefined ? null : decodeProjectPolicy(row.accessPolicy);
@@ -308,7 +309,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
           }),
           updatedAt: yield* DateTime.nowAsDate,
         })
-        .where(eq(projects.id, projectId))
+        .where(and(eq(projects.id, projectId), projectListed))
         .pipe(Effect.orDie);
     });
 
@@ -353,7 +354,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
         .select({ revocation: accessRevocations })
         .from(accessRevocations)
         .innerJoin(projects, eq(projects.organizationId, accessRevocations.organizationId))
-        .where(eq(projects.id, projectId))
+        .where(and(eq(projects.id, projectId), projectListed))
         .orderBy(asc(accessRevocations.revokedAt), asc(accessRevocations.id))
         .pipe(Effect.orDie);
       return rows.map((row) => toRevocation(row.revocation));
@@ -374,6 +375,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
         .where(
           and(
             eq(projects.organizationId, organizationId),
+            projectListed,
             policyId === null
               ? undefined
               : policyId === STANDARD_ACCESS_POLICY_ID
