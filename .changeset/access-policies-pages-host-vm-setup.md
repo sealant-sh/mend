@@ -19,5 +19,7 @@ its own), the worktree's pinned policy and its revocations, and Apply updated po
 that Docker can make an isolated-gateway network. When both pass it offers host-vm and Docker, with
 new organizations on host-vm, writes `compose.host-vm.yaml`, and warns when the VM data volume
 shares a filesystem with Postgres or Garage. Otherwise it says what it saw and offers Docker alone.
-An install that exists keeps its runtimes; `--session-runtime` and `--session-runtimes` now accept
-`host-vm`, which setup checks before it saves it.
+Setup offers host-vm only with a Mend version that runs it (0.37.0-next.1748 or later); with an
+older `--version` it chooses Docker, and refuses a runtime flag naming host-vm. An install that
+exists keeps its runtimes; `--session-runtime` and `--session-runtimes` now accept `host-vm`, which
+setup checks before it saves it.

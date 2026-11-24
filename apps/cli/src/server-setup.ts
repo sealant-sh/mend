@@ -122,6 +122,7 @@ import {
 } from "./server-edge.ts";
 import {
   HOST_VM_COMPOSE_FILE,
+  type HostVmDockerHost,
   type HostVmObservation,
   hostVmChoice,
   hostVmChoiceLine,
@@ -303,9 +304,9 @@ export interface ServerSetupRuntime {
   /** Print one progress or result line. */
   readonly writeLine: (line: string) => void;
   /**
-   * Whether /dev/kvm is on this machine. Present, setup chooses where sessions run when nothing
-   * names it (`settleHostVm`): host-vm and Docker where this server's KVM passes the
-   * vm-runner self-test, Docker alone otherwise. Absent: setup never looks, and an install that
+   * Whether /dev/kvm is on this machine. Present, setup chooses where a fresh install's sessions
+   * run when nothing names it (`settleHostVm`): host-vm and Docker where the Mend it sets up has
+   * host-vm and this server's KVM passes the vm-runner self-test, Docker alone otherwise. Absent: setup never looks, and an install that
    * names no runtime offers Docker, as before host-vm.
    */
   readonly kvmDevice?: () => boolean;
@@ -424,8 +425,9 @@ const reportServer = (
 interface SetupOptions {
   /**
    * `--session-runtime`: where an organization's new sessions run until it chooses. Naming host-vm
-   * here or in `--session-runtimes` runs setup's host-vm checks, and a failed one refuses the run.
-   * With neither flag, an install that names no runtime has them chosen (`settleHostVm`).
+   * here or in `--session-runtimes` runs setup's host-vm checks, and a failed one, or a Mend from
+   * before host-vm, refuses the run. With neither flag, a fresh install has them chosen
+   * (`settleHostVm`).
    */
   readonly sessionRuntime?: SessionRuntime;
   /** `--session-runtimes`: the runtimes organizations may choose among. */
@@ -798,15 +800,48 @@ const withChosenRuntimes = <
     : options;
 
 /**
+ * The first Mend whose image runs host-vm: the `next` build of mend#1960, B-next.N with N its
+ * commit count (scripts/next-version.mjs). An image before it refuses compose.host-vm.yaml's four
+ * volume mappings at boot. Every next build, preview (X.Y.Z-next.N.preview.R) and release after it
+ * has host-vm; a legacy X.Y.Z-preview.K, from before the next channel, never does.
+ */
+const FIRST_HOST_VM_VERSION = "0.37.0-next.1748";
+
+const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+/** Why Mend `version` cannot run host-vm, as setup says it after "Observed: "; null when it can. */
+const hostVmVersionFailure = (version: string): string | null =>
+  RELEASE_VERSION.test(version) &&
+  !LEGACY_PREVIEW.test(version) &&
+  compareServerVersions(version, FIRST_HOST_VM_VERSION) >= 0
+    ? null
+    : `Mend ${version} predates host-vm (the first Mend with it is ${FIRST_HOST_VM_VERSION})`;
+
+/**
+ * What setup knows of host-vm on this server running Mend `serverVersion`: unavailable, without
+ * looking at KVM, when that Mend predates host-vm; else what the checks observe.
+ */
+const observeHostVmFor = async (
+  runtime: ServerSetupRuntime,
+  serverVersion: string,
+  host: HostVmDockerHost,
+): Promise<HostVmObservation> => {
+  const tooOld = hostVmVersionFailure(serverVersion);
+  return tooOld === null ? observeHostVm(runtime, host) : { _tag: "unavailable", observed: tooOld };
+};
+
+/**
  * Setup's host-vm checks, when this run needs them: where flags name host-vm (a failed check
  * refuses the run), and where nothing names a runtime and `auto` lets setup choose (the line it
  * chose by is printed). `observed`, when given, is what the guide already observed. Null when
- * nothing was checked.
+ * nothing was checked. A Mend `serverVersion` from before host-vm is refused for a flag, and
+ * chooses Docker alone, before KVM is looked at.
  */
 const settleHostVm = async (
   runtime: ServerSetupRuntime,
   options: SetupOptions,
   existing: ServerConfig | null,
+  serverVersion: string,
   dockerHost: { readonly context: string; readonly endpoint: string },
   auto: boolean,
   observed: HostVmObservation | undefined,
@@ -814,8 +849,16 @@ const settleHostVm = async (
   const forced = flagsNameHostVm(options);
   const choosing = auto && runtime.kvmDevice !== undefined && namesNoRuntime(options, existing);
   if (!forced && !choosing) return null;
+  if (forced && hostVmVersionFailure(serverVersion) !== null)
+    throw setupError(
+      `Mend ${serverVersion} cannot run host-vm sessions: host-vm came in Mend ${FIRST_HOST_VM_VERSION}. Name docker or boat instead, or ${existing === null ? "set up a later Mend with --version <version>" : "move this server to a later Mend with mend server upgrade --version <version> first"}.`,
+    );
   const observation =
-    observed ?? (await observeHostVm(runtime, { ...dockerHost, offline: options.offline }));
+    observed ??
+    (await observeHostVmFor(runtime, serverVersion, {
+      ...dockerHost,
+      offline: options.offline,
+    }));
   if (forced) {
     if (observation._tag === "unavailable")
       throw setupError(
@@ -4738,10 +4781,12 @@ const guidedSetup = async (
     noDockerAlready || guideMayChooseBoat ? null : { reminder: await settleKernel() };
   // This server's KVM, before the questions: a fresh install's answers start from the runtimes
   // it chose (said here), and every install's runtime question offers host-vm where it passed.
+  // The guide takes no --version: it sets up the install's Mend, or this CLI's on a fresh one, and
+  // offers no host-vm where that Mend predates it.
   const hostVm =
     runtime.kvmDevice === undefined
       ? null
-      : await observeHostVm(runtime, {
+      : await observeHostVmFor(runtime, existing?.config.serverVersion ?? runtime.cliVersion, {
           context: context.name,
           endpoint: context.endpoint,
           offline: hostOptions.offline,
@@ -4864,12 +4909,15 @@ const setupServer = async (
       `DOCKER_CONTEXT is "${variable}"; this install runs on Docker context "${existing.config.dockerContext}", where its data is, and stays there. Running Mend in another Docker engine is a new install: mend uninstall --server removes this one, its data included, then mend server setup there.`,
     );
   }
+  // The Mend this run sets up, first: whether it has host-vm decides what may run sessions.
+  const serverVersion = await resolveServerVersion(runtime, flagOptions, existing?.config ?? null);
   // Where sessions run, when nothing names it, or a flag names host-vm: this server's KVM decides,
   // before anything is pulled or written. A saved choice is kept as it is.
   const hostVm = await settleHostVm(
     runtime,
     flagOptions,
     existing?.config ?? null,
+    serverVersion,
     { context: selectedContext.name, endpoint: selectedContext.endpoint },
     run.askedAgainst === undefined || existing === null,
     run.hostVm,
@@ -4899,7 +4947,6 @@ const setupServer = async (
         ? null
         : await settleHostUserNamespaces(runtime, options, selectedContext.name);
 
-  const serverVersion = await resolveServerVersion(runtime, options, existing?.config ?? null);
   const mirrors = resolveMirrors(existing?.config.mirrors, options);
   const workspaceImages = resolveWorkspaceImages(existing?.config.workspaceImages, options);
   const workspaceMemory = resolveWorkspaceMemory(existing?.config.workspaceMemory, options);

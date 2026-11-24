@@ -631,8 +631,11 @@ export function SecretDeliveryDialog({
       await refresh();
       return;
     }
-    if (outcome.kind === "stale") setStale(true);
-    else setIssues(outcome.kind === "rejected" ? outcome.issues : refusalIssues(outcome));
+    if (outcome.kind === "stale") {
+      setStale(true);
+      // Someone changed it meanwhile: the list reads it again, so reopening starts from that.
+      await refresh();
+    } else setIssues(outcome.kind === "rejected" ? outcome.issues : refusalIssues(outcome));
   };
   return (
     <Overlay

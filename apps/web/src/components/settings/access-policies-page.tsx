@@ -630,7 +630,9 @@ function RemovePolicyDialog({
   );
 }
 
-const EVERY_WORKTREE = "";
+/** The scope select's values: nothing chosen yet, or every worktree; anything else is a policy id. */
+const UNCHOSEN = "";
+const EVERY_WORKTREE = "every";
 
 /**
  * Revoke access…: which worktrees it reaches (every one, or those on one policy), what it takes
@@ -649,7 +651,7 @@ function RevokeDialog({
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const ids = useId();
-  const [policyId, setPolicyId] = useState(EVERY_WORKTREE);
+  const [policyId, setPolicyId] = useState(UNCHOSEN);
   const [kind, setKind] = useState<AccessRevocationKind>("host");
   const [host, setHost] = useState("");
   const [projectId, setProjectId] = useState("");
@@ -659,15 +661,24 @@ function RevokeDialog({
   const [done, setDone] = useState<AccessRevokedDto | null>(null);
   const revoke = useMutation(trpc.accessPolicies.revoke.mutationOptions());
   const target = kind === "host" ? host.trim() : kind === "secret" ? secretId : null;
-  const ready = kind === "all" || (target !== null && target !== "");
+  const ready = policyId !== UNCHOSEN && (kind === "all" || (target !== null && target !== ""));
   const run = async () => {
     setProblems([]);
     setRefusal(null);
+    // Which worktrees it reaches is chosen, never assumed: a policy removed while the dialog was
+    // open must not turn a scoped revocation into one that reaches every worktree.
+    const scoped =
+      policyId === EVERY_WORKTREE
+        ? null
+        : (view.policies.find((policy) => policy.id === policyId) ?? undefined);
+    if (policyId === UNCHOSEN || scoped === undefined) {
+      setRefusal(
+        "The policy you chose is no longer listed, so nothing was revoked. Close this, then choose which worktrees it reaches again.",
+      );
+      return;
+    }
     const outcome = await revoke.mutateAsync({
-      policyId:
-        policyId === EVERY_WORKTREE
-          ? null
-          : (view.policies.find((policy) => policy.id === policyId)?.id ?? null),
+      policyId: scoped === null ? null : scoped.id,
       kind,
       target: kind === "all" ? null : target,
     });
@@ -732,6 +743,9 @@ function RevokeDialog({
             value={policyId}
             onChange={(event) => setPolicyId(event.target.value)}
           >
+            <NativeSelectOption value={UNCHOSEN} disabled>
+              Choose which worktrees
+            </NativeSelectOption>
             <NativeSelectOption value={EVERY_WORKTREE}>Every worktree</NativeSelectOption>
             {view.policies.map((policy) => (
               <NativeSelectOption key={policy.id} value={policy.id}>

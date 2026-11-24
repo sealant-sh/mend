@@ -84,7 +84,10 @@ it(
   { timeout: 120_000 },
   async () => {
     const f = await fixture();
-    expect(await f.setup()).toEqual({ _tag: "ok" });
+    // A Mend with host-vm (0.37.0-next.1748 is the first): one from before it is refused sooner.
+    const hostVmMend = "0.37.0-next.1748";
+    f.update({ images: { [hostVmMend]: hostVmMend } });
+    expect(await f.setup(hostVmMend)).toEqual({ _tag: "ok" });
     expect(
       await serverCommand(["setup", "--offline", "--session-runtime", "docker"], f.runtime),
     ).toEqual({ _tag: "ok" });
@@ -128,5 +131,15 @@ it(
           "This server cannot run host-vm sessions: /dev/kvm unavailable. Name docker or boat instead, or fix that and run mend server setup again.",
       });
     }
+    // On a Mend from before host-vm, the flag is refused for that, before KVM is looked at.
+    const old = await fixture();
+    expect(await old.setup()).toEqual({ _tag: "ok" });
+    expect(
+      await serverCommand(["setup", "--offline", "--session-runtime", "host-vm"], old.runtime),
+    ).toEqual({
+      _tag: "error",
+      message:
+        "Mend 0.23.0 cannot run host-vm sessions: host-vm came in Mend 0.37.0-next.1748. Name docker or boat instead, or move this server to a later Mend with mend server upgrade --version <version> first.",
+    });
   },
 );

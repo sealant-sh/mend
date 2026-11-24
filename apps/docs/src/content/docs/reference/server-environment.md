@@ -204,10 +204,15 @@ of its own.
 
 #### What setup chooses
 
-When neither `--session-runtime` nor `--session-runtimes` is given and the saved config names no
-runtime (a fresh install, or one set up before setup chose), `mend server setup` looks at this
-server's KVM and saves what it found:
+On a fresh install, when neither `--session-runtime` nor `--session-runtimes` is given,
+`mend server setup` looks at this server's KVM and saves what it found. An install that exists keeps
+the runtimes it has, even one that never saved any: it stays on Docker until you offer more with
+`--session-runtimes`.
 
+- When the Mend it sets up predates host-vm (Mend 0.37.0-next.1748 is the first with it, and every
+  later next build, preview and release has it), it offers `docker` alone without looking, such as
+  `Observed: Mend 0.36.0 predates host-vm (the first Mend with it is 0.37.0-next.1748) — offering docker runtime (shared Linux kernel; no per-workspace VM isolation)`.
+  An older image refuses `compose.host-vm.yaml` at start.
 - On a Linux host with `/dev/kvm`, it runs the pinned vm-runner's `--self-test` through Docker (KVM,
   `/dev/net/tun`, nftables, Landlock and Cloud Hypervisor), then creates and removes an internal
   network with `com.docker.network.bridge.gateway_mode_ipv4=isolated`, which needs Docker Engine 28
@@ -219,9 +224,10 @@ server's KVM and saves what it found:
   A failed check is named in the same place. macOS has no `/dev/kvm` for Docker's containers.
 
 A saved choice is kept as it is, whatever a later run observes. Either flag wins over the choice and
-skips the look, except that a flag naming `host-vm` runs the same checks, and setup refuses it with
-what it observed when one fails. The guide runs the checks before its questions, and its "Where can
-sessions run?" offers host-vm and Docker where they passed.
+skips the look, except that a flag naming `host-vm` runs the same checks, and setup refuses it,
+changing nothing, with what it observed when one fails, or when the Mend it sets up predates
+host-vm. The guide runs the checks before its questions, and its "Where can sessions run?" offers
+host-vm and Docker where they passed. Pressing Enter there keeps what the server runs now.
 
 #### Keep VM disks apart from the server's data
 
@@ -232,19 +238,49 @@ volumes' filesystems on the Docker host (a bind volume's device, a volume's moun
 data root for one Compose has not made yet) and warns when they share one:
 
 ```text
-Warning: mend-vm-data shares one filesystem with mend_mend-postgres (and mend-garage). A workspace VM that fills its disk can leave Postgres and Garage without space. For a hard guarantee, put mend-vm-data on a separate filesystem or quota (docs: Server environment → host-vm).
+Warning: mend-vm-data shares one filesystem with mend_mend-postgres (and mend-garage). A workspace VM that fills its disk can leave Postgres and Garage without space. To move mend-vm-data to a filesystem of its own: https://docs.mend.run/reference/server-environment/#keep-vm-disks-apart-from-the-servers-data
 ```
 
 The warning never stops setup, and setup says when it could not check (a volume on another driver,
-or `stat` failing). For a hard guarantee, give `mend-vm-data` a filesystem of its own before the
-first `host-vm` session, for example as a local bind volume, then run `mend server setup` again:
+or `stat` failing). A filesystem quota on the directory Docker keeps the volume in also bounds it.
+Docker cannot move a volume once it exists, so the steps depend on whether it does yet.
+
+**Before the first setup that offers `host-vm`.** Create `mend-vm-data` yourself, as a local bind
+volume on the filesystem you set aside, then run `mend server setup`. Compose uses the volume it
+finds under that name, and warns that it did not create it; that is expected. The directory can stay
+owned by root: Mend's worker makes each VM's disk for the runner's uid, 65532, itself.
 
 ```sh
+sudo mkdir -p /srv/mend-vm-data   # on the filesystem of its own
 docker volume create --driver local --opt type=none --opt o=bind --opt device=/srv/mend-vm-data mend-vm-data
+mend server setup
 ```
 
-Compose warns that it did not create that volume; that is expected. A filesystem quota on the
-directory Docker keeps it in does the same.
+**After Compose has created it.** `docker volume create mend-vm-data` with new options then does
+nothing: the volume already exists, and setup warns again. Move it by hand, keeping the data disks
+of stopped workspaces, which hold their work:
+
+1. In Mend, stop every `host-vm` session, then run `mend server stop`.
+2. `docker ps -a --filter volume=mend-vm-data` lists what still uses the volume. Remove the Mend
+   container it lists with `docker rm <name>`; `mend server start` creates it again. A workspace's
+   container in the list belongs to a session still running: start Mend, stop that session, and
+   begin again.
+3. Copy the volume's contents to the new filesystem, keeping owners, modes and sparse disks:
+
+   ```sh
+   sudo mkdir -p /srv/mend-vm-data
+   sudo cp -a --sparse=always "$(docker volume inspect --format '{{.Mountpoint}}' mend-vm-data)/." /srv/mend-vm-data/
+   ```
+
+4. Remove the volume and create it again on the new filesystem:
+
+   ```sh
+   docker volume rm mend-vm-data
+   docker volume create --driver local --opt type=none --opt o=bind --opt device=/srv/mend-vm-data mend-vm-data
+   ```
+
+5. `mend server start`. The next `mend server setup` checks the filesystems again and no longer
+   warns.
 
 ## Package and image mirrors
 
@@ -386,20 +422,25 @@ stop. This setting alone does not set up Boat.
 ## Where sessions run
 
 The operator declares where sessions may run on the server, and each organization's owner chooses
-among those places for the organization's new sessions. On Docker server installs,
-`mend server setup` asks where sessions can run: Docker, Boat, or both. Docker is the default. With
-one place, every organization's sessions run there, as before organizations could choose. With both,
-an organization's owner picks Docker or Boat in the organization's **Settings → Runtime**, and an
-organization that has not picked gets the server's default. Members see the choice and cannot change
-it.
+among those places for the organization's new sessions. There are three: `docker`, a container on
+this server's Docker; `host-vm`, a virtual machine of its own per workspace on this server's KVM
+([Host VM workspaces](#host-vm-workspaces)); and `boat`, remote VMs ([Boat](#boat)). On Docker
+server installs, `mend server setup` asks where sessions can run: Docker, Boat, Docker and Boat, or,
+where this server's KVM passed setup's checks, host-vm and Docker. On a fresh install with no flag
+naming a runtime, setup chooses by itself: host-vm and Docker where those checks pass, Docker
+otherwise ([What setup chooses](#what-setup-chooses)). An install that exists keeps what it offers.
+With one place, every organization's sessions run there, as before organizations could choose. With
+several, an organization's owner picks among them in the organization's **Settings → Runtime**, and
+an organization that has not picked gets the server's default. Members see the choice and cannot
+change it.
 
 Declare it with flags as well. `mend server setup --yes --session-runtime boat` runs every
 organization's new sessions on Boat. `mend server setup --yes --session-runtimes docker,boat` offers
-both, and `--session-runtime` then names the default an organization gets until it chooses. The
-choices are saved across setup reruns, restarts and upgrades, and written to `server.env` as
-`MEND_SESSION_RUNTIMES` and `MEND_SESSION_RUNTIME`. An organization cannot choose a place the server
-does not offer. When the operator stops offering the place an organization chose, its new sessions
-run on the server's default.
+both (`host-vm,docker` offers this server's KVM and Docker), and `--session-runtime` then names the
+default an organization gets until it chooses. The choices are saved across setup reruns, restarts
+and upgrades, and written to `server.env` as `MEND_SESSION_RUNTIMES` and `MEND_SESSION_RUNTIME`. An
+organization cannot choose a place the server does not offer. When the operator stops offering the
+place an organization chose, its new sessions run on the server's default.
 
 Kubernetes deployments with no `MEND_SESSION_RUNTIME` and no `MEND_SESSION_RUNTIMES` keep sealant's
 automatic runtime selection. Their organizations see "Sealant picks" and have nothing to choose.

@@ -98,6 +98,8 @@ const listen = (onConnection: (socket: net.Socket) => void) =>
 const makeRuntime = (
   options: {
     readonly configDir?: string;
+    /** This CLI's version, the Mend a run sets up unless `--version` says otherwise. */
+    readonly cliVersion?: string;
     readonly daemon?: DockerProtocol;
     readonly composeAsset?: string;
     readonly platform?: "linux" | "darwin";
@@ -170,7 +172,7 @@ const makeRuntime = (
   const runtime: ServerSetupRuntime = {
     configDir: options.configDir ?? temporaryDirectory(),
     platform: options.platform ?? "linux",
-    cliVersion: "0.23.0",
+    cliVersion: options.cliVersion ?? "0.23.0",
     run: async (command, args, processOptions) => {
       commands.push([command, args]);
       const protocol = daemon.run(command, args, processOptions);
@@ -359,7 +361,7 @@ const makeRuntime = (
           body:
             elsewhere?.[1] ??
             options.healthBody ??
-            JSON.stringify({ status: "ok", version: "0.23.0" }),
+            JSON.stringify({ status: "ok", version: options.cliVersion ?? "0.23.0" }),
         };
       }
       if (url.endsWith("/compose.v2.yaml")) {
@@ -5490,6 +5492,10 @@ describe("mend server setup chooses where sessions run by this server's KVM (spe
     "Observed: this server's KVM passed the vm-runner self-test — offering host-vm (a virtual machine of its own per workspace) and docker; new organizations start on host-vm";
   const DOCKER_ONLY =
     "offering docker runtime (shared Linux kernel; no per-workspace VM isolation)";
+  /** The first Mend with host-vm; a run sets up this CLI's own Mend unless --version says. */
+  const HOST_VM_MEND = "0.37.0-next.1748";
+  const kvmRuntime = (options: Parameters<typeof makeRuntime>[0] = {}) =>
+    makeRuntime({ cliVersion: HOST_VM_MEND, ...options });
 
   /**
    * A Docker host with KVM in front of `makeRuntime`'s: the self-test, the isolation check's
@@ -5550,7 +5556,7 @@ describe("mend server setup chooses where sessions run by this server's KVM (spe
   };
 
   it("offers host-vm and docker where the self-test and the isolation check pass, with the overlay", async () => {
-    const control = makeRuntime();
+    const control = kvmRuntime();
     const { runtime, calls } = withKvm(control, {
       volumes: {
         "mend-vm-data": {
@@ -5608,17 +5614,17 @@ describe("mend server setup chooses where sessions run by this server's KVM (spe
   });
 
   it("warns when mend-vm-data would share one filesystem with Postgres and Garage", async () => {
-    const control = makeRuntime();
+    const control = kvmRuntime();
     // Nothing created yet: every volume lands under Docker's own data root.
     const { runtime } = withKvm(control);
     expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
     expect(control.lines).toContain(
-      "Warning: mend-vm-data shares one filesystem with mend_mend-postgres (and mend-garage). A workspace VM that fills its disk can leave Postgres and Garage without space. For a hard guarantee, put mend-vm-data on a separate filesystem or quota (docs: Server environment → host-vm).",
+      "Warning: mend-vm-data shares one filesystem with mend_mend-postgres (and mend-garage). A workspace VM that fills its disk can leave Postgres and Garage without space. To move mend-vm-data to a filesystem of its own: https://docs.mend.run/reference/server-environment/#keep-vm-disks-apart-from-the-servers-data",
     );
   });
 
   it("offers docker alone where /dev/kvm is missing, in exactly these words", async () => {
-    const control = makeRuntime();
+    const control = kvmRuntime();
     const { runtime, calls } = withKvm(control, { kvm: false });
     expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
     expect(control.lines).toContain(
@@ -5633,7 +5639,7 @@ describe("mend server setup chooses where sessions run by this server's KVM (spe
   });
 
   it("offers docker alone where the self-test fails, saying what failed", async () => {
-    const control = makeRuntime();
+    const control = kvmRuntime();
     const { runtime, calls } = withKvm(control, { selfTest: { status: 1, stdout: FAILED } });
     expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
     expect(control.lines).toContain(
@@ -5646,7 +5652,7 @@ describe("mend server setup chooses where sessions run by this server's KVM (spe
   });
 
   it("offers docker alone where Docker cannot isolate a network's gateway", async () => {
-    const control = makeRuntime();
+    const control = kvmRuntime();
     const { runtime, calls } = withKvm(control, { networkCreate: 1 });
     expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
     expect(control.lines).toContain(
@@ -5661,14 +5667,14 @@ describe("mend server setup chooses where sessions run by this server's KVM (spe
 
   it("runs no check where flags name the runtimes, and keeps a saved choice on a rerun", async () => {
     const configDir = temporaryDirectory("host-vm-flags");
-    const flagged = withKvm(makeRuntime({ configDir }));
+    const flagged = withKvm(kvmRuntime({ configDir }));
     expect(
       await serverCommand(["setup", "--yes", "--session-runtime", "docker"], flagged.runtime),
     ).toEqual({ _tag: "ok" });
     expect(flagged.calls).toEqual([]);
     expect(serverJson(configDir).sessionRuntime).toBe("docker");
     // KVM would pass now; the saved choice stays as it is, and nothing is checked.
-    const rerun = withKvm(makeRuntime({ configDir }));
+    const rerun = withKvm(kvmRuntime({ configDir }));
     expect(await serverCommand(["setup", "--yes"], rerun.runtime)).toEqual({ _tag: "ok" });
     expect(selfTests(rerun.calls)).toEqual([]);
     expect(serverJson(configDir).sessionRuntime).toBe("docker");
@@ -5678,12 +5684,12 @@ describe("mend server setup chooses where sessions run by this server's KVM (spe
   it("leaves an install that exists on what it runs on, even one that never saved a runtime", async () => {
     const configDir = temporaryDirectory("host-vm-existing");
     // Set up before setup looked at KVM: no runtime saved, so it runs on Docker.
-    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+    expect(await serverCommand(["setup", "--yes"], kvmRuntime({ configDir }).runtime)).toEqual({
       _tag: "ok",
     });
     expect(serverJson(configDir).sessionRuntime).toBeUndefined();
     // KVM would pass now; its organizations stay on Docker until someone offers host-vm.
-    const rerun = withKvm(makeRuntime({ configDir }));
+    const rerun = withKvm(kvmRuntime({ configDir }));
     expect(await serverCommand(["setup", "--yes"], rerun.runtime)).toEqual({ _tag: "ok" });
     expect(selfTests(rerun.calls)).toEqual([]);
     expect(serverJson(configDir).sessionRuntime).toBeUndefined();
@@ -5694,9 +5700,9 @@ describe("mend server setup chooses where sessions run by this server's KVM (spe
   it("keeps host-vm on a rerun without looking again; a flag naming it checks and refuses on a failure", async () => {
     const configDir = temporaryDirectory("host-vm-saved");
     expect(
-      await serverCommand(["setup", "--yes"], withKvm(makeRuntime({ configDir })).runtime),
+      await serverCommand(["setup", "--yes"], withKvm(kvmRuntime({ configDir })).runtime),
     ).toEqual({ _tag: "ok" });
-    const rerun = withKvm(makeRuntime({ configDir }), { kvm: false });
+    const rerun = withKvm(kvmRuntime({ configDir }), { kvm: false });
     expect(await serverCommand(["setup", "--yes"], rerun.runtime)).toEqual({ _tag: "ok" });
     expect(selfTests(rerun.calls)).toEqual([]);
     expect(serverJson(configDir)).toMatchObject({
@@ -5707,7 +5713,7 @@ describe("mend server setup chooses where sessions run by this server's KVM (spe
       HOST_VM_COMPOSE_OVERLAY,
     );
     // Forcing host-vm where the self-test fails changes nothing.
-    const forced = withKvm(makeRuntime({ configDir }), {
+    const forced = withKvm(kvmRuntime({ configDir }), {
       selfTest: { status: 1, stdout: FAILED },
     });
     const before = fs.readlinkSync(path.join(configDir, "active"));
@@ -5725,7 +5731,7 @@ describe("mend server setup chooses where sessions run by this server's KVM (spe
   });
 
   it("starts the guide's answers from host-vm and docker on a fresh install where KVM passed", async () => {
-    const control = makeRuntime();
+    const control = kvmRuntime();
     const { runtime } = withKvm(control);
     const transcript: Array<string> = [];
     const result = await serverCommand(["setup"], {
@@ -5744,5 +5750,82 @@ describe("mend server setup chooses where sessions run by this server's KVM (spe
       sessionRuntime: "host-vm",
       sessionRuntimes: ["host-vm", "docker"],
     });
+  });
+
+  it("sets up a Mend from before host-vm on Docker alone, without looking at KVM", async () => {
+    const control = kvmRuntime({
+      healthBody: JSON.stringify({ status: "ok", version: "0.36.0" }),
+    });
+    // KVM would pass; Mend 0.36.0's image refuses the host-vm overlay's mappings at boot.
+    const { runtime, calls } = withKvm(control);
+    expect(await serverCommand(["setup", "--yes", "--version", "0.36.0"], runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(control.lines).toContain(
+      `Observed: Mend 0.36.0 predates host-vm (the first Mend with it is ${HOST_VM_MEND}) — ${DOCKER_ONLY}`,
+    );
+    expect(selfTests(calls)).toEqual([]);
+    expect(serverJson(runtime.configDir)).toMatchObject({
+      serverVersion: "0.36.0",
+      sessionRuntime: "docker",
+    });
+    expect(serverJson(runtime.configDir).sessionRuntimes).toBeUndefined();
+    expect(fs.existsSync(activeFile(runtime.configDir, HOST_VM_COMPOSE_FILE))).toBe(false);
+  });
+
+  it("refuses a flag naming host-vm for a Mend from before it, and changes nothing", async () => {
+    const configDir = temporaryDirectory("host-vm-old-mend");
+    const fresh = withKvm(kvmRuntime({ configDir }));
+    expect(
+      await serverCommand(
+        ["setup", "--yes", "--version", "0.36.0", "--session-runtime", "host-vm"],
+        fresh.runtime,
+      ),
+    ).toEqual({
+      _tag: "error",
+      message: `Mend 0.36.0 cannot run host-vm sessions: host-vm came in Mend ${HOST_VM_MEND}. Name docker or boat instead, or set up a later Mend with --version <version>.`,
+    });
+    expect(selfTests(fresh.calls)).toEqual([]);
+    expect(fs.existsSync(path.join(configDir, "active"))).toBe(false);
+    // An install on that Mend is refused the same way, and stays as it was.
+    const old = { healthBody: JSON.stringify({ status: "ok", version: "0.36.0" }), configDir };
+    expect(
+      await serverCommand(
+        ["setup", "--yes", "--version", "0.36.0"],
+        withKvm(kvmRuntime(old), { kvm: false }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const before = fs.readlinkSync(path.join(configDir, "active"));
+    const rerun = withKvm(kvmRuntime(old));
+    expect(
+      await serverCommand(
+        ["setup", "--yes", "--session-runtimes", "host-vm,docker"],
+        rerun.runtime,
+      ),
+    ).toEqual({
+      _tag: "error",
+      message: `Mend 0.36.0 cannot run host-vm sessions: host-vm came in Mend ${HOST_VM_MEND}. Name docker or boat instead, or move this server to a later Mend with mend server upgrade --version <version> first.`,
+    });
+    expect(selfTests(rerun.calls)).toEqual([]);
+    expect(fs.readlinkSync(path.join(configDir, "active"))).toBe(before);
+    expect(serverJson(configDir)).toMatchObject({ sessionRuntime: "docker" });
+  });
+
+  it("offers no host-vm in the guide for a Mend from before it", async () => {
+    const control = makeRuntime({ cliVersion: "0.36.0" });
+    const { runtime, calls } = withKvm(control);
+    const transcript: Array<string> = [];
+    const result = await serverCommand(["setup"], {
+      ...runtime,
+      prompter: scriptedPrompter(["1", "", "", "", "", "", ""], transcript),
+    });
+    expect(result, transcript.join("\n")).toEqual({ _tag: "ok" });
+    expect(control.lines).toContain(
+      `Observed: Mend 0.36.0 predates host-vm (the first Mend with it is ${HOST_VM_MEND}) — ${DOCKER_ONLY}`,
+    );
+    expect(selfTests(calls)).toEqual([]);
+    expect(control.lines.some((line) => line.includes("KVM or Docker"))).toBe(false);
+    expect(serverJson(runtime.configDir)).toMatchObject({ sessionRuntime: "docker" });
+    expect(fs.existsSync(activeFile(runtime.configDir, HOST_VM_COMPOSE_FILE))).toBe(false);
   });
 });

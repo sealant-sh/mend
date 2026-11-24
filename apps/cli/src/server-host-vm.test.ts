@@ -41,7 +41,10 @@ describe("the host VM overlay", () => {
   });
 });
 
-/** What vm-runner 0.21.0-next.208 printed on a KVM host, and in a container without the devices. */
+/**
+ * What vm-runner 0.21.0-next.209 printed on a KVM host, and in a container without the devices,
+ * shortened: each check also carries fields of its own, which setup does not read.
+ */
 const SELF_TEST_PASSED = JSON.stringify({
   version: 1,
   ok: true,

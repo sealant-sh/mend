@@ -2329,26 +2329,30 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 - **Map:** none in a feature file (W4-2, SLNT-1338: a project's Access policy, its Brokered secrets
   and a worktree's pinned policy; agent-home `docs/workspace-isolation-architecture.md` §7.2, §7.3,
   §8.2)
-- **Needs:** Docker; no turn; web and CLI; verify-fixture on a stack, `<p>` on the box (read the
-  recipe's `verify-fixture` as `<p>`); a copy without Boat, where a new worktree runs on Docker
-- **Do:** Run the CLI batch `access-policy-sessions.json` (one `sleep` session in a worktree
-  `policy-ws-<time>`, pinned to Standard), then drive the recipe `project-access-policy`: Project →
-  Workspace's Access policy section reads "A copy of Standard"; Change policy… lists every policy
-  with the elevated one marked and says worktrees keep their rules; assigning a policy that caps Git
-  shows its copy; after the policy gets a new revision the section offers Update from template,
-  which copies it; a member (rewritten read) can't pick the elevated policy and is told who can. The
-  session's Details shows its runtime as a Docker container sharing the server's kernel (never
-  "isolated"), the worktree pinned to Standard, and Apply updated policy; a refusal (rewritten
-  answer) shows the server's words, then a real Apply re-pins the worktree. On Variables and
-  secrets, Add secret… with Brokered warns that sessions won't start under a policy without Brokered
-  secrets, refuses a wildcard host, and adds the secret Brokered in one write; a member (rewritten
-  read) can't turn it back to Direct; the owner can. Phone, light and dark, for all three.
+- **Needs:** Docker; no turn; web and CLI; verify-fixture on a stack, `<p>` on the box; a copy
+  without Boat, where a new worktree runs on Docker
+- **Do:** Start one `sleep` session in a worktree `policy-ws-<time>`: on a stack, the CLI batch
+  `access-policy-sessions.json`; on the box,
+  `M run --project <p> --name policy-ws-$(date +%s) --detach -- sleep 7243`. Then drive the recipe
+  `project-access-policy` (on the box with `MAIN_RUN_PROJECT=<p>`; it puts the project back on the
+  policy it held): Project → Workspace's Access policy section names the project's copy; Change
+  policy… lists every policy with the elevated one marked and says worktrees keep their rules;
+  assigning a policy that caps Git shows its copy; after the policy gets a new revision the section
+  offers Update from template, which copies it; a member (rewritten read) can't pick the elevated
+  policy and is told who can. The session's Details shows its runtime as a Docker container sharing
+  the server's kernel (never "isolated"), the worktree's pin, and Apply updated policy; a refusal
+  (rewritten answer) shows the server's words, then a real Apply re-pins the worktree to the
+  project's policy, read back through the API. On Variables and secrets, Add secret… with Brokered
+  warns that sessions won't start under a policy without Brokered secrets, refuses a wildcard host,
+  and adds the secret Brokered in one write; a member (rewritten read) can't turn it back to Direct;
+  the owner can. Phone, light and dark, for all three.
 - **See:** each step's note in the recipe's `steps.log` and its captures; the toasts
   `<policy> is copied into this project.`, `Added VERIFY_BROKERED.`, `VERIFY_BROKERED is Direct.`;
-  the row `Brokered to api.vercel.com`; `Applied <policy>, revision 2.` or the server's refusal word
-  for word; the stored secret's delivery `brokered` straight after it was added. A runtime line that
-  says "isolated", a secret stored Direct first, or Save delivery enabled for a member turning a
-  Brokered secret back to Direct is failed.
+  the row `Brokered to api.vercel.com`; the rewritten refusal word for word, then
+  `Applied <policy>, revision 2.` with the worktree's pin read back as that policy; the stored
+  secret's delivery `brokered` straight after it was added. A runtime line that says "isolated", a
+  real Apply that is refused or leaves the pin as it was, a secret stored Direct first, or Save
+  delivery enabled for a member turning a Brokered secret back to Direct is failed.
 - **Mode:** `scripted` (recipes/project-access-policy.mjs)
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/settings/project-access-policy-section.tsx`,

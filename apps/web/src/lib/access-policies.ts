@@ -173,17 +173,17 @@ export const automaticHosts = (
   },
   {
     label: "Doppler",
-    when: "when the person starting the session uses Doppler",
+    when: "when the person starting the session has a Doppler config for the project",
     hosts: [DOPPLER_HOST],
   },
   {
     label: "MCP servers",
     when:
       mcpHosts === null
-        ? "the hosts of the MCP servers of the person starting the session"
+        ? "the hosts of the enabled MCP servers of the person starting the session"
         : mcpHosts.length === 0
-          ? "the hosts of the MCP servers of the person starting the session (you have none)"
-          : "the hosts of the MCP servers of the person starting the session; yours are",
+          ? "the hosts of the enabled MCP servers of the person starting the session (you have none)"
+          : "the hosts of the enabled MCP servers of the person starting the session; yours are",
     hosts: mcpHosts ?? [],
   },
 ];

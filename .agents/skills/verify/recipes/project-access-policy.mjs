@@ -7,24 +7,28 @@
 //   pnpm verify drive web --recipe project-access-policy
 //
 // The CLI batch starts one `sleep` session in a worktree `policy-ws-<time>` of verify-fixture, made
-// under the project's policy then (Standard). Without it the recipe stops and says so.
+// under the project's policy then (Standard). Without it the recipe stops and says so. On the box,
+// start that session in `<p>` (`M run --project <p> --name policy-ws-$(date +%s) --detach --
+// sleep 7243`) and drive the recipe with `MAIN_RUN_PROJECT=<p>`.
 //
 // What is real and what is rewritten:
 // - Real: two policies the recipe makes (one that caps Git, one that allows Brokered secrets, so
-//   elevated), assigning one to verify-fixture and updating it from its template, the worktree's
+//   elevated), assigning one to the project and updating it from its template, the worktree's
 //   Apply updated policy and its answer, a Brokered secret added in one write and made Direct, the
 //   refusals before sending, and the phone layout.
 // - Rewritten in the page: the signed-in read with `role: "member"`, for a member's owner gates
 //   (an elevated policy they can't assign, a Brokered secret they can't turn back to Direct), and
 //   one Apply answered with the server's refusal, for how the page shows it word for word.
 //
-// The recipe puts verify-fixture back on Standard and removes its secret and policies. The
+// The recipe puts the project back on the policy it held and removes its secret and policies. The
 // worktree keeps the rules it applied (a pin is the worktree's own); its session is the batch's.
 import { FAKES } from "../scripts/fakes.mjs";
 
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 const SECRET = "VERIFY_BROKERED";
+// The project the recipe works in: the stack's fixture, or the box's `<p>` (flows.md).
+const PROJECT = process.env.MAIN_RUN_PROJECT ?? "verify-fixture";
 
 const visible = (locator) => locator.filter({ visible: true }).first();
 const expect = (what, ok, seen) => {
@@ -131,8 +135,11 @@ export default async ({ page, web, capture, note, typeSecret }) => {
   await page.setViewportSize(DESKTOP);
   await open("/settings/profile");
 
-  const project = (await call("projects.list")).find((p) => p.name === "verify-fixture");
-  expect("verify-fixture is adopted", project !== undefined, "");
+  const project = (await call("projects.list")).find((p) => p.name === PROJECT);
+  expect(`${PROJECT} is adopted`, project !== undefined, "");
+  // What the project holds now, to put back at the end.
+  const original = (await call("accessPolicies.project", { projectId: project.id })).policy.source;
+  note(`${PROJECT} holds a copy of ${original.name} at revision ${original.revision}`);
   // The session the CLI batch started, in the newest policy-ws worktree.
   const rows = await page.evaluate(async () => {
     const queryClient = window["__TSR_ROUTER__"].options.context.queryClient;
@@ -194,11 +201,11 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     await navigate(workspace);
     await heading("Workspace");
     const policy = () => section("Access policy");
-    await visible(policy().getByText("A copy of Standard, the built-in policy.")).waitFor();
-    note("verify-fixture holds a copy of Standard");
+    await visible(policy().getByText(/^A copy of /)).waitFor();
+    note(`the section names ${PROJECT}'s copy of ${original.name}`);
     await both("project-access-policy-standard-desktop");
     await policy().getByRole("button", { name: "Change policy…", exact: true }).click();
-    const choose = dialog("Access policy for verify-fixture");
+    const choose = dialog(`Access policy for ${PROJECT}`);
     await visible(choose.getByText(/New worktrees start with the copy/)).waitFor();
     await visible(choose.getByText(keys.name, { exact: false })).waitFor();
     note(
@@ -208,7 +215,7 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     await choose.getByRole("radio", { name: new RegExp(`^${git.name}`) }).click();
     await choose.getByRole("button", { name: "Assign policy", exact: true }).click();
     await toastSays(`${git.name} is copied into this project.`);
-    await closed("Access policy for verify-fixture");
+    await closed(`Access policy for ${PROJECT}`);
     await visible(policy().getByText(`A copy of ${git.name} at revision 1, its latest.`)).waitFor();
     await visible(policy().getByText("Fetch only")).waitFor();
     note(`assigned ${git.name}: the section shows its copy, Git fetch only`);
@@ -249,7 +256,7 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     await navigate(workspace);
     await heading("Workspace");
     await policy().getByRole("button", { name: "Change policy…", exact: true }).click();
-    const member = dialog("Access policy for verify-fixture");
+    const member = dialog(`Access policy for ${PROJECT}`);
     await visible(member.getByText(/only an Organization Owner can assign it/)).waitFor();
     const elevatedRadio = member.getByRole("radio", { name: new RegExp(`^${keys.name}`) });
     expect("a member can't pick the elevated policy", await elevatedRadio.isDisabled(), "");
@@ -302,8 +309,18 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     await page.unroute("**/trpc/**");
 
     await group().getByRole("button", { name: "Apply updated policy", exact: true }).click();
-    const answer = visible(group().getByText(/^(Applied |Not applied\. )/));
-    await answer.waitFor({ timeout: 60_000 });
+    // The session runs on Docker with no proxy, and the new rules (Git, Executor tools) are ones
+    // Mend holds to itself, so Apply must re-pin it; a refusal here is a failure.
+    await visible(group().getByText(`Applied ${git.name}, revision 2.`, { exact: false })).waitFor({
+      timeout: 60_000,
+    });
+    const pinned = (await call("accessPolicies.worktree", { id: session.worktreeId })).pin;
+    expect(
+      "the worktree took the project's policy",
+      pinned?.source.policyId === git.id && pinned.source.revision === 2,
+      pinned?.source,
+    );
+    await visible(group().getByText(`${git.name}, revision 2, pinned`, { exact: false })).waitFor();
     note(
       `Apply updated policy, for real: ${(await group().innerText()).replace(/\s+/g, " ").slice(0, 400)}`,
     );
@@ -340,7 +357,7 @@ export default async ({ page, web, capture, note, typeSecret }) => {
       `${SECRET} added Brokered in one write: Authorization to api.vercel.com, placeholder only`,
     );
     await visible(
-      page.getByText(/no session in verify-fixture starts while a secret here is Brokered/),
+      page.getByText(new RegExp(`no session in ${PROJECT} starts while a secret here is Brokered`)),
     ).waitFor();
     await both("project-access-policy-secrets-desktop");
 
@@ -402,11 +419,11 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     await page.setViewportSize(DESKTOP);
   } finally {
     await page.unroute("**/trpc/**").catch(() => undefined);
-    await call(
-      "accessPolicies.assign",
-      { projectId: project.id, request: { policyId: "standard" } },
-      "mutate",
-    ).catch(() => undefined);
+    // Back to the template it held (its latest revision), or Standard when that was removed.
+    const restore = (policyId) =>
+      call("accessPolicies.assign", { projectId: project.id, request: { policyId } }, "mutate");
+    const back = await restore(original.policyId).catch(() => null);
+    if (back === null || back.ok !== true) await restore("standard").catch(() => undefined);
     const secret = (
       await call("environment.secrets", { projectId: project.id }).catch(() => ({
         secrets: [],
@@ -424,6 +441,6 @@ export default async ({ page, web, capture, note, typeSecret }) => {
       ).catch(() => undefined);
     for (const id of made)
       await call("accessPolicies.remove", { id }, "mutate").catch(() => undefined);
-    note("put verify-fixture back on Standard, removed its secret and the two policies");
+    note(`put ${PROJECT} back on ${original.name}, removed its secret and the two policies`);
   }
 };

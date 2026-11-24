@@ -14,6 +14,7 @@ import { failureWords } from "#/lib/refusal";
 import {
   type ImpactRow,
   offerLine,
+  RUNTIME_CHOICE_LABELS,
   RUNTIME_LABELS,
   runtimeChoices,
   runtimeIntro,
@@ -227,7 +228,7 @@ export function RuntimeList({
           />
           <div className="grid min-w-0 gap-1">
             <label htmlFor={`${id}-${runtime}`} className="font-semibold text-foreground">
-              {RUNTIME_LABELS[runtime]}
+              {RUNTIME_CHOICE_LABELS[runtime]}
             </label>
             <p id={`${id}-${runtime}-about`} className="text-row text-pretty text-muted-foreground">
               {DESCRIPTIONS[runtime](organization)}

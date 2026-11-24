@@ -206,12 +206,13 @@ export const keepsSealedUrl = (draft: McpDraft, saved: McpServerDto | null): boo
   saved.transport.url.includes("…");
 
 /**
- * The hosts of a person's HTTP and SSE MCP servers, which a Restricted worktree they start
+ * The hosts of a person's enabled HTTP and SSE MCP servers, which a Restricted worktree they start
  * reaches without its policy listing them. A stdio server runs in the workspace and has none.
  */
 export const mcpServerHosts = (servers: ReadonlyArray<McpServerDto>): ReadonlyArray<string> => {
   const hosts = servers.flatMap((server) => {
-    if (server.transport._tag === "stdio") return [];
+    // A launch reaches only the person's enabled servers; a stdio one runs in the workspace.
+    if (!server.enabled || server.transport._tag === "stdio") return [];
     const parsed = URL.parse(server.transport.url);
     return parsed === null ? [] : [parsed.hostname.toLowerCase()];
   });

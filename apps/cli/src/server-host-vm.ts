@@ -62,11 +62,11 @@ export const renderHostVmOverlay = (settings: {
 // ─── whether this server can run host-vm ────────────────────────────────────
 
 /**
- * The vm-runner setup runs `--self-test` with: sealantd 0.21.0-next.208's, the image the server's
- * sealant (0.40.0-next.938) runs host-vm workspaces with. Moves with that pin.
+ * The vm-runner setup runs `--self-test` with: sealantd 0.21.0-next.209's (the multi-arch index),
+ * the image the server's sealant (0.40.0-next.938) runs host-vm workspaces with. Moves with that pin.
  */
 export const VM_RUNNER_IMAGE =
-  "ghcr.io/sealant-sh/vm-runner-next@sha256:d25156b5598effed96c79b7a2d84e252a3e5ad026b8b046725990429dcccb770";
+  "ghcr.io/sealant-sh/vm-runner-next:0.21.0-next.209@sha256:94218ada6421707edc7679851ace4d1a0897363640a5b42bcf887c7fe7866b42";
 
 /** The first Docker Engine whose bridge driver takes `gateway_mode_ipv4=isolated`. */
 const ISOLATED_GATEWAY_ENGINE = 28;
@@ -274,6 +274,10 @@ export const observeHostVm = async (
 /** The volume each workspace VM's data disk lives in, as compose.host-vm.yaml names it. */
 export const VM_DATA_VOLUME = "mend-vm-data";
 
+/** The steps that move it to a filesystem of its own, before setup or after Compose made it. */
+const VM_DISKS_APART_DOCS =
+  "https://docs.mend.run/reference/server-environment/#keep-vm-disks-apart-from-the-servers-data";
+
 /** Where a volume's bytes are on the Docker host, or why setup cannot say. */
 type Backing =
   | { readonly _tag: "path"; readonly path: string }
@@ -401,6 +405,6 @@ export const sharedFilesystemLines = async (
   const [first, ...rest] = sharing;
   if (first === undefined) return [];
   return [
-    `Warning: ${VM_DATA_VOLUME} shares one filesystem with ${first.volume}${rest.length === 0 ? "" : ` (and ${rest.map((other) => other.volume).join(", ")})`}. A workspace VM that fills its disk can leave ${sharing.map((other) => other.holds).join(" and ")} without space. For a hard guarantee, put ${VM_DATA_VOLUME} on a separate filesystem or quota (docs: Server environment → host-vm).`,
+    `Warning: ${VM_DATA_VOLUME} shares one filesystem with ${first.volume}${rest.length === 0 ? "" : ` (and ${rest.map((other) => other.volume).join(", ")})`}. A workspace VM that fills its disk can leave ${sharing.map((other) => other.holds).join(" and ")} without space. To move ${VM_DATA_VOLUME} to a filesystem of its own: ${VM_DISKS_APART_DOCS}`,
   ];
 };
