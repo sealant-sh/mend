@@ -36,14 +36,15 @@ export interface GitTransportPlan {
 }
 
 /**
- * Accept one Git transport verb and one literal repository argument before the host signs.
+ * Accept one Git transport verb and one literal repository argument before the host signs, and
+ * answer the verb's kind and the repository argument unquoted.
  * Git single-quotes paths and escapes apostrophes/exclamation marks between quoted segments.
  * Plain path characters are also accepted; expansions, options, extra words and shell operators
  * are refused. Control characters and double-quoted/otherwise escaped paths are not supported.
  */
 export const parseGitRemoteCommand = (
   command: string,
-): { readonly kind: GitTransportKind } | null => {
+): { readonly kind: GitTransportKind; readonly repository: string } | null => {
   for (const character of command) {
     if (character.charCodeAt(0) < 32 || character === "\u007f") return null;
   }
@@ -71,9 +72,9 @@ export const parseGitRemoteCommand = (
   }
   if (repository === "" || repository.startsWith("-")) return null;
   const verb = match[1];
-  if (verb === "receive-pack") return { kind: "push" };
-  if (verb === "upload-archive") return { kind: "archive" };
-  return { kind: "fetch" };
+  if (verb === "receive-pack") return { kind: "push", repository };
+  if (verb === "upload-archive") return { kind: "archive", repository };
+  return { kind: "fetch", repository };
 };
 
 export const frame = (type: "o" | "e" | "x" | "i" | "q", payload: Buffer): Buffer => {

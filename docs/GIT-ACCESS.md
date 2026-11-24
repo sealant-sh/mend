@@ -150,9 +150,21 @@ configuration resets and empty HOME; preparation runs after those resets rather 
 host's rewrite rules.
 
 A workspace's git transport signs with its owner's key, so it only reaches the project's own remote:
-the origin's host, and its port for ssh. Pushing a mirror or a fork elsewhere from inside a
-workspace runs without Mend's signer. An operator who alone uses the machine may set
+the origin's host, and its port for ssh. A fetch may name any repository on that host (submodules,
+private dependencies, the other repositories of a session). A push must name the project's own
+repository, or the origin of another repository the session holds (ADR 0011). Paths compare with a
+trailing `.git` and trailing slashes set aside; on GitHub, GitLab and Bitbucket a leading `/` and
+ASCII case are set aside too, while on any other server both count, since `/srv/git/api.git` and
+`srv/git/api.git` can be two repositories there. The path Git sends over SSH is compared as written,
+never percent-decoded; an origin URL's path is decoded once. A path with a `..`, `.` or empty
+segment, a backslash, or a `%` left after decoding reads more than one way: a project whose origin
+reads so, or has no origin, pushes nowhere through the signer. Pushing a mirror or a fork elsewhere
+from inside a workspace runs without Mend's signer. An operator who alone uses the machine may set
 `MEND_GIT_TRANSPORT_BIND_ORIGIN=false`; `multi` tenancy refuses to start with it.
+
+A worktree's Access policy caps the signer (ADR 0025, amendment of 2026-11-24): `gitTransport`
+`read-only` signs fetches and archives and no push, `disabled` signs nothing. Until Access policies
+are stored every worktree is `read-write`.
 
 ## Credentials in repository URLs
 

@@ -251,6 +251,7 @@ import type {
 } from "@sealant/sdk";
 import { Clock, Duration, Effect, Fiber, Layer, Logger, Stream, type Scope } from "effect";
 
+import { AccessPolicies, type AccessPolicySource } from "../../src/access-policy.ts";
 import { HarnessLayoutConfig } from "../../src/harness-layout-steps.ts";
 import { ResourceStatusReads, ResourceStatusReadsNone } from "../../src/resources/status-reads.ts";
 import { WORKTREE_STAMP, WorktreeReads } from "../../src/worktree-reads.ts";
@@ -4199,6 +4200,8 @@ interface EngineOptions {
   readonly instanceRolesLayer?: Layer.Layer<InstanceRolesRepo>;
   readonly mendKeysLayer?: Layer.Layer<MendKeys>;
   readonly gitOpsLayer?: Layer.Layer<SessionGitOpsRepo>;
+  /** Every session's worktree policy; `Standard` unless a test says. */
+  readonly accessPolicies?: AccessPolicySource;
   /** Every account's signer; never connected unless a test says. */
   readonly agentBridgeLayer?: Layer.Layer<AgentBridge>;
   /** Mend's git verification of captures (capture mode); off — every capture unverified — unless a test says. */
@@ -4480,6 +4483,9 @@ export const withPreparedEngineEffect = <B, A, E>(
           historyLayer,
           (options.importedConversations ?? makeImportedConversationsMemory()).layer,
           options.mendKeysLayer ?? mendKeysStubLayer,
+          options.accessPolicies === undefined
+            ? Layer.empty
+            : Layer.succeed(AccessPolicies, options.accessPolicies),
           options.agentBridgeLayer ?? agentBridgeStubLayer,
           options.gitOpsLayer ?? gitOpsStubLayer,
           changesLayer(world),

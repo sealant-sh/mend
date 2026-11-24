@@ -722,6 +722,206 @@ export const parseChannelCredentials = (
   return { sessionId: SessionId.make(sessionId), token: match[1] };
 };
 
+/** What a channel request's bearer token reaches (`authenticateChannelRequest`). */
+export type ChannelAuthentication =
+  | {
+      readonly ok: true;
+      readonly api: SessionSocketApi;
+      /** A one-off write's token: its pickups, and nothing else (mend#615 review 3). */
+      readonly pickupOnly: boolean;
+    }
+  | {
+      readonly ok: false;
+      readonly status: number;
+      readonly message: string;
+    };
+
+/**
+ * Authenticate one session channel request by its bearer token: the token's hash resolves its
+ * launch and person, and the live session it names answers what that token reaches. Shared by
+ * every listener that takes tokens: the network endpoint and an executor's `session.sock`
+ * (`executor-sockets.ts`), which passes `launchId` so only its own executor's tokens reach it, and
+ * `personOnly` so the launch's capture credential never does.
+ */
+export const authenticateChannelRequest = async (
+  headers: http.IncomingHttpHeaders,
+  deps: {
+    readonly tokens: SessionChannelTokensRepo["Service"];
+    readonly registry: Pick<SessionChannelRegistry["Service"], "lookup">;
+  },
+  options: {
+    readonly launchId?: string;
+    /** A person's token only: the launch's own token (its capture credential) is refused. */
+    readonly personOnly?: boolean;
+  } = {},
+): Promise<ChannelAuthentication> => {
+  const { tokens, registry } = deps;
+  const credentials = parseChannelCredentials(headers);
+  if (credentials === undefined) {
+    return {
+      ok: false,
+      status: 401,
+      message: "session channel: missing or malformed credentials",
+    };
+  }
+  // The token names one launch (cross-repo decision 5). The launch's own token names its
+  // session too, and a session id sent with it must be that one. A person's token (docs/adr/
+  // 0016, decision 4) is good for any session live in its launch that the person may act on:
+  // the process names its session, and the engine checks both.
+  const resolved = await Effect.runPromise(tokens.resolve(credentials.token));
+  const notAccepted = {
+    ok: false,
+    status: 401,
+    message: "session channel: the session token was not accepted",
+  } as const;
+  if (resolved === null) return notAccepted;
+  // A listener of one executor takes that executor's tokens only.
+  if (options.launchId !== undefined && resolved.launchId !== options.launchId) return notAccepted;
+  if (options.personOnly === true && resolved.accountId === null) return notAccepted;
+  let target: SessionId;
+  if (resolved.accountId === null) {
+    if (credentials.sessionId !== null && credentials.sessionId !== resolved.sessionId) {
+      return notAccepted;
+    }
+    target = SessionId.make(resolved.sessionId);
+  } else {
+    if (credentials.sessionId === null) return notAccepted;
+    target = credentials.sessionId;
+  }
+  const api = registry.lookup(target);
+  if (api === undefined) {
+    return {
+      ok: false,
+      status: 409,
+      message: "session channel: this session is not live on this Mend instance",
+    };
+  }
+  const scope = {
+    launchId: resolved.launchId,
+    accountId: resolved.accountId,
+    ...(resolved.writeOnly ? { writeOnly: true } : {}),
+  };
+  if (api.channelFor !== undefined) {
+    const grant = await Effect.runPromise(api.channelFor(scope));
+    return grant.ok ? { ok: true, api: grant.api, pickupOnly: resolved.writeOnly } : grant;
+  }
+  // A session served without a grant takes its launch's own token, as before, and no
+  // person's.
+  if (resolved.accountId !== null) return notAccepted;
+  // Launch-bound, always (review 2026-09-28 (4) #10): an authenticated executor reaches only
+  // the capture routes of the launch its token names — never the session's unbound view,
+  // which answers whichever launch the row names now (or the session id before a create
+  // answers). A session served without launch-bound routes serves no capture routes here.
+  const capture = api.captureAs?.(resolved.launchId);
+  // Pickups likewise: a ticket redeemed here answers only for the launch the token names, and,
+  // for a person's token, only for that person (`pickupChannelMatch`). The launch's own token
+  // names nobody.
+  const pickup = api.pickupAs?.({
+    launchId: resolved.launchId,
+    accountId: null,
+  });
+  return { ok: true, api: { ...api, capture, pickup }, pickupOnly: false };
+};
+
+/**
+ * The handlers of a listener that takes bearer tokens: every request, CONNECT and git Upgrade is
+ * authenticated by `authenticate` before anything is served, and a one-off write's token reaches
+ * its pickups only. The network endpoint and an executor's `session.sock` serve these.
+ */
+export const tokenChannelHandlers = (
+  authenticate: (headers: http.IncomingHttpHeaders) => Promise<ChannelAuthentication>,
+  registry: Pick<SessionChannelRegistry["Service"], "mcp" | "resources" | "resourceLoads">,
+): {
+  readonly onRequest: (request: http.IncomingMessage, response: http.ServerResponse) => void;
+  readonly onConnect: (request: http.IncomingMessage, socket: net.Socket, head: Buffer) => void;
+  readonly onUpgrade: (request: http.IncomingMessage, socket: net.Socket, head: Buffer) => void;
+} => {
+  /** What a one-off write's token may ask: its pickup, nothing else. */
+  const pickupOnlyRefusal = {
+    message: "session channel: this token redeems pickups only",
+  };
+
+  const onRequest = (request: http.IncomingMessage, response: http.ServerResponse): void => {
+    authenticate(request.headers)
+      .then((auth) => {
+        if (!auth.ok) {
+          response.writeHead(auth.status, {
+            "content-type": "application/json",
+          });
+          response.end(JSON.stringify({ message: auth.message }));
+          return;
+        }
+        if (
+          auth.pickupOnly &&
+          (request.method !== "POST" ||
+            new URL(request.url ?? "/", "http://x").pathname !== "/pickup")
+        ) {
+          response.writeHead(403, { "content-type": "application/json" });
+          response.end(JSON.stringify(pickupOnlyRefusal));
+          return;
+        }
+        return handleSessionRequest(auth.api, request, response, registry);
+      })
+      .catch((cause: unknown) => {
+        unanswered(cause);
+        if (!response.headersSent) {
+          response.writeHead(503, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              message: "session channel: this request could not be answered now",
+            }),
+          );
+        } else {
+          response.destroy();
+        }
+      });
+  };
+  const onConnect = (
+    request: http.IncomingMessage,
+    socket: net.Socket,
+    head: Buffer,
+    established?: string,
+  ): void => {
+    authenticate(request.headers)
+      .then((auth) => {
+        if (!auth.ok) {
+          return refuseConnect(
+            socket,
+            `${auth.status} ${auth.status === 401 ? "Unauthorized" : "Conflict"}`,
+            auth.message,
+          );
+        }
+        if (auth.pickupOnly) {
+          return refuseConnect(socket, "403 Forbidden", pickupOnlyRefusal.message);
+        }
+        return handleGitConnect(auth.api, request, socket, head, established);
+      })
+      .catch((cause: unknown) => {
+        unanswered(cause);
+        if (socket.writable) {
+          refuseConnect(
+            socket,
+            "503 Service Unavailable",
+            "session channel: this request could not be answered now",
+          );
+        } else {
+          socket.destroy();
+        }
+      });
+  };
+  return {
+    onRequest,
+    onConnect: (request, socket, head) => onConnect(request, socket, head),
+    onUpgrade: (request, socket, head) => {
+      if ((request.headers.upgrade ?? "").toLowerCase() !== "mend-git") {
+        refuseConnect(socket, "400 Bad Request", "unknown upgrade");
+        return;
+      }
+      onConnect(request, socket, head, GIT_UPGRADE_ESTABLISHED);
+    },
+  };
+};
+
 export class SessionChannelNetworkHost extends Context.Service<
   SessionChannelNetworkHost,
   {
@@ -754,157 +954,10 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
       return { endpoint: undefined, address: undefined };
     }
 
-    const authenticate = async (
-      headers: http.IncomingHttpHeaders,
-    ): Promise<
-      | {
-          readonly ok: true;
-          readonly api: SessionSocketApi;
-          /** A one-off write's token: its pickups, and nothing else (mend#615 review 3). */
-          readonly pickupOnly: boolean;
-        }
-      | {
-          readonly ok: false;
-          readonly status: number;
-          readonly message: string;
-        }
-    > => {
-      const credentials = parseChannelCredentials(headers);
-      if (credentials === undefined) {
-        return {
-          ok: false,
-          status: 401,
-          message: "session channel: missing or malformed credentials",
-        };
-      }
-      // The token names one launch (cross-repo decision 5). The launch's own token names its
-      // session too, and a session id sent with it must be that one. A person's token (docs/adr/
-      // 0016, decision 4) is good for any session live in its launch that the person may act on:
-      // the process names its session, and the engine checks both.
-      const resolved = await Effect.runPromise(tokens.resolve(credentials.token));
-      const notAccepted = {
-        ok: false,
-        status: 401,
-        message: "session channel: the session token was not accepted",
-      } as const;
-      if (resolved === null) return notAccepted;
-      let target: SessionId;
-      if (resolved.accountId === null) {
-        if (credentials.sessionId !== null && credentials.sessionId !== resolved.sessionId) {
-          return notAccepted;
-        }
-        target = SessionId.make(resolved.sessionId);
-      } else {
-        if (credentials.sessionId === null) return notAccepted;
-        target = credentials.sessionId;
-      }
-      const api = registry.lookup(target);
-      if (api === undefined) {
-        return {
-          ok: false,
-          status: 409,
-          message: "session channel: this session is not live on this Mend instance",
-        };
-      }
-      const scope = {
-        launchId: resolved.launchId,
-        accountId: resolved.accountId,
-        ...(resolved.writeOnly ? { writeOnly: true } : {}),
-      };
-      if (api.channelFor !== undefined) {
-        const grant = await Effect.runPromise(api.channelFor(scope));
-        return grant.ok ? { ok: true, api: grant.api, pickupOnly: resolved.writeOnly } : grant;
-      }
-      // A session served without a grant takes its launch's own token, as before, and no
-      // person's.
-      if (resolved.accountId !== null) return notAccepted;
-      // Launch-bound, always (review 2026-09-28 (4) #10): an authenticated executor reaches only
-      // the capture routes of the launch its token names — never the session's unbound view,
-      // which answers whichever launch the row names now (or the session id before a create
-      // answers). A session served without launch-bound routes serves no capture routes here.
-      const capture = api.captureAs?.(resolved.launchId);
-      // Pickups likewise: a ticket redeemed here answers only for the launch the token names, and,
-      // for a person's token, only for that person (`pickupChannelMatch`). The launch's own token
-      // names nobody.
-      const pickup = api.pickupAs?.({
-        launchId: resolved.launchId,
-        accountId: null,
-      });
-      return { ok: true, api: { ...api, capture, pickup }, pickupOnly: false };
-    };
-    /** What a one-off write's token may ask: its pickup, nothing else. */
-    const pickupOnlyRefusal = {
-      message: "session channel: this token redeems pickups only",
-    };
-
-    const onRequest = (request: http.IncomingMessage, response: http.ServerResponse): void => {
-      authenticate(request.headers)
-        .then((auth) => {
-          if (!auth.ok) {
-            response.writeHead(auth.status, {
-              "content-type": "application/json",
-            });
-            response.end(JSON.stringify({ message: auth.message }));
-            return;
-          }
-          if (
-            auth.pickupOnly &&
-            (request.method !== "POST" ||
-              new URL(request.url ?? "/", "http://x").pathname !== "/pickup")
-          ) {
-            response.writeHead(403, { "content-type": "application/json" });
-            response.end(JSON.stringify(pickupOnlyRefusal));
-            return;
-          }
-          return handleSessionRequest(auth.api, request, response, registry);
-        })
-        .catch((cause: unknown) => {
-          unanswered(cause);
-          if (!response.headersSent) {
-            response.writeHead(503, { "content-type": "application/json" });
-            response.end(
-              JSON.stringify({
-                message: "session channel: this request could not be answered now",
-              }),
-            );
-          } else {
-            response.destroy();
-          }
-        });
-    };
-    const onConnect = (
-      request: http.IncomingMessage,
-      socket: net.Socket,
-      head: Buffer,
-      established?: string,
-    ): void => {
-      authenticate(request.headers)
-        .then((auth) => {
-          if (!auth.ok) {
-            return refuseConnect(
-              socket,
-              `${auth.status} ${auth.status === 401 ? "Unauthorized" : "Conflict"}`,
-              auth.message,
-            );
-          }
-          if (auth.pickupOnly) {
-            return refuseConnect(socket, "403 Forbidden", pickupOnlyRefusal.message);
-          }
-          return handleGitConnect(auth.api, request, socket, head, established);
-        })
-        .catch((cause: unknown) => {
-          unanswered(cause);
-          if (socket.writable) {
-            refuseConnect(
-              socket,
-              "503 Service Unavailable",
-              "session channel: this request could not be answered now",
-            );
-          } else {
-            socket.destroy();
-          }
-        });
-    };
+    const { onRequest, onConnect, onUpgrade } = tokenChannelHandlers(
+      (headers) => authenticateChannelRequest(headers, { tokens, registry }),
+      registry,
+    );
 
     const server =
       config.tls === undefined
@@ -916,18 +969,10 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
             },
             onRequest,
           );
-    server.on("connect", (request: http.IncomingMessage, socket: net.Socket, head: Buffer) =>
-      onConnect(request, socket, head),
-    );
+    server.on("connect", onConnect);
     // The same tunnel as an HTTP Upgrade, which a TLS proxy in front of the channel (Mend's edge)
     // passes through both ways where it would not tunnel a CONNECT.
-    server.on("upgrade", (request: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
-      if ((request.headers.upgrade ?? "").toLowerCase() !== "mend-git") {
-        refuseConnect(socket, "400 Bad Request", "unknown upgrade");
-        return;
-      }
-      onConnect(request, socket, head, GIT_UPGRADE_ESTABLISHED);
-    });
+    server.on("upgrade", onUpgrade);
     // Bound header budget: helper requests are small; a huge header block is not a client.
     server.maxHeadersCount = 64;
     server.headersTimeout = 10_000;

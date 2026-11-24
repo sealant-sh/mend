@@ -233,8 +233,6 @@ import {
   agentPushedBranches,
   agentStartingWords,
   withoutAgentStarting,
-  gitRemoteLocation,
-  isSameGitRemote,
   type ProjectLink,
   AGENT_PROCESS_KINDS,
   type AgentApprovalDecision,
@@ -435,6 +433,7 @@ import {
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
+import { AccessPolicies } from "./access-policy.ts";
 import { withPrompt } from "./agent-command.ts";
 import {
   AGENT_MEMORY_DELIVERED,
@@ -537,6 +536,7 @@ import {
 import { type Continuation, type EndAuthority, makeEndOwnership } from "./end-ownership.ts";
 import { ForwardAdapter, forwardStartupAction, portTarget } from "./forward.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
+import { decideGitTransport } from "./git-policy.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
   HarnessLayoutConfig,
@@ -9728,6 +9728,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Config.withDefault(true),
         Effect.orElseSucceed(() => true),
       );
+      const accessPolicies = yield* AccessPolicies;
       const projectEnvironment = yield* ProjectEnvironmentRepo;
       const projectSecrets = yield* ProjectSecretsRepo;
       const projectClusterBindings = yield* ProjectClusterBindingsRepo;
@@ -19718,6 +19719,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* sessions.byId(sessionId);
         return yield* sessionRepositories.listForSession(sessionId);
       });
+
+      /** The origins of the repositories a session holds beside its own (ADR 0011). */
+      const sessionRepositoryOrigins = Effect.fn("SessionEngine.sessionRepositoryOrigins")(
+        function* (sessionId: SessionId) {
+          const rows = yield* sessionRepositories.listForSession(sessionId);
+          const origins = yield* Effect.forEach(rows, (row) =>
+            projects.byId(row.projectId).pipe(
+              Effect.map((held) => held.originUrl),
+              Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)),
+            ),
+          );
+          return origins.filter((origin) => origin !== null);
+        },
+      );
 
       const addableProjects = Effect.fn("SessionEngine.addableProjects")(function* (
         sessionId: SessionId,
@@ -30359,17 +30374,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 new Error(`refusing ssh target "${host}" — it reads as an option`),
               );
             }
-            const origin = project.originUrl === null ? null : gitRemoteLocation(project.originUrl);
-            if (
-              bindTransportToOrigin &&
-              origin !== null &&
-              !isSameGitRemote(origin, { host, port })
-            ) {
-              return yield* Effect.fail(
-                new Error(
-                  `this session's Git access is bound to ${origin.host}; pushes and fetches to ${host} run without Mend's signer`,
-                ),
+            // The worktree's Access policy caps the signer; a push names the project's own
+            // repository, a fetch its host (git-policy.ts).
+            const policy = yield* accessPolicies.forSession(sessionId);
+            // A push may also reach the origin of a repository the session holds (ADR 0011).
+            const repositoryOrigins =
+              parsed.kind === "push"
+                ? yield* sessionRepositoryOrigins(sessionId)
+                : ([] as ReadonlyArray<string>);
+            const decision = decideGitTransport({
+              ceiling: policy.gitTransport,
+              kind: parsed.kind,
+              repository: parsed.repository,
+              target: { host, port },
+              originUrl: project.originUrl,
+              repositoryOrigins,
+              bindToOrigin: bindTransportToOrigin,
+            });
+            if (!decision.ok) {
+              yield* Effect.logInfo("session git transport refused").pipe(
+                Effect.annotateLogs({ sessionId, host, kind: parsed.kind, why: decision.message }),
               );
+              return yield* Effect.fail(new Error(decision.message));
             }
             const mode = project.gitAuthMode;
             // The session's owner signs: their Mend key, never another user's. In a person

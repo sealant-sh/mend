@@ -1,15 +1,17 @@
 import { UsersRepo } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import { Effect, Layer, Schema } from "effect";
-import { McpServer, Tool, Toolkit } from "effect/ai";
+import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 import * as Context from "effect/Context";
 import { describe, expect, expectTypeOf, it } from "vitest";
 
+import { AccessPolicies, STANDARD_ACCESS_POLICY } from "../access-policy.ts";
 import type { SessionEngineLive } from "../engine.ts";
 import { OrganizationExecutor } from "../executor/executor.ts";
 import { Screens } from "../screen/screens.ts";
 import { type SessionChannelRegistry, SessionChannelRegistryLive } from "../session-channel.ts";
 import { asCaller, MEND_MCP_PATH } from "./caller.ts";
+import { EXECUTOR_TOOLS_OFF_MESSAGE } from "./executor-tools.ts";
 import { ProofCaptures } from "./proof-captures.ts";
 import { MendMcp, mendMcpLayer } from "./server.ts";
 import { SessionPages } from "./session-pages.ts";
@@ -133,6 +135,93 @@ describe("Mend's MCP server", () => {
     expect(answers[1]).toMatchObject({
       result: { content: [{ type: "text", text: "Hello Anna, from maria" }] },
     });
+  });
+
+  it("refuses an Executor tool when the session's worktree policy turns Executor tools off", async () => {
+    const relayed: Array<{ readonly sessionId: string; readonly tool: string }> = [];
+    const allowed = new Set(["s-allowed"]);
+    const call = (sessionId: string) =>
+      Effect.gen(function* () {
+        const mcp = yield* MendMcp;
+        const caller = {
+          sessionId: SessionId.make(sessionId),
+          accountId: "maria",
+          agentProcess: null,
+        };
+        const opened = yield* mcp.handle(
+          post({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: {
+              protocolVersion: "2025-06-18",
+              capabilities: {},
+              clientInfo: { name: "test", version: "0" },
+            },
+          }),
+          caller,
+        );
+        const answer = yield* mcp.handle(
+          post(
+            {
+              jsonrpc: "2.0",
+              id: 2,
+              method: "tools/call",
+              params: { name: "executor_search", arguments: { query: "linear issues" } },
+            },
+            {
+              "mcp-session-id": opened.headers.get("mcp-session-id") ?? "",
+              "mcp-protocol-version": "2025-06-18",
+            },
+          ),
+          caller,
+        );
+        return yield* Effect.promise(() => answer.json());
+      });
+    const [refused, served] = await Effect.runPromise(
+      Effect.all([call("s-restricted"), call("s-allowed")]).pipe(
+        Effect.provide(
+          mendMcpLayer(MEND_TOOLKITS).pipe(
+            Layer.provide(Layer.mock(ProofCaptures)({})),
+            Layer.provide(
+              Layer.mock(OrganizationExecutor)({
+                relay: (caller, tool) =>
+                  Effect.sync(() => {
+                    relayed.push({ sessionId: caller.sessionId, tool });
+                    return new McpSchema.CallToolResult({
+                      content: [{ type: "text", text: "found" }],
+                    });
+                  }),
+              }),
+            ),
+            Layer.provide(SessionChannelRegistryLive),
+            Layer.provide(
+              Layer.succeed(SessionPages, { publish: () => Effect.die("not in this test") }),
+            ),
+            Layer.provide(Layer.mock(Screens)({})),
+            Layer.provide(Layer.mock(UsersRepo)({})),
+            Layer.provide(
+              Layer.succeed(AccessPolicies, {
+                forSession: (sessionId) =>
+                  Effect.succeed({
+                    ...STANDARD_ACCESS_POLICY,
+                    allowExecutorTools: allowed.has(sessionId),
+                  }),
+              }),
+            ),
+          ),
+        ),
+        Effect.scoped,
+      ),
+    );
+    expect(refused).toMatchObject({
+      result: {
+        isError: true,
+        content: [{ type: "text", text: JSON.stringify({ message: EXECUTOR_TOOLS_OFF_MESSAGE }) }],
+      },
+    });
+    expect(served).toMatchObject({ result: { content: [{ type: "text", text: "found" }] } });
+    expect(relayed).toEqual([{ sessionId: "s-allowed", tool: "search" }]);
   });
 
   it("needs what its toolkits need, and the engine does not need it, so a toolkit may need the engine", () => {
