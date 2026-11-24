@@ -290,7 +290,14 @@ const up = async () => {
   say(`cloned ${sourceUrl} into the first window's folder`);
 
   say(`starting the daemon ${context}`);
-  const daemon = await world.startDind({ name: context, scratch, home, context, clientEnv });
+  const daemon = await world.startDind({
+    name: context,
+    scratch,
+    home,
+    context,
+    clientEnv,
+    log: say,
+  });
   state({ dind: daemon.dind, context });
   const port = 3105;
   const sshPort = 2222;
