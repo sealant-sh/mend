@@ -1,4 +1,4 @@
-import { Cause, Clock, Context, Data, Effect, Exit, Layer, Option, type Tracer } from "effect";
+import { Cause, Clock, Context, Data, Effect, Exit, Layer, Option, Tracer } from "effect";
 import {
   Headers,
   HttpMiddleware,
@@ -144,6 +144,20 @@ const logObservation = (observation: HttpObservation, cause: Option.Option<strin
     }),
   );
 
+const SENTRY_TRACE = /^([0-9a-f]{32})-([0-9a-f]{16})(?:-([01]))?$/;
+
+/**
+ * The caller's span: W3C `traceparent` (or B3), else Sentry's own `sentry-trace`, which a Sentry
+ * SDK sends alone when it was told not to propagate W3C (SLNT-1349: a fallback only).
+ */
+export const callerSpanOf = (headers: Headers.Headers): Tracer.ExternalSpan | undefined => {
+  const traced = HttpTraceContext.fromHeaders(headers);
+  if (Option.isSome(traced)) return traced.value;
+  const match = SENTRY_TRACE.exec(headers["sentry-trace"]?.trim() ?? "");
+  if (match === null || match[1] === undefined || match[2] === undefined) return undefined;
+  return Tracer.externalSpan({ traceId: match[1], spanId: match[2], sampled: match[3] !== "0" });
+};
+
 const observed = <E, R>(
   request: HttpServerRequest.HttpServerRequest,
   app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
@@ -153,7 +167,7 @@ const observed = <E, R>(
     const startTime = yield* Clock.currentTimeNanos;
     const span = yield* Effect.makeSpan(request.method, {
       kind: "server",
-      parent: Option.getOrUndefined(HttpTraceContext.fromHeaders(request.headers)),
+      parent: callerSpanOf(request.headers),
     });
     return yield* app.pipe(
       Effect.onExit((exit) =>

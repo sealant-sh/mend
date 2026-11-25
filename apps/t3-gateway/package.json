@@ -20,6 +20,7 @@
     "@mend/domain": "workspace:*",
     "@mend/network": "workspace:*",
     "@mend/t3-contracts": "workspace:*",
+    "@mend/telemetry": "workspace:*",
     "effect": "catalog:",
     "yaml": "catalog:"
   },
