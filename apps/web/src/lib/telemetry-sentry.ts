@@ -248,15 +248,27 @@ const SPAN_STATUS_ERROR = 2;
 const actions = new Map<string, Span>();
 
 /**
+ * The actions whose steps are running now, innermost last. A call made in a step belongs to the
+ * innermost: not to whatever span the page made active meanwhile (a start shows its page first,
+ * and the router's navigation span becomes the active one).
+ */
+const running: Array<string> = [];
+
+/**
  * Run `step` with `span` active for its synchronous part only. `withActiveSpan` given a promise
  * keeps its scope until the promise settles, and in a browser that scope is the page's: every
  * request the page made meanwhile, and a second action, would land in this one's trace.
  */
 const activeFor = <A>(span: Span, step: () => A): A => {
   let result: { readonly value: A } | undefined;
-  withActiveSpan(span, () => {
-    result = { value: step() };
-  });
+  running.push(span.spanContext().spanId);
+  try {
+    withActiveSpan(span, () => {
+      result = { value: step() };
+    });
+  } finally {
+    running.pop();
+  }
   if (result === undefined) throw new Error("withActiveSpan did not run its callback");
   return result.value;
 };
@@ -294,9 +306,9 @@ export const traceAction = async <A>(
   }
 };
 
-/** The action whose span is active now, if any: a tRPC call made now is part of it. */
+/** The action whose step is running now, if any: a tRPC call made now is part of it. */
 export const currentAction = (): string | null => {
-  const spanId = getActiveSpan()?.spanContext().spanId;
+  const spanId = running.at(-1);
   return spanId !== undefined && actions.has(spanId) ? spanId : null;
 };
 

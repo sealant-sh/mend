@@ -6,12 +6,15 @@ import {
   createTransport,
   flush,
   init,
+  startInactiveSpan,
   startSpan,
+  withActiveSpan,
 } from "@sentry/browser";
 import { TRPCClientError } from "@trpc/client";
 import { afterAll, describe, expect, it } from "vitest";
 
 import {
+  currentAction,
   firstVisibleOutput,
   reportCaught,
   sentryOptions,
@@ -124,6 +127,21 @@ describe("an action and what follows it", () => {
       new RegExp(`^00-${traceId}-[0-9a-f]{16}-01$`),
     );
     expect(outside?.headers.get("traceparent") ?? "").not.toContain(traceId);
+  });
+
+  it("names the action a call is made in even when its step starts a navigation's span", async () => {
+    let seen: string | null = "none";
+    let ref: TraceRef | null = null;
+    await traceAction("mend.web.session.start", {}, async (action) => {
+      ref = action.ref;
+      // A start shows its page first: the router's navigation span becomes the page's active one.
+      const navigation = startInactiveSpan({ name: "/sessions/$sessionId", op: "navigation" });
+      withActiveSpan(navigation, () => {
+        seen = currentAction();
+      });
+      navigation.end();
+    });
+    expect(seen).toBe((ref as TraceRef | null)?.spanId);
   });
 
   it("measures a turn's first visible output as its own span, with the turn's id and a link to its send", async () => {
