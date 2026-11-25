@@ -656,3 +656,12 @@ code --install-extension mend-*.vsix
 
 `pnpm build` bundles the extension into `dist/`, and `pnpm package` writes the `.vsix` named after
 the version in `apps/vscode/package.json`. Reload VS Code after installing.
+
+## Error reports
+
+The published extension reports errors nowhere. When the extension host has `MEND_SENTRY_DSN` set,
+as on Sealant's own development machines, an error the extension shows you that it did not expect
+goes to that Sentry project too. Mend's refusals, an unreachable server and an unfinished sign-in
+are never reported. Reports go only while VS Code's telemetry is on (`telemetry.telemetryLevel`),
+and carry the exception's type, its message with URLs, tokens and paths taken out, a stack trace of
+the extension's own files, and its version.

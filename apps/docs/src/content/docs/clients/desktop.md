@@ -98,3 +98,17 @@ xattr -dr com.apple.quarantine /Applications/Mend.app
 On Linux the app pins the display scale to 1 to avoid oversized windows on some Wayland compositors.
 Set `MEND_DEVICE_SCALE` to another number to pin a different scale, or to `auto` to let the
 compositor decide.
+
+## Error reports
+
+No build of the desktop app reports errors anywhere. Sealant's own development machines set
+`MEND_SENTRY_DSN` (and optionally `MEND_SENTRY_ENVIRONMENT`) before starting the app. When it is
+set, an exception or a rejected promise no code in the main process caught goes to that Sentry
+project as one report: the exception's type, its message with URLs, tokens and paths taken out, a
+stack trace of the app's own files, and the build's release, `mend-desktop@<version>+<commit>`. What
+Electron does with the failure is unchanged. The window's web app is the server's, and reports
+nothing through this setting.
+
+After packaging, `pnpm -F @mend/desktop sentry:upload` uploads the main process's source maps under
+that release. It needs `SENTRY_AUTH_TOKEN`, `SENTRY_URL` and `SENTRY_ORG`, and uploads nothing
+without them. The maps never ship in the package.
