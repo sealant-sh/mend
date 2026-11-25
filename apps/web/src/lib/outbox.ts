@@ -16,6 +16,7 @@ import {
 import { failureWords, refusalTagOf } from "./refusal.ts";
 import { sendInTurn } from "./serial-writes.ts";
 import { loginRefusalOf, type LoginRefusal } from "./shared-control.ts";
+import { awaitTurnOutput, traceAction } from "./telemetry.ts";
 import { orLogin, useTRPC, useTRPCClient } from "./trpc.ts";
 import { uuidV4 } from "./uuid.ts";
 
@@ -414,40 +415,53 @@ export interface Courier {
  * in the order sent, so the agent reads them in that order; each message's answer settles only
  * its own bubble.
  */
-const deliver = (courier: Courier, scope: MessageScope, message: OutboxMessage) => {
-  const sending: OutboxMessage = { ...message, state: { _tag: "Sending" } };
-  const current = readOutbox(scope);
-  writeOutbox(
-    scope,
-    withoutArrived(
-      current.some((entry) => entry.clientMessageId === message.clientMessageId)
-        ? current.map((entry) =>
-            entry.clientMessageId === message.clientMessageId ? sending : entry,
-          )
-        : [...current, sending],
-      courier.conversation(),
-    ),
-  );
-  setInFlight(message.clientMessageId, true);
-  const settle = (state: OutboxState) => {
-    changeMessage(scope, message.clientMessageId, (entry) => ({ ...entry, state }));
-    announce(scope, state);
-  };
-  const sent = sendInTurn(
-    courier.queryClient,
-    `message.${scope.userId}.${scope.sessionId}`,
-    () =>
-      courier.send({
-        id: scope.sessionId,
-        input: message.text,
-        clientMessageId: message.clientMessageId,
-        resume: true,
-        expectedUserId: scope.userId,
-        ...(message.selection === undefined ? {} : { selection: message.selection }),
-      }),
-    (receipt) => settle(stateAfterReceipt(receipt)),
-  );
-  const answered = async () => {
+const deliver = (courier: Courier, scope: MessageScope, message: OutboxMessage) =>
+  // One trace from the bubble to the agent's turn (SLNT-1356). The message leaves in its turn,
+  // after an await, so its request is sent `within` the action to carry the action's trace.
+  traceAction("mend.web.message.send", { "mend.session_id": scope.sessionId }, async (action) => {
+    const sending: OutboxMessage = { ...message, state: { _tag: "Sending" } };
+    const current = readOutbox(scope);
+    writeOutbox(
+      scope,
+      withoutArrived(
+        current.some((entry) => entry.clientMessageId === message.clientMessageId)
+          ? current.map((entry) =>
+              entry.clientMessageId === message.clientMessageId ? sending : entry,
+            )
+          : [...current, sending],
+        courier.conversation(),
+      ),
+    );
+    setInFlight(message.clientMessageId, true);
+    const since = Date.now();
+    const settle = (state: OutboxState) => {
+      changeMessage(scope, message.clientMessageId, (entry) => ({ ...entry, state }));
+      announce(scope, state);
+    };
+    const sent = sendInTurn(
+      courier.queryClient,
+      `message.${scope.userId}.${scope.sessionId}`,
+      () =>
+        action.within(() =>
+          courier.send({
+            id: scope.sessionId,
+            input: message.text,
+            clientMessageId: message.clientMessageId,
+            resume: true,
+            expectedUserId: scope.userId,
+            ...(message.selection === undefined ? {} : { selection: message.selection }),
+          }),
+        ),
+      (receipt) => {
+        const state = stateAfterReceipt(receipt);
+        settle(state);
+        if (state._tag === "Sent" && state.turnId !== null) {
+          action.annotate({ "mend.turn_id": state.turnId });
+          // The agent's first word for this turn is measured from here (lib/conversation-live.ts).
+          awaitTurnOutput(scope.sessionId, state.turnId, "send", action.ref, since);
+        }
+      },
+    );
     let failure: unknown = null;
     try {
       await sent;
@@ -459,9 +473,7 @@ const deliver = (courier: Courier, scope: MessageScope, message: OutboxMessage) 
     }
     setInFlight(message.clientMessageId, false);
     courier.answered(failure);
-  };
-  return answered();
-};
+  });
 
 interface SendOptions {
   readonly now?: Date;
