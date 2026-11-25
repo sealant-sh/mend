@@ -48,6 +48,9 @@ Check VMs:
   lanes left out.
 - Since <lastCommit:12>: <n> commits, PRs #a, #b, ….
 - Flows: <n> seen, <n> failed, <n> not run (<reasons with counts>).
+- Instant start: `start-session.new-web-instant-start`'s session read Starting for <s> s from the
+  first send (51 to 57 s on 24 Nov, SLNT-1323), from its `result.txt`; or `still Starting at 3 min`;
+  or why it was not measured.
 - Logins: Codex <refreshed on lane A at <UTC> · held | not due (expires <UTC>) · held>; Claude <…>.
   While Claude's reads `invalid · refused`:
   `Claude refused by the provider, left so by the owner's choice (SLNT-1219)`, and nothing filed for

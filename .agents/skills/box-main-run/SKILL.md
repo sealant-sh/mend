@@ -443,10 +443,15 @@ Start a subagent with T3's `delegate_task`: `target`
 `{ providerInstanceId: "codex", model: "gpt-6.1-sol", options: { reasoningEffort: "high" } }`,
 `isolation: "shared"` (it works in this worktree), and as `task` the text of
 [sol-task.md](sol-task.md) with every `<…>` filled: the group's flow ids, the lane, this worktree's
-path, the lane's `web`, the commit's first 8 characters, `$E`, and the session ids earlier flows of
-that lane made (from their `result.txt` or your own notes). Wait for its completion, start the
-lane's next run when its reply allows (Lanes), then read its evidence. Lanes' subagents share `$E`
-and its `timeline.txt`: each flow has its own directory.
+path, the lane's `web`, the commit's first 8 characters, `$E`, the session ids earlier flows of that
+lane made (from their `result.txt` or your own notes), and `<pg ip>`. A subagent never touches a
+copy over ssh, so read `<pg ip>` for it: for a run with `session-shell.docker-isolation` (lane B,
+group 5), right before that run, over lane B's `MEND_VERIFY_BOX_SSH`,
+`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' mend-postgres-1`, its
+first address, the command and its output kept in `$E/session-shell.docker-isolation/pg-ip.log`; for
+any other run, `none`. Wait for its completion, start the lane's next run when its reply allows
+(Lanes), then read its evidence. Lanes' subagents share `$E` and its `timeline.txt`: each flow has
+its own directory.
 
 **Check, do not trust.** A flow counts as `seen` only when its `result.txt`, `cli.log`, the web
 driver's `steps.log` and its screenshots show every part of the flow's See line. Read each

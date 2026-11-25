@@ -852,7 +852,9 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `shared-workspace`: open the home composer's worktree picker, pick the running workspace, read the
   join line with another person's session live there (fixture), open that person's session and press
   "Start your own session in this workspace", Stop session… on the second session and stop it, then
-  Land… on the first and land (fixture answer).
+  Land… on the first and land (fixture answer) through the push button the origin offers:
+  `Push to origin`, or `Push and open pull request` for a GitHub origin, as verify-fixture's is on
+  the box.
 - **See:** each step's note in the recipe's `steps.log`: "Your running workspaces in <project>" with
   the worktree and "2 sessions"; no join line where only your sessions run; the join line saying the
   session runs as you, on your own logins; a New session tab beside the other person's with the join
@@ -1249,7 +1251,8 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   the address moves to the session's id send `And say done.`; then, while it still reads Starting,
   go to Projects. Wait there until the session's row under Running in the sidebar no longer reads
   Starting, then one minute more, and come back; note how long it read Starting, counted from the
-  first send. A Boat session took 51 to 57 s to start on 24 Nov (SLNT-1323), and the minute is for
+  first send, and write it in `result.txt` as `starting · <s> s from the first send` (the report
+  gives it). A Boat session took 51 to 57 s to start on 24 Nov (SLNT-1323), and the minute is for
   the three messages, not the start. If it still reads Starting three minutes after the first send,
   come back then and report that. Then, on `<p>`'s Worktrees tab, open a worktree's "…", New session
   in this worktree, Codex, and once it has started send `hi` from its composer, wait a minute, then
@@ -1385,9 +1388,9 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `capture-sessions`; start-session.md `session-stop`
 - **Needs:** Docker; no turn; CLI in tmux; a copy without Boat (lane B), where a new worktree runs
   on Docker, upgraded from the run's data (its install from before workspaces left `mend_default`)
-- **Do:** Read Postgres's address on the box:
-  `docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' mend-postgres-1`
-  over `MEND_VERIFY_BOX_SSH` (`<pg ip>`, its first address). In tmux, start a session that stays up:
+- **Do:** `<pg ip>` is Postgres's address on the box, which Opus reads over `MEND_VERIFY_BOX_SSH`
+  before the group's run and hands to the subagent (SKILL.md, step 5): no subagent touches the copy
+  over ssh. In tmux, start a session that stays up:
   `M run --project <p> --name main-run-isolation-<sha8> -- sleep 900`; read its `<id8>` from
   `M sessions`; then `M shell <id8>` in a second tmux session. In the shell, each followed by
   `echo exit=$?`: `getent hosts postgres garage mend`,
