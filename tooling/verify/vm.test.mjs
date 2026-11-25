@@ -15,8 +15,14 @@ import test from "node:test";
 
 import { parseArgs } from "./verify.mjs";
 import {
+  boatImagesScript,
   claimSlot,
   describeBoatVm,
+  dumpImages,
+  liveImagesOf,
+  parseBoatImages,
+  removeBoatImages,
+  retireImagesScript,
   funnelFromOutside,
   liveBoatVmsScript,
   parseLiveBoatVms,
@@ -46,6 +52,8 @@ import {
 } from "./vm.mjs";
 
 const scratch = () => mkdtempSync(join(tmpdir(), "vm-test-"));
+/** A Boat copy whose images the saved data all keeps. */
+const noImages = async () => ({ removed: [], left: [], refused: [] });
 
 test("each copy has its own loopback address, URL and ssh host", () => {
   const seen = new Set();
@@ -141,6 +149,7 @@ test("vm down keeps a Boat copy whose Boat VMs are not confirmed gone, and says 
     const result = await vmDown({
       root,
       slot: 3,
+      removeImages: noImages,
       stopBoat: async (_root, _ssh, url, since) => {
         asked.push([url, since]);
         return {
@@ -174,6 +183,7 @@ test("vm down keeps a Boat copy whose Boat VMs are not confirmed gone, and says 
     const unread = await vmDown({
       root,
       slot: 3,
+      removeImages: noImages,
       stopBoat: async () => ({ left: null, stops: [] }),
     });
     assert.equal(unread.steps[0].status, "failed");
@@ -185,6 +195,7 @@ test("vm down keeps a Boat copy whose Boat VMs are not confirmed gone, and says 
       root,
       slot: 3,
       leaveBoatVms: true,
+      removeImages: noImages,
       stopBoat: async () => ({ left: [{ vm: "bx_1", workspace: "w", sessions: [] }], stops: [] }),
     });
     assert.equal(left.steps[0].status, "passed");
@@ -207,6 +218,7 @@ test("vm down deletes a Boat copy once Boat confirms every VM it launched gone",
     const result = await vmDown({
       root,
       slot: 4,
+      removeImages: noImages,
       stopBoat: async () => ({ left: [], stops: ["mend-boat-check: ✓ stopped 2 sessions"] }),
     });
     assert.equal(result.steps[0].status, "passed");
@@ -714,4 +726,249 @@ test("the git phase leaves server.env alone: every mend server command refuses a
     git.replace(/^\s*#.*$/gm, ""),
     /server\.env|MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS/,
   );
+});
+
+const ID = (n) => `${String(n).repeat(8)}-aaaa-4aaa-8aaa-${String(n).repeat(12)}`;
+const identity = (name) =>
+  `{"snapshot": {"kind": "boat-saved-snapshot", "identity": {"name": "${name}", "createdAt": "t", "snapshotId": "s", "sourceSandboxId": "bx_1"}}}`;
+/** A pg_dumpall's native_publications block, around other tables' rows. */
+const dump = (rows) =>
+  [
+    "COPY public.other (id) FROM stdin;",
+    "x",
+    "\\.",
+    "COPY public.native_publications (id, build_id, state, publication, reason) FROM stdin;",
+    ...rows.map(([id, state, name]) =>
+      [id, "b", state, name === null ? "\\N" : identity(name), "\\N"].join("\t"),
+    ),
+    "\\.",
+    "-- PostgreSQL database cluster dump complete",
+    "",
+  ].join("\n");
+
+test("a dump's Boat images are read by id, with each one's state and snapshot name", () => {
+  const root = scratch();
+  try {
+    const file = join(root, "world.sql");
+    writeFileSync(
+      file,
+      dump([
+        [ID(1), "ready", "sealant-dev-boat-stream-1"],
+        [ID(2), "removed", "sealant-dev-boat-stream-2"],
+        [ID(3), "superseded", null],
+        [ID(4), "quarantined", "sealant-dev-boat-stream-4"],
+      ]),
+    );
+    const images = dumpImages(file);
+    assert.deepEqual([...images.keys()], [ID(1), ID(2), ID(3), ID(4)]);
+    assert.deepEqual(images.get(ID(3)), { state: "superseded", name: null });
+    assert.deepEqual(
+      liveImagesOf(images).map(([id]) => id),
+      [ID(1), ID(4)],
+      "a removed image or one with no snapshot holds nothing in Boat",
+    );
+    // A dump cut short, or one without the table, is not read as one holding no images.
+    writeFileSync(file, dump([[ID(1), "ready", "n"]]).replace(/\\\.\n-- Postgre[^]*$/, ""));
+    assert.equal(dumpImages(file), null);
+    writeFileSync(file, "COPY public.other (id) FROM stdin;\nx\n\\.\n");
+    assert.equal(dumpImages(file), null);
+    assert.equal(dumpImages(join(root, "missing.sql")), null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the copy's Boat image read leaves out what holds nothing in Boat, and says nothing it did not check", () => {
+  assert.match(boatImagesScript, /state not in \('removed', 'superseded'\)/);
+  assert.match(boatImagesScript, /not \(state = 'quarantined' and publication is null\)/);
+  assert.equal(parseBoatImages(`image=${ID(1)} state=ready reason=- name=n\n`), null);
+  assert.deepEqual(
+    parseBoatImages(
+      `image=${ID(1)} state=ready reason=- name=n1\nimage=bad state=ready reason=- name=-\nmend=true\nchecked=yes\n`,
+    ),
+    { images: [{ id: ID(1), state: "ready", reason: null, name: "n1" }], mend: true },
+  );
+});
+
+test("a removal asks sealant for its own withdrawal, with its guards", () => {
+  const script = retireImagesScript([ID(1), ID(2)]);
+  assert.match(script, new RegExp(`p\\.id in \\('${ID(1)}', '${ID(2)}'\\)`));
+  assert.match(script, /set state = 'retiring', generation = p\.generation \+ 1/);
+  assert.match(
+    script,
+    /p\.state = 'ready' and \(p\.claim_until is null or p\.claim_until <= now\(\)\)/,
+  );
+  assert.match(script, /c\.state <> 'released'/);
+});
+
+/** A copy's sealant: answers the image read from `states`, and moves an image on when retired. */
+const fakeCopy = (images, { mend = true, onRetire = () => {} } = {}) => {
+  const retired = [];
+  const ssh = (script) => {
+    if (script.startsWith("# retire-images")) {
+      const ids = [...script.matchAll(/'([0-9a-f-]{36})'/g)].map((match) => match[1]);
+      retired.push(ids);
+      onRetire(ids, images);
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    const lines = [...images.values()]
+      .filter(({ state }) => state !== "removed")
+      .map(
+        ({ id, state, reason, name }) =>
+          `image=${id} state=${state} reason=${reason ?? "-"} name=${name ?? "-"}`,
+      );
+    return { code: 0, stdout: `${lines.join("\n")}\nmend=${mend}\nchecked=yes\n`, stderr: "" };
+  };
+  return { ssh, retired };
+};
+const image = (n, state, reason = null) => [
+  ID(n),
+  { id: ID(n), state, reason, name: `sealant-dev-boat-stream-${n}` },
+];
+
+test("vm down removes the images a copy built that the saved data does not keep, and waits for sealant to record them removed", async () => {
+  const images = new Map([
+    image(1, "ready"), // the saved data's: kept
+    image(2, "quarantined", "native-snapshot-identity-mismatch"), // the saved data's: not touched
+    image(3, "ready"), // built on the copy
+    image(4, "building"), // being built on the copy: ready on the next read
+    image(5, "quarantined", "native-snapshot-identity-mismatch"), // built here, refused by sealant
+  ]);
+  const { ssh, retired } = fakeCopy(images, {
+    onRetire: (ids, all) => {
+      for (const id of ids) all.get(id).state = "removed";
+      if (all.get(ID(4)).state === "building") all.get(ID(4)).state = "ready";
+    },
+  });
+  const saved = () =>
+    new Map([
+      [ID(1), {}],
+      [ID(2), {}],
+    ]);
+  const result = await removeBoatImages("/vms", [], { ssh, saved, pollMs: 1 });
+  assert.deepEqual(retired, [[ID(3)], [ID(4)]], "only the copy's own ready images are retired");
+  assert.deepEqual(
+    result.removed.map(({ id }) => id),
+    [ID(3), ID(4)],
+  );
+  assert.deepEqual(result.left, []);
+  assert.deepEqual(
+    result.refused.map(({ id }) => id),
+    [ID(5)],
+  );
+  assert.equal(images.get(ID(1)).state, "ready", "the saved data's image stays");
+});
+
+test("an image sealant does not remove in time, or a copy that cannot say, is not confirmed removed", async () => {
+  const held = fakeCopy(new Map([image(3, "ready")]));
+  const stuck = await removeBoatImages("/vms", [], {
+    ssh: held.ssh,
+    saved: () => new Map(),
+    waitMs: 20,
+    pollMs: 5,
+  });
+  assert.deepEqual(
+    stuck.left.map(({ id }) => id),
+    [ID(3)],
+  );
+  assert.ok(held.retired.length >= 1);
+
+  const stopped = fakeCopy(new Map([image(3, "ready")]), { mend: false });
+  const off = await removeBoatImages("/vms", [], { ssh: stopped.ssh, saved: () => new Map() });
+  assert.deepEqual(stopped.retired, [], "nothing is retired that no sealant would remove");
+  assert.equal(off.left.length, 1);
+  assert.match(off.why, /Mend is stopped/);
+
+  const unread = await removeBoatImages("/vms", [], {
+    ssh: () => ({ code: 1, stdout: "", stderr: "" }),
+    saved: () => new Map(),
+  });
+  assert.equal(unread.left, null);
+  const unsaved = await removeBoatImages("/vms", [], { ssh: held.ssh, saved: () => null });
+  assert.equal(unsaved.left, null);
+  assert.match(unsaved.why, /saved data's images/);
+
+  // A copy holding only the saved data's images asks nothing of sealant.
+  const kept = fakeCopy(new Map([image(1, "ready")]));
+  const none = await removeBoatImages("/vms", [], {
+    ssh: kept.ssh,
+    saved: () => new Map([[ID(1), {}]]),
+  });
+  assert.deepEqual(kept.retired, []);
+  assert.deepEqual(none, { removed: [], left: [], refused: [] });
+});
+
+test("vm down keeps a Boat copy while an image it built is not confirmed removed, and names what it removed", async () => {
+  const root = scratch();
+  const { dir, fake } = boatCopy(root, 5);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const name = (n) => `sealant-dev-boat-stream-${n}`;
+    const gone = async () => ({ left: [], stops: [] });
+    const kept = await vmDown({
+      root,
+      slot: 5,
+      stopBoat: gone,
+      removeImages: async () => ({
+        removed: [{ id: ID(3), name: name(3) }],
+        left: [{ id: ID(4), state: "ready", reason: null, name: name(4) }],
+        refused: [],
+      }),
+    });
+    assert.equal(kept.steps[0].status, "failed");
+    assert.match(
+      kept.steps[0].detail,
+      /^kept: Boat images it built not confirmed removed: sealant-dev-boat-stream-4 \(ready\); removed from Boat the images it built that the saved data does not keep: sealant-dev-boat-stream-3/,
+    );
+    assert.ok(existsSync(join(dir, "copy.json")), "the copy is kept");
+    assert.match(kept.next[1], /vm down 5 --leave-boat-images/);
+
+    const unread = await vmDown({
+      root,
+      slot: 5,
+      stopBoat: gone,
+      removeImages: async () => ({
+        removed: [],
+        left: null,
+        refused: [],
+        why: "its database did not answer",
+      }),
+    });
+    assert.match(
+      unread.steps[0].detail,
+      /^kept: its images could not be read: its database did not answer/,
+    );
+    assert.ok(existsSync(join(dir, "copy.json")));
+
+    const done = await vmDown({
+      root,
+      slot: 5,
+      stopBoat: gone,
+      removeImages: async () => ({
+        removed: [{ id: ID(3), name: name(3) }],
+        left: [],
+        refused: [
+          {
+            id: ID(5),
+            state: "quarantined",
+            reason: "native-snapshot-identity-mismatch",
+            name: name(5),
+          },
+        ],
+      }),
+    });
+    assert.equal(done.steps[0].status, "passed");
+    assert.match(
+      done.steps[0].detail,
+      /removed from Boat the images it built that the saved data does not keep: sealant-dev-boat-stream-3; left in Boat, refused by sealant \(only the Boat account's owner can delete them\): sealant-dev-boat-stream-5 \(quarantined native-snapshot-identity-mismatch\)/,
+    );
+    assert.ok(!existsSync(dir));
+  } finally {
+    fake.kill();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("verify vm down takes --leave-boat-images", () => {
+  assert.equal(parseArgs(["vm", "down", "3", "--leave-boat-images"]).options.leaveBoatImages, true);
 });

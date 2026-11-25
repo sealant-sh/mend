@@ -28,7 +28,11 @@ import {
   slotHolder,
   slotOfCopy,
   slotRemove,
+  describeBoatImage,
   describeBoatVm,
+  dumpImages,
+  liveImagesOf,
+  removeBoatImages,
   stopBoatSessions,
 } from "./vm-boat.mjs";
 
@@ -1208,19 +1212,23 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
   }
 };
 
-/** vm down <n>|--all: stops a copy's VM and deletes its disk and directory. */
 /**
  * vm down <n> (or --all): stops the copy and deletes its disk. A Boat copy first stops, through its
  * own Mend, what it launched on Boat and waits until Boat confirms each VM gone (SLNT-1345). One
  * that is not confirmed keeps the copy: its Mend is the only thing that can still reach that VM.
  * `--leave-boat-vms` deletes it anyway, a person's choice: the VM then runs until Boat reaps it.
+ * Then it removes from Boat, through sealant on the copy, each image the copy holds that the saved
+ * data does not (SLNT-1256), and keeps the copy while one is not confirmed removed: its journal is
+ * the only way to remove it. `--leave-boat-images` deletes it anyway, a person's choice.
  */
 export const vmDown = async ({
   root = vmRoot(),
   slot,
   all,
   leaveBoatVms = false,
+  leaveBoatImages = false,
   stopBoat = stopBoatSessions,
+  removeImages = removeBoatImages,
 }) => {
   const p = paths(root);
   const slots = all ? liveSlots(p) : [slot];
@@ -1273,6 +1281,37 @@ export const vmDown = async ({
         unconfirmed === null
           ? `; Boat confirmed every VM it launched gone${said}`
           : `; left on Boat by --leave-boat-vms: ${unconfirmed}${said}`;
+      const images = await removeImages(root, boxSshArgs(root, each));
+      const removed =
+        images.removed.length > 0
+          ? `; removed from Boat the images it built that the saved data does not keep: ${images.removed.map(({ name, id }) => name ?? id).join(", ")}`
+          : "";
+      const refused =
+        images.refused.length > 0
+          ? `; left in Boat, refused by sealant (only the Boat account's owner can delete them): ${images.refused.map(describeBoatImage).join(", ")}`
+          : "";
+      const notRemoved =
+        images.left === null
+          ? `its images could not be read: ${images.why}`
+          : images.left.length > 0
+            ? `Boat images it built not confirmed removed: ${images.left.map(describeBoatImage).join(", ")}${images.why === undefined ? "" : ` (${images.why})`}`
+            : null;
+      if (notRemoved !== null && !leaveBoatImages) {
+        steps.push(
+          step(
+            `down-${each}`,
+            `Remove copy ${each}`,
+            "failed",
+            `kept: ${notRemoved}${removed}${refused}. The copy still runs, so its sealant can remove them`,
+          ),
+        );
+        next.push(
+          `pnpm verify vm down ${each}   # again: sealant on the copy goes on removing them`,
+          `pnpm verify vm down ${each} --leave-boat-images   # a person's choice: deletes the copy, and the images stay in Boat with nothing to remove them`,
+        );
+        continue;
+      }
+      boatNote += `${removed}${refused}${notRemoved === null ? "" : `; left in Boat by --leave-boat-images: ${notRemoved}`}`;
     }
     if (record.boat && !running)
       boatNote = "; its VM was not running, so its Boat VMs were not checked";
@@ -1446,6 +1485,14 @@ export const vmSave = async ({ root = vmRoot(), repoRoot, slot }) => {
       );
     }
   }
+  // Images with a saved snapshot only the replaced data records (SLNT-1256): no copy holds their
+  // rows and journals once it is replaced, so they are named for the Boat account's owner.
+  const replaced = dumpImages(join(p.box, "world.sql"));
+  const kept = dumpImages(temporary("world.sql"));
+  const orphans =
+    replaced === null || kept === null
+      ? null
+      : liveImagesOf(replaced).filter(([id]) => !kept.has(id));
   for (const { name, prev } of SAVED) {
     if (existsSync(join(p.box, name))) renameSync(join(p.box, name), join(p.box, prev));
     renameSync(temporary(name), join(p.box, name));
@@ -1459,6 +1506,18 @@ export const vmSave = async ({ root = vmRoot(), repoRoot, slot }) => {
       "The next master's data",
       "passed",
       `${sizes.join(", ")} in ${p.box} after ${seconds(at)}s; the ones before kept as ${SAVED.map(({ prev }) => prev).join(", ")}`,
+    ),
+  );
+  steps.push(
+    step(
+      "orphans",
+      "Boat images only the replaced data knew",
+      "passed",
+      orphans === null
+        ? "not compared: a dump's images could not be read"
+        : orphans.length === 0
+          ? "none: the new data records every image the replaced data did"
+          : `${orphans.map(([, { name, state }]) => `${name} (${state})`).join(", ")}: no copy can remove these any more; the Boat account's owner deletes each by name`,
     ),
   );
   return {

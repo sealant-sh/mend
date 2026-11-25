@@ -319,6 +319,23 @@ Limits of a check VM:
   Mend sessions on its workspace, so a person can stop them on the copy's web and run `vm down`
   again. A session whose command failed can keep its VM while its work is unsaved; its page offers
   Discard unsaved and stop. `--leave-boat-vms` deletes the copy anyway, a person's choice.
+- **No Boat image outlives its copy unless it is saved** (SLNT-1256). Every image a copy builds is a
+  saved snapshot in the owner's Boat account, and its build journal, the only thing sealant can
+  remove it by, goes with the copy. So once the VMs are gone, `vm down` removes through sealant on
+  the copy each image the copy holds that the saved data (`box/world.sql`) does not name, in any
+  state. A saved copy keeps the images its save recorded, and an image of the saved data is never
+  touched, since every copy of that data may use it. It makes the transition sealant's own
+  withdrawal makes (a ready image no run holds becomes `retiring`); sealant's catalog sweep, every
+  30 s, then deletes the snapshot through the journal and records the image `removed` once Boat no
+  longer has it. `vm down` waits up to five minutes for that, then keeps the copy and names each
+  image not confirmed removed; `--leave-boat-images` deletes it anyway, a person's choice. An image
+  sealant refuses to remove (quarantined with its snapshot, such as one whose identity Boat changed,
+  SLNT-1347) is named and left: only the Boat account's owner can delete it.
+- **A save names the images only the data it replaces knew.** `vm save` compares the replaced
+  `world.sql` with the new one and names each image with a saved snapshot that only the replaced one
+  records. No copy holds that image's row and journal any more, so nothing here can remove it; the
+  owner deletes it in Boat by that name. It happens only when the saved copy did not boot from a
+  master built from the replaced data.
 - **One copy per slot.** A claim file names the copy that holds a slot, written aside and linked
   into place so that two copies starting at once take different slots, and never removed unless it
   is still the stale one read (its copy gone, five minutes after the claim). QEMU's own write lock
