@@ -15,6 +15,7 @@
         "$TURBO_ROOT$/apps/cli/src/server-runtime.ts",
         "$TURBO_ROOT$/apps/cli/src/server-setup-error.ts",
         "$TURBO_ROOT$/apps/cli/src/server-store.ts",
+        "$TURBO_ROOT$/apps/cli/src/server-telemetry.ts",
         "$TURBO_ROOT$/apps/cli/src/server-workspace-images.ts",
         "$TURBO_ROOT$/apps/cli/src/server-workspace-memory.ts",
         "$TURBO_ROOT$/apps/web/src/lib/screen-rtc.ts",
