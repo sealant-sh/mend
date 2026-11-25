@@ -11,6 +11,8 @@ import {
 import { type ProjectId, WorktreeId } from "@mend/domain";
 import {
   BlobStore,
+  BlobStorePresignEndpoint,
+  type PresignEndpoint,
   bulkSectionFor,
   type BulkSectionReady,
   type CaptureManifest,
@@ -3717,6 +3719,7 @@ export const dispatchCaptureRoute = (
   pathname: string,
   body: unknown,
   respond: (status: number, payload: unknown) => void,
+  options?: { readonly presignEndpoint?: PresignEndpoint },
 ): Promise<void> => {
   if (api === undefined) {
     respond(404, { message: `unknown route: POST ${pathname}` });
@@ -3729,9 +3732,14 @@ export const dispatchCaptureRoute = (
     Effect.logInfo("session channel: capture route").pipe(
       Effect.annotateLogs({ route: `POST ${pathname}`, ...requested, status, detail }),
     );
-  const run = <A>(effect: Effect.Effect<A, CaptureRouteError>) =>
-    Effect.runPromise(
-      effect.pipe(
+  const presignEndpoint = options?.presignEndpoint;
+  const run = <A>(effect: Effect.Effect<A, CaptureRouteError>) => {
+    const scoped =
+      presignEndpoint === undefined
+        ? effect
+        : effect.pipe(Effect.provideService(BlobStorePresignEndpoint, presignEndpoint));
+    return Effect.runPromise(
+      scoped.pipe(
         Effect.tap(() => observed(200, "ok")),
         Effect.map((value) => respond(200, value)),
         Effect.catchTag("CaptureRouteError", (error) =>
@@ -3760,6 +3768,7 @@ export const dispatchCaptureRoute = (
     ).catch((error: unknown) => {
       respond(500, { message: error instanceof Error ? error.message : String(error) });
     });
+  };
   switch (pathname) {
     case "/plan.get":
       return run(decodeBody(PlanGetRequest)(body).pipe(Effect.flatMap(api.planGet)));
