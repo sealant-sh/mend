@@ -61,6 +61,11 @@ const serve = (
           ),
         ),
       );
+      yield* router.add("GET", "/api/preparing", () =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe({ _tag: "RawFilePreparing" }, { status: 503 }),
+        ),
+      );
       yield* router.add("GET", "/api/own-words", () =>
         Effect.succeed(
           HttpServerResponse.jsonUnsafe(
@@ -227,6 +232,7 @@ describe("the error boundary", () => {
       "/api/declared-unavailable",
       "/api/undeclared",
       "/api/declared",
+      "/api/preparing",
       "/api/history-fenced",
       "/api/removal-fenced",
       "/api/ok",

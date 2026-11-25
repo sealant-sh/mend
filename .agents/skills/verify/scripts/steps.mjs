@@ -4,8 +4,9 @@
 //
 //   node .agents/skills/verify/scripts/steps.mjs <dir> <batch> --worktree <wt> [--project mend] < steps.json
 //
-// steps.json is a JSON array of {"name", "cwd", "run"}: `run` is the argv (`mend …`, `git …`,
-// `sh -c '…'` for a pipe), `cwd` a directory under the inner account's home (default: the home).
+// steps.json is a JSON array of {"name", "cwd", "run", "home"}: `run` is the argv (`mend …`,
+// `git …`, `sh -c '…'` for a pipe), `cwd` a directory under the inner account's home (default: the
+// home), `home` `server` for the inner server's own (`mend server status`), else the account's.
 // Each step writes <dir>/<name>.cmd (`cd ~/<cwd> && ` and the argv, shell-quoted as capture.sh
 // quotes it), .stdout, .stderr (apart: no terminal folds them) and .exit (the inner command's own
 // code). The session itself writes <dir>/<batch>.{cmd,stdout,stderr,exit}: the `mend run`, its

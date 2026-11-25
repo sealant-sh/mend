@@ -701,6 +701,7 @@ async function runSteps(state, steps) {
     const name = `${VERIFIER_PREFIX}step-${randomUUID().slice(0, 8)}`;
     const ended = await cliRun(state, args, {
       cwd: step.cwd,
+      home: step.home,
       program,
       name,
       input: "",

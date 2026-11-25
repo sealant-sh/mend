@@ -162,6 +162,17 @@ const kept = (response: HttpServerResponse.HttpServerResponse) => ({
  * A contract error a route declared, answered with a 5xx: the server failed, so Sentry hears of it.
  * Its cause is gone by now (HttpApi encoded it), so it reports as its tag and its scrubbed message.
  */
+/**
+ * 5xx answers that are no failure of the server's: the boundary's own (`InternalError`, reported as
+ * its defect), and a raw file still being prepared or a cache that is full, which ask the client
+ * to come back and carry nothing to fix.
+ */
+const NOT_FAILURES: ReadonlySet<string> = new Set([
+  "InternalError",
+  "RawFilePreparing",
+  "RawFileBusy",
+]);
+
 class DeclaredServerError extends Error {
   constructor(name: string, message: string) {
     super(message);
@@ -179,7 +190,7 @@ const reportDeclared = (response: HttpServerResponse.HttpServerResponse): Effect
     return Effect.void;
   }
   if (typeof body !== "object" || body === null || !("_tag" in body)) return Effect.void;
-  if (typeof body._tag !== "string" || body._tag === "InternalError") return Effect.void;
+  if (typeof body._tag !== "string" || NOT_FAILURES.has(body._tag)) return Effect.void;
   const message = "message" in body && typeof body.message === "string" ? body.message : body._tag;
   return reportCause(Cause.fail(new DeclaredServerError(body._tag, redactDetail(message))), {
     operation: "http.request",
