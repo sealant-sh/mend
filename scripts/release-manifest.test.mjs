@@ -392,6 +392,7 @@ test("with ghcr, the jobs are today's plus the CLI and the manifest; archive job
     "build",
     "merge",
     "cli",
+    "sentry-release",
     "release-manifest",
     "packaged-smoke",
     "upgrade-window",
@@ -1367,6 +1368,8 @@ const SKIPPED_TOGETHER = new Map([
   ["image.yml archive-merge", "same target as its ancestors; version skips only on a fork"],
   ["image.yml cli", "version skips only on a fork"],
   ["image.yml upgrade-window", "version skips only on a fork"],
+  // The Sentry release follows its version, and skips with it only on a fork.
+  ["image.yml sentry-release", "version skips only on a fork"],
   // Every publishing job runs on a tag push, and none on a dispatch.
   ["release-cli.yml npm", "its ancestors carry the same push condition"],
   ["release-cli.yml promote-images", "its ancestors carry the same push condition"],
@@ -1381,6 +1384,7 @@ const SKIPPED_TOGETHER = new Map([
   ["preview.yml sealantd-image", "skipped exactly when there is no sealantd ref to preview"],
   ["preview.yml core", "plan skips only on a fork"],
   ["preview.yml core-images", "skipped exactly when there is no sealant ref to preview"],
+  ["preview.yml sentry-release", "plan skips only on a fork"],
 ]);
 
 test("no workflow job is skipped behind a job its own path expected to skip, unless reviewed", () => {

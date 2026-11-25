@@ -625,7 +625,7 @@ jobs:
     name: Name the Sentry release
     needs: version
     # A dry run's archives reach no deployment, so Sentry hears of no release for them.
-    if: inputs.target != 'archive'
+    if: inputs.target == 'ghcr'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     continue-on-error: true
