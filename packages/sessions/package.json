@@ -24,6 +24,7 @@
     "@mend/network": "workspace:*",
     "@mend/sealant": "workspace:*",
     "@mend/store": "workspace:*",
+    "@mend/telemetry": "workspace:*",
     "@sealant/sdk": "catalog:",
     "effect": "catalog:",
     "parse5": "8.0.1",

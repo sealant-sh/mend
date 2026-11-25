@@ -551,7 +551,16 @@ export const makeSessionStart = Effect.gen(function* () {
     );
     // Detached from the caller: a client that goes away, or an answer given before the launch
     // ended, never cuts the launch short.
-    const fiber = yield* engine.detach(running);
+    // Its own span, parented on the caller's explicitly: it outlives the request that started it.
+    const caller = yield* Effect.option(Effect.currentParentSpan);
+    const fiber = yield* engine.detach(
+      running.pipe(
+        Effect.withSpan("mend.session.launch", {
+          ...(Option.isSome(caller) ? { parent: caller.value } : {}),
+          attributes: { "mend.session_id": session.id },
+        }),
+      ),
+    );
     const answered =
       answer.within === undefined
         ? Option.some(yield* Fiber.join(fiber))

@@ -1349,6 +1349,9 @@ importers:
       '@mend/sealant':
         specifier: workspace:*
         version: link:../sealant
+      '@mend/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
       drizzle-orm:
         specifier: 'catalog:'
         version: 1.0.0-rc.5-5935859(patch_hash=a59ece5696df2801eb4fe428eaa8e76dcffb43563820001119ac5e4be53ebcff)(@effect/sql-pg@4.0.5(effect@4.0.5))(@types/pg@8.20.0)(effect@4.0.5)(pg@8.22.0)(zod@4.6.7)
@@ -1490,6 +1493,9 @@ importers:
       '@mend/store':
         specifier: workspace:*
         version: link:../store
+      '@mend/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
       '@sealant/sdk':
         specifier: 'catalog:'
         version: '@sealant/sdk-next@0.40.0-next.941(effect@4.0.5)'
@@ -1693,6 +1699,9 @@ importers:
       '@mend/store':
         specifier: workspace:*
         version: link:../store
+      '@mend/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
       '@sealant/sdk':
         specifier: 'catalog:'
         version: '@sealant/sdk-next@0.40.0-next.941(effect@4.0.5)'

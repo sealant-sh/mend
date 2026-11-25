@@ -3,6 +3,8 @@ import * as Context from "effect/Context";
 import { Pool } from "pg";
 import { PgBoss, type Db } from "pg-boss";
 
+import { processAttempt, withTraceEnvelope } from "./job-trace.ts";
+
 export class JobEnqueueError extends Schema.TaggedError<JobEnqueueError>()("JobEnqueueError", {
   job: Schema.String,
   cause: Schema.Defect(),
@@ -236,7 +238,13 @@ export const JobRunnerLive: Layer.Layer<JobRunner, Config.ConfigError> = Layer.e
       }
     };
 
-    const enqueue = Effect.fn("JobRunner.enqueue")(function* (job: JobSpec) {
+    const enqueue = Effect.fn("JobRunner.enqueue")(function* (spec: JobSpec) {
+      // The job carries this span's context, so its attempts join the trace that queued it.
+      const job: JobSpec = { ...spec, payload: yield* withTraceEnvelope(spec.payload) };
+      yield* Effect.annotateCurrentSpan({
+        "messaging.system": "pg-boss",
+        "messaging.destination.name": job.name,
+      });
       yield* ensureQueue(job.name).pipe(
         Effect.catchDefect((cause) => new JobEnqueueError({ job: job.name, cause })),
       );
@@ -265,47 +273,61 @@ export const JobRunnerLive: Layer.Layer<JobRunner, Config.ConfigError> = Layer.e
       options?: WorkOptions,
     ) {
       yield* ensureQueue(name).pipe(Effect.orDie);
+      // pg-boss calls back outside any fiber: each attempt runs with this process's services (its
+      // tracer, logger and error reporter), under a span of its own (`processAttempt`).
+      const context = yield* Effect.context();
+      const run = Effect.runPromiseWith(context);
+      const localConcurrency = options?.localConcurrency ?? 1;
       yield* Effect.promise(() =>
-        boss.work(name, { localConcurrency: options?.localConcurrency ?? 1 }, async (jobs) => {
+        boss.work(name, { localConcurrency, includeMetadata: true }, async (jobs) => {
           for (const job of jobs) {
             // The handler's death must still fail the job into pg-boss
             // retry — but never silently. Without these taps the reason
             // lives only in the jobs table, and the server log shows a
             // clean 200 for the enqueue and then nothing at all.
-            await Effect.runPromise(
-              Effect.flatMap(Clock.currentTimeMillis, (started) => {
-                const elapsed = Clock.currentTimeMillis.pipe(Effect.map((at) => at - started));
-                return Effect.annotateLogs(Effect.logInfo("job started"), {
-                  job: name,
-                  jobId: job.id,
-                }).pipe(
-                  Effect.andThen(handler(job.data)),
-                  Effect.tap(() =>
-                    Effect.flatMap(elapsed, (durationMs) =>
-                      Effect.annotateLogs(Effect.logInfo("job completed"), {
-                        job: name,
-                        jobId: job.id,
-                        durationMs,
-                      }),
-                    ),
-                  ),
-                  Effect.tapDefect((cause) =>
-                    Effect.flatMap(elapsed, (durationMs) =>
-                      Effect.annotateLogs(
-                        Effect.logError(
-                          "job failed — pg-boss retries until the limit, then dead-letters",
-                        ),
-                        {
+            const attempt = {
+              queue: name,
+              id: job.id,
+              data: job.data,
+              retryCount: job.retryCount,
+              createdOn: job.createdOn,
+            };
+            await run(
+              processAttempt(attempt, (payload) =>
+                Effect.flatMap(Clock.currentTimeMillis, (started) => {
+                  const elapsed = Clock.currentTimeMillis.pipe(Effect.map((at) => at - started));
+                  return Effect.annotateLogs(Effect.logInfo("job started"), {
+                    job: name,
+                    jobId: job.id,
+                  }).pipe(
+                    Effect.andThen(handler(payload)),
+                    Effect.tap(() =>
+                      Effect.flatMap(elapsed, (durationMs) =>
+                        Effect.annotateLogs(Effect.logInfo("job completed"), {
                           job: name,
                           jobId: job.id,
                           durationMs,
-                          cause: String(cause),
-                        },
+                        }),
                       ),
                     ),
-                  ),
-                );
-              }),
+                    Effect.tapDefect((cause) =>
+                      Effect.flatMap(elapsed, (durationMs) =>
+                        Effect.annotateLogs(
+                          Effect.logError(
+                            "job failed — pg-boss retries until the limit, then dead-letters",
+                          ),
+                          {
+                            job: name,
+                            jobId: job.id,
+                            durationMs,
+                            cause: String(cause),
+                          },
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ),
             );
           }
         }),
@@ -331,8 +353,13 @@ export const JobRunnerTest: Layer.Layer<JobRunner> = Layer.sync(JobRunner, () =>
         seenKeys.add(job.idempotencyKey);
       }
       const handler = handlers.get(job.name);
-      if (handler !== undefined) yield* handler(job.payload);
-      return queuedOrDropped(crypto.randomUUID());
+      const id = crypto.randomUUID();
+      if (handler !== undefined)
+        yield* processAttempt(
+          { queue: job.name, id, data: yield* withTraceEnvelope(job.payload) },
+          handler,
+        );
+      return queuedOrDropped(id);
     });
 
   const work = (name: string, handler: (payload: unknown) => Effect.Effect<void>) =>

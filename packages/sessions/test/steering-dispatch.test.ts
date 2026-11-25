@@ -192,6 +192,7 @@ const conversationWorld = () => {
     listRequests: () => Effect.succeed([]),
     protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
     saveProtocolCursor: () => Effect.void,
+    traceOf: () => Effect.succeed(null),
     resetSendingResponses: () => Effect.void,
   });
   return { turns, layer, ordered, update, faults };

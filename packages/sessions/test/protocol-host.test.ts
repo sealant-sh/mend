@@ -447,6 +447,7 @@ const makeConversationWorld = () => {
       }),
     rekeyWaitingTurn: () => Effect.void,
     saveProtocolCursor: () => Effect.void,
+    traceOf: () => Effect.succeed(null),
   });
   return {
     layer,

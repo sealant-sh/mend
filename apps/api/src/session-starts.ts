@@ -13,7 +13,8 @@ import {
 import { SessionsRepo, SessionStartsRepo } from "@mend/db";
 import type { Session, Worktree } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
-import { Cause, Context, DateTime, Deferred, Duration, Effect, Layer } from "effect";
+import { reportCause } from "@mend/telemetry";
+import { Cause, Context, DateTime, Deferred, Duration, Effect, Layer, Option } from "effect";
 
 import type { Actor } from "./access.ts";
 import { LAUNCH_ANSWER_WINDOW, SessionStart } from "./session-start.ts";
@@ -161,7 +162,11 @@ const make: Effect.Effect<
     const made = yield* Deferred.make<Session, StartRefusal>();
     const underWay = yield* Deferred.make<void>();
     const work = makeSession.pipe(
-      Effect.tap((session) => repo.made(owner, key, session.id)),
+      Effect.tap((session) =>
+        repo
+          .made(owner, key, session.id)
+          .pipe(Effect.andThen(Effect.annotateCurrentSpan("mend.session_id", session.id))),
+      ),
       Effect.tapError((refusal) => repo.failed(owner, key, refusalWords(refusal))),
       Effect.tapDefect(() => repo.failed(owner, key, START_BROKE)),
       // Whatever became of the making, the request waiting on it hears.
@@ -184,11 +189,30 @@ const make: Effect.Effect<
           ? Effect.void
           : Effect.logWarning("session start: the start failed").pipe(
               Effect.annotateLogs({ key, cause: Cause.pretty(cause) }),
+              // A refusal is the person's answer; a defect is the server's, and Sentry hears of it.
+              Effect.andThen(
+                Cause.hasDies(cause)
+                  ? reportCause(cause, { operation: "mend.session.start" })
+                  : Effect.void,
+              ),
             ),
       ),
     );
-    // In the engine's lifetime: the client going away interrupts only this request's wait.
-    yield* engine.detach(work);
+    // In the engine's lifetime: the client going away interrupts only this request's wait. The
+    // start is one span that outlives the request, parented on it explicitly (SLNT-1349), so the
+    // engine's provisioning and every sealant call beneath it join the request's trace.
+    const requestSpan = yield* Effect.option(Effect.currentParentSpan);
+    yield* engine.detach(
+      work.pipe(
+        Effect.withSpan("mend.session.start", {
+          ...(Option.isSome(requestSpan) ? { parent: requestSpan.value } : {}),
+          attributes: {
+            "mend.session.target": target._tag === "Project" ? "project" : "worktree",
+            "mend.harness": target.session.harness,
+          },
+        }),
+      ),
+    );
     const session = yield* Deferred.await(made).pipe(
       // Only a launch refuses with these, and a new session's never does: said as they are.
       Effect.catchTags({

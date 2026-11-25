@@ -88,7 +88,7 @@ export const telemetrySettings = (
   const parsed = parseDsn(dsn);
   if (parsed === null) {
     throw new TelemetrySettingsError(
-      "SENTRY_DSN is not a Sentry DSN (https://<public key>@<host>/<project id>)",
+      "SENTRY_DSN is not a Sentry DSN (the https address Sentry gives, with the project's public key and its id)",
     );
   }
   const endpoint = present(environment.OTEL_EXPORTER_OTLP_ENDPOINT);

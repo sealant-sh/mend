@@ -2336,6 +2336,11 @@ export const agentTurns = pgTable(
     providerTurnId: text(),
     /** Idempotency correlation for a system-authored follow-up turn. */
     launchCorrelationId: text(),
+    /**
+     * The W3C trace context the turn was accepted in (`{ traceparent, tracestate? }`, 0244):
+     * dispatch, delivery and completion continue it. Read as untrusted (`spanOfCarrier`).
+     */
+    traceContext: jsonb(),
     error: text(),
     usage: jsonb().$type<AgentTurnUsage>(),
     // What the request asked for (0064, docs/adr/0007-landing.md); CHECKed as a pair.

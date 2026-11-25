@@ -495,6 +495,7 @@ const testLayer = (world: TestWorld) => {
     endWaitingTurns: () => Effect.succeed(0),
     rekeyWaitingTurn: () => Effect.void,
     saveProtocolCursor: () => Effect.void,
+    traceOf: () => Effect.succeed(null),
   });
 
   const processesLayer = Layer.succeed(SessionProcessesRepo, {

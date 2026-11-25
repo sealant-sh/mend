@@ -53,6 +53,7 @@ import {
   type TurnLanding,
   type TurnPayer,
 } from "@mend/domain/workbench";
+import { currentTraceCarrier } from "@mend/telemetry";
 import {
   and,
   asc,
@@ -458,6 +459,8 @@ export class AgentConversationRepo extends Context.Service<
       selection?: TurnSelection,
     ) => Effect.Effect<AgentTurn, SessionStoppingError | HistoryAdmissionRefusedError>;
     readonly byTurnId: (id: AgentTurnId) => Effect.Effect<AgentTurn | null>;
+    /** The trace context the turn was queued in, as stored: null for none or an older turn. */
+    readonly traceOf: (id: AgentTurnId) => Effect.Effect<unknown>;
     readonly byLaunchCorrelation: (
       sessionId: SessionId,
       launchCorrelationId: string,
@@ -774,7 +777,11 @@ const toSteer = (row: typeof agentTurnSteers.$inferSelect): AgentTurnSteer =>
     selection: Schema.decodeUnknownSync(Schema.NullOr(TurnSelection))(row.selection),
   });
 
-export const toTurn = (row: typeof agentTurns.$inferSelect): AgentTurn =>
+export const toTurn = ({
+  // A turn's trace stays in the repository: `traceOf` reads it, and no client is sent it.
+  traceContext: _traceContext,
+  ...row
+}: typeof agentTurns.$inferSelect): AgentTurn =>
   new AgentTurn({
     ...row,
     processId:
@@ -1114,6 +1121,8 @@ const insertQueuedTurn = Effect.fn("AgentConversationRepo.insertQueuedTurn")(fun
       id: AgentTurnId.make(crypto.randomUUID()),
       ordinal: (position?.value ?? -1) + 1,
       status: "queued",
+      // The trace whoever queued it was in: its dispatch and completion continue it.
+      traceContext: (yield* currentTraceCarrier) ?? null,
     })
     .returning();
   if (row === undefined) return yield* Effect.die("agent turn insert returned no row");
@@ -1642,6 +1651,18 @@ export const AgentConversationRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
       return row === undefined ? null : toTurn(row);
     });
+
+    const traceOf = (id: AgentTurnId): Effect.Effect<unknown> =>
+      db
+        .select({ traceContext: agentTurns.traceContext })
+        .from(agentTurns)
+        .where(eq(agentTurns.id, id))
+        .limit(1)
+        .pipe(
+          Effect.map(([row]) => row?.traceContext ?? null),
+          // A turn's trace is for telemetry: a read that fails costs the trace, never the turn.
+          Effect.orElseSucceed(() => null),
+        );
 
     const byLaunchCorrelation = Effect.fn("AgentConversationRepo.byLaunchCorrelation")(function* (
       sessionId: SessionId,
@@ -3412,6 +3433,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       rekeyWaitingTurn,
       withdrawMessageTurn,
       submitTurn,
+      traceOf,
       byTurnId,
       byLaunchCorrelation,
       byProviderTurnId,

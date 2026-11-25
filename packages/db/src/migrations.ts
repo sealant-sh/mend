@@ -6067,4 +6067,10 @@ export const migrations = {
     yield* sql`ALTER TABLE organization_settings ADD CONSTRAINT organization_settings_session_runtime_check
       CHECK (session_runtime IN ('docker', 'host-vm', 'boat'))`;
   }),
+  // The W3C trace context a turn was accepted in (SLNT-1355): its dispatch, its delivery to the
+  // agent and its completion continue that trace, after a restart too. Null for a turn from before.
+  "0244_turn_trace_context": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS trace_context jsonb`;
+  }),
 };

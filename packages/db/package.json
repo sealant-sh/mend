@@ -19,6 +19,7 @@
     "@mend/api-contracts": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/sealant": "workspace:*",
+    "@mend/telemetry": "workspace:*",
     "drizzle-orm": "catalog:",
     "effect": "catalog:"
   },

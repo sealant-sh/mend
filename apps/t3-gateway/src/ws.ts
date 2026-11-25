@@ -167,7 +167,9 @@ export const WebSocketRouteLive: Layer.Layer<
         const hub = yield* projections.hub(bearer.session);
         const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
         const { tracked, answered } = trackInFlight(protocol);
-        yield* RpcServer.make(WsRpcGroup, { disableTracing: true }).pipe(
+        // Each call is a span of its own, parented on the trace the client sent with it (SLNT-1355),
+        // never on the socket's handshake: the socket outlives every call made over it.
+        yield* RpcServer.make(WsRpcGroup, { spanPrefix: "mend.gateway.rpc" }).pipe(
           Effect.provideService(RpcServer.Protocol, tracked),
           Effect.provide(
             gatewayRpcHandlersLayer(
