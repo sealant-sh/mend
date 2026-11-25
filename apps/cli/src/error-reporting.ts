@@ -50,7 +50,7 @@ export const FLUSH_MS = 2_000;
  */
 export const reportCrashes = (reporter: ErrorReporter): void => {
   const crash = async (error: unknown): Promise<never> => {
-    reporter.report(error);
+    reporter.report(error, { unhandled: true });
     await reporter.flush(FLUSH_MS);
     process.stderr.write(
       `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,

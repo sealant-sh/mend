@@ -6,8 +6,12 @@ import { errorReportingSettings, type ErrorReportingSettings } from "./settings.
  * only the errors its owner hands it.
  */
 export interface ErrorReporter {
-  /** Hands one unexpected failure to Sentry. Never throws and never waits for the network. */
-  readonly report: (error: unknown) => void;
+  /**
+   * Hands one unexpected failure to Sentry. Never throws and never waits for the network.
+   * `unhandled` marks a failure no code caught (an uncaught exception, an unhandled rejection), so
+   * Sentry shows it as a crash rather than an error the app noticed.
+   */
+  readonly report: (error: unknown, options?: { readonly unhandled?: boolean }) => void;
   /** Waits at most `timeoutMs` for reports still on their way; true when none is left. */
   readonly flush: (timeoutMs: number) => Promise<boolean>;
 }

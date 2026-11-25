@@ -83,6 +83,48 @@ describe("a Node client's error reporter", () => {
     expect(event).not.toHaveProperty("server_name");
   });
 
+  it("marks a failure no code caught as unhandled", async () => {
+    const ingest = await startIngest();
+    const reporter = await nodeErrorReporterFromEnv(
+      { MEND_SENTRY_DSN: ingest.dsn },
+      { release: "mend-cli@1.2.3", appRoot: PACKAGE_ROOT, tags: { client: "cli" } },
+    );
+    reporter?.report(new Error("caught by the app"));
+    reporter?.report(new Error("caught by nobody"), { unhandled: true });
+    await reporter?.flush(2_000);
+    await ingest.close();
+
+    // The two sends race each other, so their order at the ingest is not the order reported.
+    const events = ingest.received.map((envelope): unknown =>
+      JSON.parse(envelope.split("\n")[2] ?? "null"),
+    );
+    expect(events).toHaveLength(2);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          exception: {
+            values: [
+              expect.objectContaining({
+                value: "caught by the app",
+                mechanism: { type: "generic", handled: true },
+              }),
+            ],
+          },
+        }),
+        expect.objectContaining({
+          exception: {
+            values: [
+              expect.objectContaining({
+                value: "caught by nobody",
+                mechanism: { type: "onuncaughtexception", handled: false },
+              }),
+            ],
+          },
+        }),
+      ]),
+    );
+  });
+
   it("is off when only the person's own SENTRY_DSN is set", async () => {
     const reporter = await nodeErrorReporterFromEnv(
       { SENTRY_DSN: "https://0123456789abcdef@sentry.example.com/42" },

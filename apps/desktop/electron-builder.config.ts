@@ -19,7 +19,8 @@ const config: Configuration = {
   productName: "Mend",
   copyright: "Copyright © Sealant",
   directories: { output: "release", buildResources: "resources" },
-  files: ["out/**/*", "package.json"],
+  // The main process's source maps stay on the build machine (scripts/upload-sourcemaps.ts).
+  files: ["out/**/*", "!out/**/*.map", "package.json"],
   asar: true,
   // No native modules, so nothing to install or rebuild against Electron's
   // ABI. False here also stops the node_modules search (see above); setting

@@ -26,6 +26,7 @@ import {
   type ShellState,
 } from "../shared/bridge.ts";
 import { MIN_WINDOW_SIZE, resolveInitialBounds } from "./bounds.ts";
+import { startErrorReporting } from "./error-reporting.ts";
 import {
   buildApplicationMenuTemplate,
   type MainContentsCommand,
@@ -615,6 +616,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", summon);
 
   const start = async (): Promise<void> => {
+    // First, so a failure while starting is reported too. Without a DSN it returns at once.
+    await startErrorReporting();
     await app.whenReady();
     app.setAppUserModelId("run.mend.desktop");
     installLocalShellCsp();

@@ -15,11 +15,13 @@
     "lint": "OXLINT_TSGOLINT_PATH=../../node_modules/.bin/tsrs-lint oxlint --type-aware .",
     "package": "electron-vite build && electron-builder --config electron-builder.config.ts",
     "preview": "electron-vite preview",
+    "sentry:upload": "node scripts/upload-sourcemaps.ts",
     "start": "electron-vite preview",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsrs -p tsconfig.json --noEmit --checkers 1 && tsrs -p tsconfig.node.json --noEmit --checkers 1"
   },
   "devDependencies": {
+    "@mend/client-errors": "workspace:*",
     "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@mend/ui": "workspace:*",

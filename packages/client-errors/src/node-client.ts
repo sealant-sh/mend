@@ -93,9 +93,12 @@ export const makeNodeErrorReporter = (options: NodeReporterOptions): ErrorReport
   scope.setClient(client);
   scope.setTags({ ...options.tags, "os.platform": process.platform, "os.arch": process.arch });
   return {
-    report: (error) => {
+    report: (error, reportOptions) => {
       try {
-        scope.captureException(error);
+        const handled = reportOptions?.unhandled !== true;
+        scope.captureException(error, {
+          mechanism: { type: handled ? "generic" : "onuncaughtexception", handled },
+        });
       } catch {
         // A report that cannot be made is not the app's failure.
       }
