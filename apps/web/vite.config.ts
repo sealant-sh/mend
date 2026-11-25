@@ -34,6 +34,12 @@ const config = defineConfig({
     },
   },
   environments: {
+    // The browser's source maps, for Sentry only (SLNT-1356): CI's release job builds with
+    // `MEND_WEB_SOURCEMAPS=hidden` and uploads them; a `hidden` map adds no `sourceMappingURL` to
+    // the code, so the code is byte for byte the image's, and no build that ships writes one.
+    client: {
+      build: { sourcemap: process.env["MEND_WEB_SOURCEMAPS"] === "hidden" ? "hidden" : false },
+    },
     ssr: {
       build: {
         rolldownOptions: {

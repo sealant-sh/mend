@@ -34,8 +34,10 @@ const sampleRateOf = (text: string | undefined): number => {
 
 /**
  * The browser's telemetry from the web server's environment: `SENTRY_BROWSER_DSN` (the browser's
- * own project, not the server's `SENTRY_DSN`), `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` (else
- * `mend-web@<MEND_VERSION>`, the name the source maps are uploaded under) and
+ * own project, not the server's `SENTRY_DSN`), `SENTRY_ENVIRONMENT`, the release
+ * `mend-web@<MEND_VERSION>` (the name CI uploads the browser's source maps under,
+ * scripts/sentry-release.sh; a `SENTRY_RELEASE` in the environment names the servers' release, never
+ * the browser's) and
  * `SENTRY_TRACES_SAMPLE_RATE` (else every trace).
  */
 export const browserTelemetryOf = (
@@ -44,7 +46,7 @@ export const browserTelemetryOf = (
   const dsn = env["SENTRY_BROWSER_DSN"]?.trim() ?? "";
   if (dsn === "" || dsnOrigin(dsn) === null) return null;
   const version = env["MEND_VERSION"]?.trim() ?? "";
-  const release = env["SENTRY_RELEASE"]?.trim() || (version === "" ? "" : `mend-web@${version}`);
+  const release = version === "" || version === "dev" ? "" : `mend-web@${version}`;
   return {
     dsn,
     environment: env["SENTRY_ENVIRONMENT"]?.trim() || "development",
