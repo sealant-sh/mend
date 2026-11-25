@@ -1097,10 +1097,15 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   codex, the prompt `Reply with the single word ready and change nothing.`, then `Start`. Wait for
   the turn with `M wait <id> --turn --timeout 8m`.
 - **See:** the browser lands on `/sessions/<id>` for a codex session in that worktree; the turn
-  completes; `M sessions --project <p> --json` lists it with no file changed by it.
+  completes; `M sessions --project <p> --json` lists it with no file changed by it. When the copy
+  was started with this machine's `MEND_VERIFY_SENTRY_DSN`, Sentry's mend-server project
+  (environment `check-vm`, read with `~/.local/share/sentry-mend/api-token`) holds the start's
+  trace: its `POST` span with `mend.session.start` and `mend.session.launch` beneath it, and the
+  turn's `mend.turn.dispatch`, `mend.turn.run` (status `completed`) and `mend.turn.first_output` in
+  the same trace, never a span per streamed item.
 - **Mode:** `agent`
 - **Box-only:** `boat`, `real-agent-turn`
-- **Areas:** `apps/web/src/`, `apps/api/src/`, `packages/sessions/`
+- **Areas:** `apps/web/src/`, `apps/api/src/`, `packages/sessions/`, `packages/telemetry/`
 
 ### start-session.web-write
 
