@@ -562,8 +562,16 @@ session on that copy's web (its `MEND_URL`), press Stop, or Discard unsaved and 
 offers it, and run `vm down` once more. If it is still kept, leave that copy running, name each
 `bx_…` and its session in the report's `Copies` line and on SLNT-1345, and go on: only the copy's
 Mend can still reach that VM. Never pass `--leave-boat-vms`; deleting a copy with a VM left is the
-owner's choice. When the run cap (Limits) comes first, report each failure that had no second look
-as `failed · no second look (run cap)`, and say so in its ticket.
+owner's choice.
+
+Then `vm down` removes from Boat, through sealant on the copy, each image the copy built that the
+saved data does not keep (SLNT-1256): lanes B and C's, and lane A's none once it is saved. It names
+them (`removed from Boat the images it built …`), and names any sealant refuses to remove
+(`left in Boat, refused by sealant …`). One not confirmed removed in five minutes keeps the copy
+(`kept: Boat images it built not confirmed removed: …`): run `vm down` once more, and if it is still
+kept, leave that copy running and name each image in the report's `Copies` line and on SLNT-1256.
+Never pass `--leave-boat-images`. When the run cap (Limits) comes first, report each failure that
+had no second look as `failed · no second look (run cap)`, and say so in its ticket.
 
 **Done when** every flow in this run's set has one of the three outcomes, checked by you, every
 failure had its second look or is named as one that needs none, and lanes B and C are deleted.

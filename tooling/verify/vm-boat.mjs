@@ -635,3 +635,163 @@ export const stopBoatSessions = async (
   }
   return { left, stops };
 };
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SNAPSHOT_NAME = /"identity":\s*\{\s*"name":\s*"([a-z0-9-]{1,63})"/;
+
+/**
+ * The Boat images a pg_dumpall names (SLNT-1256): each row of sealant's `native_publications`, as
+ * `id → { state, name }`, `name` its saved snapshot's or null when it has none. Read with awk, so a
+ * dump of hundreds of MiB is never held in memory, and nothing of it is printed. Null when the file
+ * or its table cannot be read: nothing is then taken as unsaved that was not read.
+ */
+export const dumpImages = (file, run = spawnSync) => {
+  if (!existsSync(file)) return null;
+  const out = run(
+    "awk",
+    [
+      '/^COPY public\\.native_publications /{f=1; print; next} f && /^\\\\\\.$/{print "end=yes"; exit} f{print}',
+      file,
+    ],
+    { encoding: "utf8", maxBuffer: 256 * 1024 ** 2 },
+  );
+  const lines = (out.stdout ?? "").split("\n");
+  if (out.status !== 0 || !lines.includes("end=yes")) return null;
+  const columns = /^COPY public\.native_publications \((.*)\) FROM stdin;$/
+    .exec(lines[0] ?? "")?.[1]
+    ?.split(", ");
+  const at = (name) => columns?.indexOf(name) ?? -1;
+  const [id, state, publication] = [at("id"), at("state"), at("publication")];
+  if (id < 0 || state < 0 || publication < 0) return null;
+  const images = new Map();
+  for (const line of lines.slice(1)) {
+    if (line === "end=yes") break;
+    const fields = line.split("\t");
+    if (!UUID.test(fields[id] ?? "")) return null;
+    images.set(fields[id], {
+      state: fields[state],
+      name: SNAPSHOT_NAME.exec(fields[publication] ?? "")?.[1] ?? null,
+    });
+  }
+  return images;
+};
+
+/** The images a dump names that hold a saved snapshot in Boat still, by sealant's own record. */
+export const liveImagesOf = (images) =>
+  [...images].filter(([, { state, name }]) => name !== null && state !== "removed");
+
+/**
+ * Prints one `image=<id> state=<state> reason=<reason> name=<snapshot>` line per Boat image the
+ * copy's sealant records that may hold something in Boat (every state but removed and superseded,
+ * and not a failed build, which saved nothing), then `mend=<true|false>` and `checked=yes`. A copy
+ * whose database does not answer prints no `checked=yes`.
+ */
+export const boatImagesScript = `# boat-images
+set -uo pipefail
+docker exec mend-postgres-1 psql -U postgres -d sealant_control_plane -At -F' ' -v ON_ERROR_STOP=1 -c \\
+  "select 'image=' || id, 'state=' || state, 'reason=' || coalesce(reason, '-'), 'name=' || coalesce(publication->'snapshot'->'identity'->>'name', '-') from native_publications where state not in ('removed', 'superseded') and not (state = 'quarantined' and publication is null) order by created_at" || exit 1
+echo "mend=$(docker inspect -f '{{.State.Running}}' mend-mend-1 2>/dev/null || echo false)"
+echo "checked=yes"
+`;
+
+/** Reads boatImagesScript's output: `{ images, mend }`, or null when the copy could not say. */
+export const parseBoatImages = (stdout) => {
+  const lines = stdout.split("\n");
+  if (!lines.includes("checked=yes")) return null;
+  const images = lines.flatMap((line) => {
+    const match = /^image=(\S+) state=(\S+) reason=(\S+) name=(\S+)$/.exec(line);
+    if (!match || !UUID.test(match[1])) return [];
+    return [
+      {
+        id: match[1],
+        state: match[2],
+        reason: match[3] === "-" ? null : match[3],
+        name: match[4] === "-" ? null : match[4],
+      },
+    ];
+  });
+  return { images, mend: lines.includes("mend=true") };
+};
+
+/**
+ * Asks sealant on the copy to remove each image: the transition sealant's own withdrawal makes
+ * (`NativePublicationRepo.withdraw`), with its guards: a ready image, no claim held, and no run
+ * still holding it. sealant's catalog sweep (every 30 s) then deletes the saved snapshot through
+ * the image's build journal and records it `removed` once Boat no longer has it.
+ */
+export const retireImagesScript = (ids) => `# retire-images
+set -uo pipefail
+docker exec mend-postgres-1 psql -U postgres -d sealant_control_plane -At -v ON_ERROR_STOP=1 -c \\
+  "update native_publications p set state = 'retiring', generation = p.generation + 1, claim_token = null, claim_purpose = null, claim_until = null where p.id in (${ids.map((id) => `'${id}'`).join(", ")}) and p.state = 'ready' and (p.claim_until is null or p.claim_until <= now()) and not exists (select 1 from native_publication_consumers c where c.publication_id = p.id and c.state <> 'released') returning p.id"
+`;
+
+/** States sealant on the copy can still bring to removed: a build ending, or a removal under way. */
+const REMOVABLE = new Set(["reserved", "building", "ready", "retiring"]);
+const removable = ({ state, reason }) =>
+  REMOVABLE.has(state) || (state === "quarantined" && reason === "native-removal-pending");
+
+/** `sealant-dev-boat-stream-… (ready)`: an image, by its snapshot name or its id. */
+export const describeBoatImage = ({ id, state, reason, name }) =>
+  `${name ?? `publication ${id.slice(0, 8)}`} (${state}${reason === null ? "" : ` ${reason}`})`;
+
+/**
+ * Before a Boat copy goes (SLNT-1256): removes from Boat, through sealant on the copy, every image
+ * the copy holds that the saved data (`<root>/box/world.sql`) does not. Each saved snapshot is in the
+ * owner's Boat account, every copy's in the same one, and once the copy goes its journal goes with
+ * it: nothing could remove it after. An image the saved data names, in any state, is left alone: a
+ * saved copy (the daily run's lane A) keeps every image its save recorded, and a removal never
+ * reaches an image another copy of the same data may use.
+ *
+ * Waits until sealant records each one removed. Returns `{ removed, left, refused }`: `removed` the
+ * images it saw removed, `left` the ones sealant may still remove but has not (null when the copy
+ * or the saved data could not be read, which counts as not confirmed), `refused` the ones sealant
+ * will not remove (quarantined with a saved snapshot, such as one whose identity Boat changed:
+ * only the Boat account's owner can delete those).
+ */
+export const removeBoatImages = async (
+  root,
+  sshArgs,
+  {
+    waitMs = 300_000,
+    pollMs = 10_000,
+    ssh = sshRunner(sshArgs),
+    saved = () => dumpImages(join(root, "box", "world.sql")),
+  } = {},
+) => {
+  const keep = saved();
+  if (keep === null)
+    return {
+      removed: [],
+      left: null,
+      refused: [],
+      why: "the saved data's images could not be read",
+    };
+  const read = () => {
+    const answer = parseBoatImages(ssh(boatImagesScript).stdout ?? "");
+    if (answer === null) return null;
+    return { ...answer, images: answer.images.filter(({ id }) => !keep.has(id)) };
+  };
+  let now = read();
+  if (now === null)
+    return { removed: [], left: null, refused: [], why: "its database did not answer" };
+  const first = now.images;
+  const settle = () => ({
+    removed: first.filter(({ id }) => !now.images.some((image) => image.id === id)),
+    left: now.images.filter(removable),
+    refused: now.images.filter((image) => !removable(image)),
+  });
+  if (!first.some(removable)) return settle();
+  if (!now.mend) return { ...settle(), why: "Mend is stopped on it, so sealant removes nothing" };
+  const until = Date.now() + waitMs;
+  for (;;) {
+    const ready = now.images.filter(({ state }) => state === "ready").map(({ id }) => id);
+    if (ready.length > 0) ssh(retireImagesScript(ready));
+    if (Date.now() >= until) break;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    const next = read();
+    if (next === null) return { ...settle(), left: null, why: "its database stopped answering" };
+    now = next;
+    if (!now.images.some(removable)) break;
+  }
+  return settle();
+};
