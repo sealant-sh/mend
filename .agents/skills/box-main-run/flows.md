@@ -3475,8 +3475,9 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `mend.web.sessions.sendMessage` under it, and nothing else of the page.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/server/`, `apps/web/src/lib/telemetry`, `apps/web/src/lib/trpc.ts`,
-  `packages/telemetry/`
+- **Areas:** `apps/web/src/server/`, `apps/web/src/lib/telemetry.ts`,
+  `apps/web/src/lib/telemetry-sentry.ts`, `apps/web/src/lib/telemetry-config.ts`,
+  `apps/web/src/lib/trpc.ts`, `packages/telemetry/`
 
 ### doctor.checklist
 
