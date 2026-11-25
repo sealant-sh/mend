@@ -90,6 +90,7 @@ export const parseArgs = (argv) => {
     else if (arg === "--no-restore") options.noRestore = true;
     else if (arg === "--box") options.box = true;
     else if (arg === "--boat") options.boat = true;
+    else if (arg === "--leave-boat-vms") options.leaveBoatVms = true;
     else if (arg === "--self") options.self = true;
     else if (arg === "--body") {
       const value = argv[++index];
@@ -373,7 +374,8 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
           ...sizing,
         }),
       up: () => vmUp({ ...sizing, boat: options.boat === true }),
-      down: () => vmDown({ slot: options.slot, all: options.all }),
+      down: () =>
+        vmDown({ slot: options.slot, all: options.all, leaveBoatVms: options.leaveBoatVms }),
       list: () => vmList({}),
       slot: () => vmSlot({ action: options.slotAction, slot: options.slot }),
       save: () => vmSave({ repoRoot: root, slot: options.slot }),

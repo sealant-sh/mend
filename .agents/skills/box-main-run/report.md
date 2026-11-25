@@ -46,6 +46,8 @@ Check VMs:
 - Build: preview run <link>, version <version>, <n> min. Copies booted from the master
   <master version>; lanes A (copy <n>, Boat), B (copy <n>), C (copy <n>, Boat or no Boat), or the
   lanes left out.
+- Copies: A deleted <UTC>, B <UTC>, C <UTC>. Boat VMs left: none, or each `bx_…` a `vm down` named,
+  with its session and status, and the copy kept for it (`vm list` reads it running).
 - Since <lastCommit:12>: <n> commits, PRs #a, #b, ….
 - Flows: <n> seen, <n> failed, <n> not run (<reasons with counts>).
 - Instant start: `start-session.new-web-instant-start`'s session read Starting for <s> s from the

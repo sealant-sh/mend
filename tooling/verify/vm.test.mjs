@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,10 +16,14 @@ import test from "node:test";
 import { parseArgs } from "./verify.mjs";
 import {
   claimSlot,
+  describeBoatVm,
   funnelFromOutside,
+  liveBoatVmsScript,
+  parseLiveBoatVms,
   releaseSlot,
   slotDriveArgs,
   slotOfCopy,
+  stopBoatSessions,
 } from "./vm-boat.mjs";
 import {
   addressOf,
@@ -101,6 +113,204 @@ test("vm down removes a copy whose VM is gone, and rewrites the ssh config witho
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+/** A Boat copy whose QEMU reads as running: a process naming its disk. */
+const boatCopy = (root, slot) => {
+  const dir = join(root, "copies", String(slot));
+  mkdirSync(dir, { recursive: true });
+  const fake = spawn(process.execPath, [
+    "-e",
+    "setTimeout(() => {}, 60000)",
+    join(dir, "disk.qcow2"),
+  ]);
+  writeFileSync(join(dir, "qemu.pid"), String(fake.pid));
+  writeFileSync(
+    join(dir, "copy.json"),
+    JSON.stringify({ slot, startedAt: "2026-11-25T02:00:00.000Z", unit: null, boat: { slot: 1 } }),
+  );
+  return { dir, fake };
+};
+
+test("vm down keeps a Boat copy whose Boat VMs are not confirmed gone, and says which and why", async () => {
+  const root = scratch();
+  const { dir, fake } = boatCopy(root, 3);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const asked = [];
+    const result = await vmDown({
+      root,
+      slot: 3,
+      stopBoat: async (_root, _ssh, url, since) => {
+        asked.push([url, since]);
+        return {
+          left: [
+            {
+              vm: "bx_h84tzje2",
+              workspace: "w",
+              sessions: [{ id: "45d68fa4-28cc", status: "failed" }],
+            },
+          ],
+          stops: ["mend-boat-check: no active sessions"],
+        };
+      },
+    });
+    assert.deepEqual(asked, [["http://127.0.1.3:3105", "2026-11-25T02:00:00.000Z"]]);
+    assert.equal(result.steps[0].status, "failed");
+    assert.match(
+      result.steps[0].detail,
+      /^kept: Boat VMs it launched still there: bx_h84tzje2 \(session 45d68fa4 failed\)/,
+    );
+    assert.match(result.steps[0].detail, /stops: mend-boat-check: no active sessions/);
+    assert.ok(existsSync(join(dir, "copy.json")), "the copy is kept");
+    assert.equal(fake.exitCode, null, "its VM still runs");
+    assert.match(
+      result.next[0],
+      /^MEND_URL=http:\/\/127\.0\.1\.3:3105: stop each one's session there/,
+    );
+    assert.match(result.next[1], /vm down 3 --leave-boat-vms/);
+
+    // A copy whose Mend could not say is not taken as having none.
+    const unread = await vmDown({
+      root,
+      slot: 3,
+      stopBoat: async () => ({ left: null, stops: [] }),
+    });
+    assert.equal(unread.steps[0].status, "failed");
+    assert.match(unread.steps[0].detail, /could not say which Boat VMs/);
+    assert.ok(existsSync(join(dir, "copy.json")));
+
+    // --leave-boat-vms is a person's choice: the copy goes and the VMs are named.
+    const left = await vmDown({
+      root,
+      slot: 3,
+      leaveBoatVms: true,
+      stopBoat: async () => ({ left: [{ vm: "bx_1", workspace: "w", sessions: [] }], stops: [] }),
+    });
+    assert.equal(left.steps[0].status, "passed");
+    assert.match(
+      left.steps[0].detail,
+      /left on Boat by --leave-boat-vms: Boat VMs it launched still there: bx_1 \(no Mend session on its workspace\)/,
+    );
+    assert.ok(!existsSync(dir));
+  } finally {
+    fake.kill();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("vm down deletes a Boat copy once Boat confirms every VM it launched gone", async () => {
+  const root = scratch();
+  const { dir, fake } = boatCopy(root, 4);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const result = await vmDown({
+      root,
+      slot: 4,
+      stopBoat: async () => ({ left: [], stops: ["mend-boat-check: ✓ stopped 2 sessions"] }),
+    });
+    assert.equal(result.steps[0].status, "passed");
+    assert.match(
+      result.steps[0].detail,
+      /Boat confirmed every VM it launched gone \(stops: mend-boat-check: ✓ stopped 2 sessions\)/,
+    );
+    assert.ok(!existsSync(dir));
+  } finally {
+    fake.kill();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("vm down stops every live session of each checker account, then waits for Boat's answer on each VM", async () => {
+  const root = scratch();
+  const home = scratch();
+  try {
+    mkdirSync(join(root, "cli/node_modules/.bin"), { recursive: true });
+    writeFileSync(join(root, "cli/node_modules/.bin/mend"), "");
+    for (const kit of ["mend-boat-check", "mend-boat-check-2"])
+      mkdirSync(join(home, ".local/share", kit, "cli"), { recursive: true });
+    const ran = [];
+    const run = (command, args, { env }) => {
+      ran.push([
+        command.endsWith("/mend") ? "mend" : command,
+        ...args,
+        env.XDG_CONFIG_HOME.split("/").at(-2),
+        env.MEND_URL,
+      ]);
+      return { status: 0, stdout: "✓ stopped 1 session\n", stderr: "" };
+    };
+    const answers = [
+      "vm=bx_a workspace=w1 sessions=s-1:stopping\nchecked=yes\n",
+      "",
+      "checked=yes\n",
+    ];
+    const scripts = [];
+    const ssh = (script) => {
+      scripts.push(script);
+      return { code: 0, stdout: answers.shift() ?? "checked=yes\n", stderr: "" };
+    };
+    const { left, stops } = await stopBoatSessions(
+      root,
+      [],
+      "http://127.0.1.3:3105",
+      "2026-11-25T02:00:00.000Z",
+      {
+        run,
+        ssh,
+        home,
+        pollMs: 1,
+      },
+    );
+    assert.deepEqual(ran, [
+      ["mend", "stop", "--all", "mend-boat-check", "http://127.0.1.3:3105"],
+      ["mend", "stop", "--all", "mend-boat-check-2", "http://127.0.1.3:3105"],
+    ]);
+    assert.deepEqual(stops, [
+      "mend-boat-check: ✓ stopped 1 session",
+      "mend-boat-check-2: ✓ stopped 1 session",
+    ]);
+    assert.deepEqual(left, []);
+    assert.equal(scripts.length, 3, "an unreadable answer is read again, not taken as none");
+    assert.match(scripts[0], /create_issued_at >= '2026-11-25T02:00:00.000Z'/);
+
+    const stuck = await stopBoatSessions(root, [], "u", "t", {
+      run,
+      ssh: () => ({ code: 0, stdout: "vm=bx_b workspace=w2 sessions=\nchecked=yes\n", stderr: "" }),
+      home,
+      waitMs: 20,
+      pollMs: 5,
+    });
+    assert.deepEqual(stuck.left, [{ vm: "bx_b", workspace: "w2", sessions: [] }]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("the live Boat VM read names each VM's sessions, and says nothing it did not check", () => {
+  const script = liveBoatVmsScript("2026-11-25T02:00:00.000Z");
+  assert.match(script, /deletion_completed_at is null and absent_at is null/);
+  assert.match(script, /where sealant_workspace_id = '\$ws'/);
+  assert.equal(parseLiveBoatVms("vm=bx_a workspace=w sessions=\n"), null);
+  assert.deepEqual(
+    parseLiveBoatVms(
+      "vm=bx_a workspace=w1 sessions=11111111-aaaa:failed,22222222-bbbb:running\nchecked=yes\n",
+    ),
+    [
+      {
+        vm: "bx_a",
+        workspace: "w1",
+        sessions: [
+          { id: "11111111-aaaa", status: "failed" },
+          { id: "22222222-bbbb", status: "running" },
+        ],
+      },
+    ],
+  );
+  assert.equal(
+    describeBoatVm({ vm: "bx_a", sessions: [{ id: "11111111-aaaa", status: "failed" }] }),
+    "bx_a (session 11111111 failed)",
+  );
 });
 
 test("a copy's QEMU runs in a transient unit of its own, named for its copies directory and slot", () => {

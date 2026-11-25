@@ -310,6 +310,15 @@ Limits of a check VM:
   Mend with Boat; two Boat copies each ran a real Codex turn at once; the stop took 13 s and the
   resume, on a new Boat VM, 2 s to running; `vm down`, which stops the copy's Boat sessions and
   waits for their VMs to go, took 85 s.
+- **No Boat VM outlives its copy** (SLNT-1345). The copy's Mend holds the only record of the VMs it
+  launched, and the Boat key stays private, so once a copy is deleted nothing here can stop them.
+  `vm down` on a Boat copy stops every live session of the two checker accounts through the copy's
+  Mend, whatever its age or Boat key, then waits up to five minutes until sealant on the copy has
+  Boat's answer for each VM launched since the copy started (deleted, or gone). A VM still there, or
+  a copy whose databases do not answer, keeps the copy: `vm down` fails and names each VM with the
+  Mend sessions on its workspace, so a person can stop them on the copy's web and run `vm down`
+  again. A session whose command failed can keep its VM while its work is unsaved; its page offers
+  Discard unsaved and stop. `--leave-boat-vms` deletes the copy anyway, a person's choice.
 - **One copy per slot.** A claim file names the copy that holds a slot, written aside and linked
   into place so that two copies starting at once take different slots, and never removed unless it
   is still the stale one read (its copy gone, five minutes after the claim). QEMU's own write lock
