@@ -909,6 +909,53 @@ jobs:
           publish_release "${flags[@]}" "$GITHUB_WORKSPACE/cli" "$GITHUB_WORKSPACE/release" \
             "@sealant/mend" "$version" "$GITHUB_SHA" "$channel" --provenance
 
+  # The published build's source maps, uploaded to Sentry's mend-cli project under the release the
+  # CLI reports its errors with (mend-cli@<version>, apps/cli/src/error-reporting.ts), so a stack
+  # trace from a person's CLI reads as TypeScript. After npm, so only a published version gets one;
+  # never fatal to a release that has already published, and skipped where the token is absent.
+  sentry:
+    name: Upload the CLI's source maps to Sentry
+    needs: [release, npm]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_URL: ${{ vars.SENTRY_URL }}
+      SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+      SENTRY_PROJECT: mend-cli
+      RELEASE: mend-cli@${{ needs.release.outputs.version }}
+    steps:
+      - name: Check for the Sentry token
+        id: token
+        run:
+          echo "present=$([[ -n $SENTRY_AUTH_TOKEN && -n $SENTRY_URL && -n $SENTRY_ORG ]] && echo
+          true || echo false)" >>"$GITHUB_OUTPUT"
+      - if: steps.token.outputs.present == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - if: steps.token.outputs.present == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mend-cli-sourcemaps
+          path: sourcemaps
+      - name: Create the release and upload its maps
+        if: steps.token.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          cli=(npx --yes @sentry/cli@3.8.2)
+          "${cli[@]}" releases new "$RELEASE"
+          "${cli[@]}" sourcemaps upload --release "$RELEASE" --url-prefix "app:///dist" sourcemaps/dist
+          "${cli[@]}" releases finalize "$RELEASE"
+      - if: steps.token.outputs.present != 'true'
+        run:
+          echo "No SENTRY_AUTH_TOKEN, SENTRY_URL or SENTRY_ORG; the CLI's source maps were not
+          uploaded."
+
   # Attach setup assets at the canonical /releases/download/vVERSION URLs.
   github-release:
     name: Publish and verify setup assets

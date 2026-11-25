@@ -1341,11 +1341,18 @@ test("a tag push runs finalize, npm and promotion; a dry-run dispatch runs accep
     readFileSync(new URL("../.github/workflows/release-cli.yml", import.meta.url), "utf8"),
   ).jobs;
   const push = simulateRun("ghcr", { graph, event: "push" });
-  for (const name of ["acceptance", "finalize-images", "github-release", "npm", "promote-images"])
+  for (const name of [
+    "acceptance",
+    "finalize-images",
+    "github-release",
+    "npm",
+    "promote-images",
+    "sentry",
+  ])
     assert.equal(push[name], "success", name);
   const dispatch = simulateRun("archive", { graph, event: "workflow_dispatch" });
   assert.equal(dispatch.acceptance, "success");
-  for (const name of ["finalize-images", "github-release", "npm", "promote-images"])
+  for (const name of ["finalize-images", "github-release", "npm", "promote-images", "sentry"])
     assert.equal(dispatch[name], "skipped", name);
 });
 
@@ -1363,6 +1370,7 @@ const SKIPPED_TOGETHER = new Map([
   // Every publishing job runs on a tag push, and none on a dispatch.
   ["release-cli.yml npm", "its ancestors carry the same push condition"],
   ["release-cli.yml promote-images", "its ancestors carry the same push condition"],
+  ["release-cli.yml sentry", "its ancestors carry the same push condition"],
   // Nothing publishes on a pull request.
   [
     "publish-vscode.yml github-release",

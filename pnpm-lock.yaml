@@ -60,6 +60,9 @@ catalogs:
     '@sealant/sdk':
       specifier: npm:@sealant/sdk-next@0.40.0-next.941
       version: 0.40.0-next.941
+    '@sentry/core':
+      specifier: 11.17.0
+      version: 11.17.0
     '@shadcn/react':
       specifier: ^0.3.0
       version: 0.3.0
@@ -493,6 +496,9 @@ importers:
       '@mend/api-contracts':
         specifier: workspace:*
         version: link:../../packages/api-contracts
+      '@mend/client-errors':
+        specifier: workspace:*
+        version: link:../../packages/client-errors
       '@mend/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -1270,6 +1276,31 @@ importers:
       '@types/pg':
         specifier: 'catalog:'
         version: 8.20.0
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.1(@types/node@22.20.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+
+  packages/client-errors:
+    dependencies:
+      '@mend/network':
+        specifier: workspace:*
+        version: link:../network
+      '@sentry/core':
+        specifier: 'catalog:'
+        version: 11.17.0
+    devDependencies:
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
+      '@mend/typescript':
+        specifier: workspace:*
+        version: link:../../tooling/typescript
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.0
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -5942,6 +5973,14 @@ packages:
   '@secretlint/types@10.2.2':
     resolution: {integrity: sha512-Nqc90v4lWCXyakD6xNyNACBJNJ0tNCwj2WNk/7ivyacYHxiITVgmLUFXTBOeCdy79iz6HtN9Y31uw/jbLrdOAg==}
     engines: {node: '>=20.0.0'}
+
+  '@sentry/conventions@0.35.0':
+    resolution: {integrity: sha512-bq2ecu6zaBni0gG5bHN9cY7fmUsOW49ntjGZ6VA69PVAa1Uk1NvgF1SdTGoVC0zkqQKziTnxzOs9KuuVlpb26w==}
+    engines: {node: '>=14'}
+
+  '@sentry/core@11.17.0':
+    resolution: {integrity: sha512-Tf9XOBEMeGdZZNaCBzFTk1lN/q9gzSnWtnNRZW9IYtokM99VVfx4wTWVeg6qZ++c6mNybmhUbltnN7b87RqOwQ==}
+    engines: {node: '>=20.19.0 <22.0.0 || >=22.12.0 <23.0.0 || >=23.2.0'}
 
   '@shadcn/react@0.3.0':
     resolution: {integrity: sha512-iKN0NuYe850VDHlxEfvppFrpa7CMV3zArTHusXlaSmeFeQhohGbIqclv6WwPTs/44I8EkXQpcuRt6sXEVKkWqQ==}
@@ -17552,6 +17591,12 @@ snapshots:
       istextorbinary: 9.5.0
 
   '@secretlint/types@10.2.2': {}
+
+  '@sentry/conventions@0.35.0': {}
+
+  '@sentry/core@11.17.0':
+    dependencies:
+      '@sentry/conventions': 0.35.0
 
   '@shadcn/react@0.3.0(@types/react@19.2.17)(react@19.2.3)':
     optionalDependencies:

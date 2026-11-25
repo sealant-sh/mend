@@ -40,6 +40,9 @@ catalog:
   "@fontsource-variable/geist-mono": ^5.3.0
   "@fontsource-variable/instrument-sans": ^5.3.0
   "@pierre/diffs": ^1.2.12
+  # Errors-only reporting in the clients (@mend/client-errors). Sentry releases its packages together;
+  # pinned exactly, like Effect.
+  "@sentry/core": 11.17.0
   "@sealant/api-contracts": npm:@sealant/api-contracts-next@0.40.0-next.941
   "@sealant/sdk": npm:@sealant/sdk-next@0.40.0-next.941
   "@slack/socket-mode": ^3.0.1
