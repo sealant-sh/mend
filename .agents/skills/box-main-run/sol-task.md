@@ -46,8 +46,17 @@ worktree is `<worktree path>`; run every command from there.
   The one exception is `settings.new-web-agent-logins`, whose flow replaces logins on purpose: run
   its batch whole.
 - Your copy's web: `<web>`. Other lanes run other copies at the same time: use only lane `<lane>`'s
-  names, and never another lane's. The project: `boat-check-ubuntu`, written `<p>`. Where flows.md
-  writes `<sha8>`, use `<the commit's first 8 characters>`.
+  names, and never another lane's. Where flows.md writes `<sha8>`, use
+  `<the commit's first 8 characters>`; where it writes `<pg ip>`, use `<pg ip>` (Postgres's address
+  on your copy, read for you, since you never touch the copy over ssh).
+- The project: where flows.md writes `<p>` in a command, use `boat-check-ubuntu`. A recipe or CLI
+  batch of the verify skill (`.agents/skills/verify/recipes/…`) runs as written, on the project it
+  names (most name `verify-fixture`), with only the changes the flow's Do line names (a suffix, an
+  environment variable). Never put `boat-check-ubuntu` or another project in its place, and a flow
+  with no recipe in `.agents/skills/box-main-run/recipes/` is no reason to: it uses the verify
+  skill's. On 25 Nov a run that did broke `review-change.new-web-change` (its batch moves a
+  `README.md` that boat-check-ubuntu lacks) and left worktrees in boat-check-ubuntu with the names
+  later recipes look up.
 - Sessions earlier flows made: <name = session id, one per line, or "none">
 - Evidence: `<evidence dir>/<flow id>/` per flow.
 

@@ -413,8 +413,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   );
   await shoot("land-still-editing");
   landAnswer = true;
+  // A GitHub origin (verify-fixture's on a box) offers Push and open pull request in its place; the
+  // fixture answer is the same push either way.
   await dialog()
-    .getByRole("button", { name: /^(Push to origin|Try again)$/ })
+    .getByRole("button", { name: /^(Push to origin|Push and open pull request|Try again)$/ })
     .click();
   const landed = `Pushed ${first.branch} to origin. ${TITLES.editing} is still running.`;
   await toast(landed).waitFor({ timeout: 30_000 });
