@@ -98,10 +98,10 @@
 # applyCompletion begin or end the turn's run span after their own writes; event projection runs
 # with tracing off. None writes a turn's status or provider turn id, nor claims, binds, completes or
 # cancels one, so no action changes. Full run at ce2fb25248: every row as expected.
-# 9bc458b5b0 is the same SLNT-1355 commit rebased on its foundation (the telemetry package and
+# 214ea8718b is the same SLNT-1355 commit rebased on its foundation (the telemetry package and
 # the deploy env), which changed no covered file: the covered code is ce2fb25248's, which the full
 # run above checked.
-sync 9bc458b5b066fd798179963806b33e619bb41060
+sync 214ea8718bfbbe3140ddd911c1231820bd019812
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
