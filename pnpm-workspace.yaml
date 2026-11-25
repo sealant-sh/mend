@@ -45,8 +45,8 @@ catalog:
   "@sentry/core": 11.17.0
   # The web app's browser SDK (SLNT-1356): errors and traces, off unless the server names a DSN.
   "@sentry/browser": 11.17.0
-  "@sealant/api-contracts": npm:@sealant/api-contracts-next@0.40.0-next.941
-  "@sealant/sdk": npm:@sealant/sdk-next@0.40.0-next.941
+  "@sealant/api-contracts": npm:@sealant/api-contracts-next@0.40.0-next.945
+  "@sealant/sdk": npm:@sealant/sdk-next@0.40.0-next.945
   "@slack/socket-mode": ^3.0.1
   "@slack/web-api": ^8.1.1
   "@tailwindcss/vite": ^4.1.18
