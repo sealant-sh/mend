@@ -28,6 +28,7 @@ import {
   slotHolder,
   slotOfCopy,
   slotRemove,
+  describeBoatVm,
   stopBoatSessions,
 } from "./vm-boat.mjs";
 
@@ -1208,10 +1209,23 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
 };
 
 /** vm down <n>|--all: stops a copy's VM and deletes its disk and directory. */
-export const vmDown = async ({ root = vmRoot(), slot, all }) => {
+/**
+ * vm down <n> (or --all): stops the copy and deletes its disk. A Boat copy first stops, through its
+ * own Mend, what it launched on Boat and waits until Boat confirms each VM gone (SLNT-1345). One
+ * that is not confirmed keeps the copy: its Mend is the only thing that can still reach that VM.
+ * `--leave-boat-vms` deletes it anyway, a person's choice: the VM then runs until Boat reaps it.
+ */
+export const vmDown = async ({
+  root = vmRoot(),
+  slot,
+  all,
+  leaveBoatVms = false,
+  stopBoat = stopBoatSessions,
+}) => {
   const p = paths(root);
   const slots = all ? liveSlots(p) : [slot];
   const steps = [];
+  const next = [];
   for (const each of slots) {
     const dir = join(p.copies, String(each));
     if (!existsSync(dir)) {
@@ -1224,11 +1238,45 @@ export const vmDown = async ({ root = vmRoot(), slot, all }) => {
     } catch {
       // A copy whose start failed: nothing on Boat to stop.
     }
-    const leftOnBoat =
-      record.boat && qemuPid(dir) !== null
-        ? await stopBoatSessions(root, boxSshArgs(root, each), urlOf(each), record.startedAt)
-        : [];
-    if (record.boat && qemuPid(dir) !== null) runPhase(root, each, "tailnet-down", [], dir);
+    const running = qemuPid(dir) !== null;
+    let boatNote = "";
+    if (record.boat && running) {
+      const { left, stops } = await stopBoat(
+        root,
+        boxSshArgs(root, each),
+        urlOf(each),
+        record.startedAt,
+      );
+      const said = stops.length > 0 ? ` (stops: ${stops.join("; ")})` : "";
+      const unconfirmed =
+        left === null
+          ? "its Mend could not say which Boat VMs it launched are still there"
+          : left.length > 0
+            ? `Boat VMs it launched still there: ${left.map(describeBoatVm).join(", ")}`
+            : null;
+      if (unconfirmed !== null && !leaveBoatVms) {
+        steps.push(
+          step(
+            `down-${each}`,
+            `Remove copy ${each}`,
+            "failed",
+            `kept: ${unconfirmed}${said}. The copy still runs, so its Mend can reach them`,
+          ),
+        );
+        next.push(
+          `MEND_URL=${urlOf(each)}: stop each one's session there (its page's Stop, or Discard unsaved and stop), then pnpm verify vm down ${each}`,
+          `pnpm verify vm down ${each} --leave-boat-vms   # a person's choice: deletes the copy, and the VMs run until Boat reaps them`,
+        );
+        continue;
+      }
+      boatNote =
+        unconfirmed === null
+          ? `; Boat confirmed every VM it launched gone${said}`
+          : `; left on Boat by --leave-boat-vms: ${unconfirmed}${said}`;
+    }
+    if (record.boat && !running)
+      boatNote = "; its VM was not running, so its Boat VMs were not checked";
+    if (record.boat && running) runPhase(root, each, "tailnet-down", [], dir);
     const stopped = await stopQemu(dir);
     // QEMU gone, its unit goes with it (--collect); stopping it by name also covers a copy whose
     // qemu.pid is unreadable but whose unit still runs.
@@ -1242,13 +1290,13 @@ export const vmDown = async ({ root = vmRoot(), slot, all }) => {
         `down-${each}`,
         `Remove copy ${each}`,
         "passed",
-        `VM ${stopped}; disk and directory removed${held !== null ? `; Boat slot ${held} free` : ""}${leftOnBoat.length > 0 ? `; Boat VMs it launched still there: ${leftOnBoat.join(", ")}` : ""}`,
+        `VM ${stopped}; disk and directory removed${held !== null ? `; Boat slot ${held} free` : ""}${boatNote}`,
       ),
     );
   }
   writeSshConfig(p);
   if (steps.length === 0) steps.push(step("down", "Remove copies", "passed", "no copies"));
-  return { steps, next: [] };
+  return { steps, next };
 };
 
 /**

@@ -534,8 +534,18 @@ table says which one each was:
 Every other failure is seen again by you before its lane's copy is deleted. A lane's copy is deleted
 (`pnpm verify vm down <slot>`, one plain command) only once each of its failed flows has had that
 second look or is one of the two kinds above: it frees room for other checks, and nothing on it is
-kept. When the run cap (Limits) comes first, report each failure that had no second look as
-`failed · no second look (run cap)`, and say so in its ticket.
+kept.
+
+On a Boat lane, `vm down` first stops every live session of both accounts through the copy's own
+Mend and waits up to five minutes for Boat to confirm each VM the copy launched gone. When one is
+not confirmed, it keeps the copy, fails, and names each VM with its sessions:
+`kept: Boat VMs it launched still there: bx_… (session <id8> <status>)`. Then open each named
+session on that copy's web (its `MEND_URL`), press Stop, or Discard unsaved and stop when its page
+offers it, and run `vm down` once more. If it is still kept, leave that copy running, name each
+`bx_…` and its session in the report's `Copies` line and on SLNT-1345, and go on: only the copy's
+Mend can still reach that VM. Never pass `--leave-boat-vms`; deleting a copy with a VM left is the
+owner's choice. When the run cap (Limits) comes first, report each failure that had no second look
+as `failed · no second look (run cap)`, and say so in its ticket.
 
 **Done when** every flow in this run's set has one of the three outcomes, checked by you, every
 failure had its second look or is named as one that needs none, and lanes B and C are deleted.
@@ -609,8 +619,9 @@ the same image. Report `warm-up · second account's image built in <m> min`, `·
    delete that copy: it holds the newest logins. Record `saved` in the ledger. Then
    `node .agents/skills/box-main-run/logins.mjs` reads the saved logins: every line `held`.
 
-5. `pnpm verify vm down <lane A's slot>`. Check `pnpm verify vm list` shows none of the ledger's
-   copies, and drop them from it.
+5. `pnpm verify vm down <lane A's slot>` (a Boat VM it cannot confirm gone keeps the copy, as in
+   section 5). Check `pnpm verify vm list` shows none of the ledger's copies but one kept that way,
+   and drop the deleted ones from it.
 6. Build the next master from the saved data, with this run's preview, right after the save. Other
    checks' copies may run: `vm build` builds the new disk beside the master and puts it in place
    only once it is sealed, and a copy started before keeps the master it booted from until its

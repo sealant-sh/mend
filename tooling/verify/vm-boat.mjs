@@ -538,41 +538,100 @@ const curlThrough = (name, port, address) =>
     ).stdout ?? ""
   ).trim() || "000";
 
+/** The checker accounts whose CLI kits `vm down` stops a copy's sessions as. */
+export const CHECKER_KITS = ["mend-boat-check", "mend-boat-check-2"];
+
 /**
- * Before a Boat copy goes: stops the Boat sessions started on it (by the checker accounts whose CLI
- * kits are here), then waits until sealant on the copy has every VM it launched deleted or seen gone.
- * Nothing else would ever remove them: the box knows none of the copy's runs. Returns the VMs left.
+ * Prints one `vm=<sandbox> workspace=<id> sessions=<id>:<status>,…` line per Boat VM the copy
+ * launched (`create_issued_at` from `since` on) that sealant has not seen deleted or gone, with the
+ * Mend sessions on that workspace; then `checked=yes`. A copy whose databases do not answer prints
+ * no `checked=yes`, so nothing is taken as gone that was not seen gone.
  */
-export const stopBoatSessions = async (root, sshArgs, url, since) => {
+export const liveBoatVmsScript = (since) => `# live-boat-vms
+set -uo pipefail
+q() { docker exec mend-postgres-1 psql -U postgres -d "$1" -At -F' ' -v ON_ERROR_STOP=1 -c "$2"; }
+runs=$(q sealant_control_plane "select sandbox_id, workspace_id from boat_runs where sandbox_id is not null and deletion_completed_at is null and absent_at is null and create_issued_at >= '${since}' order by create_issued_at") || exit 1
+while read -r vm ws; do
+  [ -n "$vm" ] || continue
+  sessions=$(q mend "select coalesce(string_agg(id || ':' || status, ',' order by created_at), '') from agent_sessions where sealant_workspace_id = '$ws'") || exit 1
+  echo "vm=$vm workspace=$ws sessions=$sessions"
+done <<<"$runs"
+echo "checked=yes"
+`;
+
+/** Reads liveBoatVmsScript's output: the VMs left, or null when the copy could not say. */
+export const parseLiveBoatVms = (stdout) => {
+  const lines = stdout.split("\n");
+  if (!lines.includes("checked=yes")) return null;
+  return lines.flatMap((line) => {
+    const match = /^vm=(\S+) workspace=(\S+) sessions=(\S*)$/.exec(line);
+    if (!match) return [];
+    const sessions = match[3]
+      .split(",")
+      .filter(Boolean)
+      .map((pair) => {
+        const at = pair.lastIndexOf(":");
+        return { id: pair.slice(0, at), status: pair.slice(at + 1) };
+      });
+    return [{ vm: match[1], workspace: match[2], sessions }];
+  });
+};
+
+/** `bx_1 (session 1a2b3c4d failed)`: a VM left, with what holds it in Mend. */
+export const describeBoatVm = ({ vm, sessions }) =>
+  sessions.length === 0
+    ? `${vm} (no Mend session on its workspace)`
+    : `${vm} (${sessions.map(({ id, status }) => `session ${id.slice(0, 8)} ${status}`).join(", ")})`;
+
+/**
+ * Before a Boat copy goes (SLNT-1345): stops, through the copy's own Mend, every session the
+ * checker accounts have live there, then waits until sealant on the copy has seen each Boat VM the
+ * copy launched deleted or gone, which it records only on Boat's answer. Nothing else would ever
+ * remove them: the copy's Mend holds the only record of them, and the Boat key stays private.
+ *
+ * Every live session, not only the ones that read a Boat key and were made on this copy: a
+ * session from the saved data resumed here, and one whose launch has not stamped its key yet, hold
+ * VMs this copy launched too. A VM whose session has already ended (a failed `mend run` whose
+ * workspace is kept, say) has nothing a stop reaches, so it is waited for and then named.
+ *
+ * Returns `{ left, stops }`: `left` the VMs still there (null when the copy could not be read, which
+ * counts as not confirmed), `stops` what each stop said.
+ */
+export const stopBoatSessions = async (
+  root,
+  sshArgs,
+  url,
+  since,
+  {
+    waitMs = 300_000,
+    pollMs = 5_000,
+    run = spawnSync,
+    ssh = sshRunner(sshArgs),
+    home = homedir(),
+  } = {},
+) => {
   const cli = join(root, "cli/node_modules/.bin/mend");
-  for (const kit of ["mend-boat-check", "mend-boat-check-2"]) {
-    const config = join(homedir(), ".local/share", kit, "cli");
-    if (!existsSync(config) || !existsSync(cli)) continue;
-    const env = { ...process.env, XDG_CONFIG_HOME: config, MEND_URL: url };
-    let sessions = [];
-    try {
-      sessions = JSON.parse(
-        spawnSync(cli, ["sessions", "--all", "--json"], { env, encoding: "utf8" }).stdout,
-      ).data.sessions;
-    } catch {
+  const stops = [];
+  for (const kit of CHECKER_KITS) {
+    const config = join(home, ".local/share", kit, "cli");
+    if (!existsSync(config)) continue;
+    if (!existsSync(cli)) {
+      stops.push(`${kit}: no CLI at ${cli}, so nothing was stopped`);
       continue;
     }
-    for (const session of sessions)
-      if (
-        session.boatKey &&
-        Date.parse(session.createdAt) >= Date.parse(since) &&
-        !["stopped", "completed", "failed", "exited"].includes(session.status)
-      )
-        spawnSync(cli, ["stop", session.id], { env, timeout: 120_000, stdio: "ignore" });
+    const env = { ...process.env, XDG_CONFIG_HOME: config, MEND_URL: url };
+    const stopped = run(cli, ["stop", "--all"], { env, encoding: "utf8", timeout: 300_000 });
+    const said = `${stopped.stdout ?? ""}${stopped.stderr ?? ""}`.trim().split("\n").at(-1) ?? "";
+    stops.push(
+      `${kit}: ${stopped.status === 0 ? said || "stopped" : `exit ${stopped.status}: ${said}`}`,
+    );
   }
-  const live = () =>
-    sshRunner(sshArgs)(
-      `docker exec mend-postgres-1 psql -U postgres -d sealant_control_plane -At -c "select coalesce(string_agg(sandbox_id, ' '), '') from boat_runs where sandbox_id is not null and deletion_completed_at is null and absent_at is null and create_issued_at >= '${since}'"`,
-    ).stdout.trim();
-  let left = live();
-  for (let i = 0; i < 40 && left !== ""; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-    left = live();
+  const read = () => parseLiveBoatVms(ssh(liveBoatVmsScript(since)).stdout ?? "");
+  const until = Date.now() + waitMs;
+  let left = read();
+  while ((left === null || left.length > 0) && Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    left = read();
   }
-  return left === "" ? [] : left.split(" ");
+  return { left, stops };
 };
