@@ -351,6 +351,8 @@ const READS: Readonly<Record<string, Reads>> = {
   "server-setup.ts resolveAppUrl": SERVER_SETUP,
   "server-setup.ts checkExposurePair": SERVER_SETUP,
   "server-setup.ts validateExposure": SERVER_SETUP,
+  // The telemetry flags setup reads (server-telemetry.ts), each named in one table.
+  "server-telemetry.ts TELEMETRY_FIELDS": SERVER_SETUP,
   "server-setup.ts selectDockerContext": CHILD,
   "server-setup.ts checkDocker": CHILD,
   "server-setup.ts observeHostUserNamespaces": CHILD,
