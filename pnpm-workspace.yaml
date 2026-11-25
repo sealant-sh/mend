@@ -43,6 +43,8 @@ catalog:
   # Errors-only reporting in the clients (@mend/client-errors) and Mend's servers (@mend/telemetry).
   # Sentry releases its packages together; pinned exactly, like Effect.
   "@sentry/core": 11.17.0
+  # The web app's browser SDK (SLNT-1356): errors and traces, off unless the server names a DSN.
+  "@sentry/browser": 11.17.0
   "@sealant/api-contracts": npm:@sealant/api-contracts-next@0.40.0-next.941
   "@sealant/sdk": npm:@sealant/sdk-next@0.40.0-next.941
   "@slack/socket-mode": ^3.0.1

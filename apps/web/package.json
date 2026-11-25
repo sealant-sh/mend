@@ -25,6 +25,7 @@
     "@mend/ui": "workspace:*",
     "@novnc/novnc": "catalog:",
     "@pierre/diffs": "catalog:",
+    "@sentry/browser": "catalog:",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/react-query": "catalog:",
     "@tanstack/react-router": "catalog:",

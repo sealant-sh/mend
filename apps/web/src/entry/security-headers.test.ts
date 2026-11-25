@@ -46,6 +46,19 @@ describe("the browser header policy (MEND-11)", () => {
     );
   });
 
+  it("lets the page reach the Sentry its reports go to, that origin alone and only for connections", () => {
+    const directives = securityHeaders({
+      target: "/",
+      network: at("https://mend.example"),
+      previewFrames: null,
+      reportsTo: "https://sentry.example",
+    })["content-security-policy"]?.split("; ");
+    expect(directives).toContain(
+      "connect-src 'self' data: wss://mend.example https://sentry.example",
+    );
+    expect(directives?.filter((directive) => directive.includes("sentry.example"))).toHaveLength(1);
+  });
+
   it("claims HSTS only over https", () => {
     expect(
       securityHeaders({ target: "/", network: at("https://mend.example"), previewFrames: null }),

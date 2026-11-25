@@ -9,6 +9,7 @@ import { constants as zlibConstants, createGzip } from "node:zlib";
 import { loadPreviewPlacement, loadPublicNetwork, previewFrameSource } from "@mend/network";
 import { Effect } from "effect";
 
+import { browserTelemetryOf, dsnOrigin } from "../lib/telemetry-config.ts";
 import { apiTargetOf, forwardHeaders, gzipsPage } from "./proxy-headers.ts";
 import { POLICY_ONLY_HEADERS, securityHeaders } from "./security-headers.ts";
 
@@ -33,6 +34,17 @@ const previewFrames = previewFrameSource(
   Effect.runSync(loadPreviewPlacement),
   publicNetwork.appUrl,
 );
+
+// Where the browser sends its error and trace reports, when it sends any (lib/telemetry-config.ts).
+const browserTelemetry = browserTelemetryOf(process.env);
+const reportsTo = browserTelemetry === null ? null : dsnOrigin(browserTelemetry.dsn);
+const pageSecurity = (target: string) =>
+  securityHeaders({
+    target,
+    network: publicNetwork,
+    previewFrames,
+    ...(reportsTo === null ? {} : { reportsTo }),
+  });
 
 // ─── The app server: nitro output, supervised unless external ───────────────
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -128,11 +140,7 @@ const proxyRequest = (
           ),
         ),
         // The browser header policy, on the app's responses and the API's alike (MEND-11).
-        ...securityHeaders({
-          target: request.url ?? "/",
-          network: publicNetwork,
-          previewFrames,
-        }),
+        ...pageSecurity(request.url ?? "/"),
       };
       const gzip =
         upstreamPath === null &&
@@ -162,11 +170,7 @@ const proxyRequest = (
     if (!response.headersSent) {
       response.writeHead(502, {
         "content-type": "text/plain",
-        ...securityHeaders({
-          target: request.url ?? "/",
-          network: publicNetwork,
-          previewFrames,
-        }),
+        ...pageSecurity(request.url ?? "/"),
       });
     }
     response.end("upstream unreachable");

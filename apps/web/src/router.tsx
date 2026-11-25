@@ -5,6 +5,7 @@ import { TRPCClientError } from "@trpc/client";
 import { deserialize, serialize } from "superjson";
 
 import { NotFoundScreen, PendingScreen, RouteErrorScreen } from "./components/route-screens.tsx";
+import { reportCaught, startTelemetry } from "./lib/telemetry.ts";
 import {
   loginWalk,
   makeTrpcClient,
@@ -71,6 +72,8 @@ export function getRouter() {
     defaultPendingComponent: PendingScreen,
     defaultErrorComponent: RouteErrorScreen,
     defaultNotFoundComponent: NotFoundScreen,
+    // A route's error screen is drawn, and what it caught is reported (lib/telemetry.ts).
+    defaultOnCatch: reportCaught,
     Wrap: ({ children }) => (
       <TRPCProvider trpcClient={trpcClient} queryClient={queryClient}>
         {children}
@@ -79,6 +82,8 @@ export function getRouter() {
   });
 
   setupRouterSsrQueryIntegration({ router, queryClient });
+  // In the browser, on a page served with a DSN only; the server's own reporting is its own.
+  if (typeof window !== "undefined") startTelemetry(router);
 
   return router;
 }

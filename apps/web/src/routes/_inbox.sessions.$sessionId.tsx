@@ -14,6 +14,7 @@ import { checkpointOfHash } from "#/lib/checkpoint-link";
 import { conversationQuery } from "#/lib/conversation";
 import { isDraftId } from "#/lib/pending-starts";
 import { sessionDetailQuery } from "#/lib/session-queries";
+import { reportCaught } from "#/lib/telemetry";
 
 interface SessionSearch {
   /** The old app's full screen (`?full=1`): the tile showing the session's conversation, maximised. */
@@ -87,7 +88,11 @@ function SessionRoute() {
   useCheckpointLink(sessionId, view);
   if (isDraftId(sessionId)) return <StartingSessionPage draftId={sessionId} />;
   return (
-    <CatchBoundary getResetKey={() => sessionId} errorComponent={RouteErrorScreen}>
+    <CatchBoundary
+      getResetKey={() => sessionId}
+      errorComponent={RouteErrorScreen}
+      onCatch={reportCaught}
+    >
       {/* Not keyed by the session: the page keeps its sheet across the sessions of one workspace. */}
       <Suspense fallback={<SessionPending sessionId={sessionId} />}>
         <SessionPage
