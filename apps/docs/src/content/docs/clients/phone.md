@@ -101,3 +101,18 @@ app.
   `React Native WebView does not support this platform.`, and push notifications answer
   `unavailable`.
 - LaTeX in assistant replies shows as its source in the browser.
+
+## Error reports
+
+An app built without `EXPO_PUBLIC_MEND_SENTRY_DSN` reports errors nowhere, and no build sets it by
+default. Sealant's own builds set it, and optionally `EXPO_PUBLIC_MEND_SENTRY_ENVIRONMENT`, when the
+bundle is made. A build that has it reports what no code caught: a JavaScript error that reaches
+React Native's global handler and a native crash. An unhandled promise rejection still only warns in
+a development build and is not reported. A JavaScript report carries the exception's type, its
+message with URLs, tokens and paths taken out, a stack trace, the app's version
+(`mend-mobile@<version>`) and which over-the-air update ran it. It sends no session or performance
+data, no breadcrumbs, no screenshots and nothing about the person or a session.
+
+Each bundle carries a debug ID that ties its stack traces to its source map. After `eas update` or
+`npx expo export`, `pnpm -F @mend/mobile sentry:upload` uploads the maps in `dist/` (it needs
+`SENTRY_AUTH_TOKEN`, `SENTRY_URL`, `SENTRY_ORG` and `SENTRY_PROJECT=mend-mobile`).
