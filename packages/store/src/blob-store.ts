@@ -239,6 +239,22 @@ export class BlobStoreConfig extends Context.Service<
   ): Layer.Layer<BlobStoreConfig> => Layer.succeed(BlobStoreConfig, { target, publicUrl });
 }
 
+/**
+ * Which S3 endpoint `BlobStore.presign` and `BlobStore.presignPart` sign URLs against:
+ *
+ * - `"public"` (default): `MEND_BLOB_STORE_PUBLIC_URL`, else `MEND_BLOB_STORE`'s endpoint (for
+ *   remote executors such as Boat that dial the public HTTPS address directly).
+ * - `"internal"`: `MEND_BLOB_STORE`'s own endpoint (such as `http://garage:3900`, or AWS S3 when
+ *   unset), used by local executors dialing `capture.sock` so Mend relays straight to its internal
+ *   store without hair-pinning through a public Funnel or reverse proxy.
+ */
+export type PresignEndpoint = "public" | "internal";
+
+export const BlobStorePresignEndpoint: Context.Reference<PresignEndpoint> =
+  Context.Reference<PresignEndpoint>("@mend/store/BlobStorePresignEndpoint", {
+    defaultValue: () => "public",
+  });
+
 export class BlobStoreConfigError extends Error {
   override readonly name = "BlobStoreConfigError";
 }
@@ -1122,9 +1138,10 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     sha256?: string,
   ) {
     yield* checkKey("presign", key);
+    const signer = (yield* BlobStorePresignEndpoint) === "internal" ? client : publicClient;
     if (method === "GET") {
       return yield* call("presign", key, () =>
-        getSignedUrl(publicClient, new GetObjectCommand({ Bucket: bucket, Key: key }), {
+        getSignedUrl(signer, new GetObjectCommand({ Bucket: bucket, Key: key }), {
           expiresIn: ttlSeconds,
         }),
       );
@@ -1148,7 +1165,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     const signed = signedPutHeaders(bound, checksum !== null);
     const url = yield* call("presign", key, () =>
       getSignedUrl(
-        publicClient,
+        signer,
         new PutObjectCommand({
           Bucket: bucket,
           Key: key,
@@ -1224,9 +1241,10 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     yield* checkKey("presignPart", key);
     yield* checkUploadId("presignPart", key, uploadId);
     yield* checkPartNumber("presignPart", key, partNumber);
+    const signer = (yield* BlobStorePresignEndpoint) === "internal" ? client : publicClient;
     return yield* call("presignPart", key, () =>
       getSignedUrl(
-        publicClient,
+        signer,
         new UploadPartCommand({
           Bucket: bucket,
           Key: key,
@@ -1403,17 +1421,21 @@ export const BlobStoreS3Live = (options: S3BlobStoreOptions): Layer.Layer<BlobSt
  * capture relay expects: a dotted bucket on AWS comes back path-style, a custom endpoint without
  * path style comes back `<bucket>.<endpoint>`. Null for a directory store, or one with no URL.
  */
-export const presignedObjectOrigin = (config: {
-  readonly target: BlobStoreTarget;
-  readonly publicUrl: string | undefined;
-}): Effect.Effect<{
+export const presignedObjectOrigin = (
+  config: {
+    readonly target: BlobStoreTarget;
+    readonly publicUrl: string | undefined;
+  },
+  audience: PresignEndpoint = "public",
+): Effect.Effect<{
   readonly hostname: string;
   readonly port: number;
   readonly protocol: "http" | "https";
 } | null> => {
   const target = config.target;
   if (target.kind !== "s3") return Effect.succeed(null);
-  const endpoint = config.publicUrl ?? target.endpoint;
+  const endpoint =
+    audience === "internal" ? target.endpoint : (config.publicUrl ?? target.endpoint);
   const client = new S3Client({
     region: target.region,
     forcePathStyle: target.forcePathStyle,

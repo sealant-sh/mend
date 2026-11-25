@@ -170,7 +170,16 @@
 # ends before `resume` (reads and Mend's own sockets only); provisionWorkspace names the capture
 # plan's URL over the socket. No hot-pool, claim, retire, drain or discard call changes, so no
 # action changes. tlx run at fb43876304: every row as expected.
-sync fb43876304800ffd084827b6adaf34cbcfe86029
+# 3608f1f6b3 adds an optional `presignEndpoint` option on `dispatchCaptureRoute` in
+# `capture-channel.ts` so `capture.sock` provides `BlobStorePresignEndpoint` (`"internal"`). It
+# changes no standby, claim, retire, drain or discard call and leaves `standbyApiFor` and
+# `captureApiFor` untouched, so no action changes. --quick tlx run at 3608f1f6b3: every row as
+# expected.
+# d893035c6f passes `overSocket` into `captureTransport` in `engine.ts` so local `capture.sock`
+# launches state `transport.plaintext: true` for their local socket even when remote workspaces
+# require HTTPS. It changes no hot-pool, claim, retire, drain or discard call, so no action
+# changes. --quick tlx run at d893035c6f: every row as expected.
+sync d893035c6f440b0ef62434c131d278fdc0ee2da4
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

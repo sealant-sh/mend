@@ -9,11 +9,11 @@ import * as tls from "node:tls";
 
 import { SessionChannelTokensRepo, SessionChannelTokensRepoMemory } from "@mend/db";
 import { SessionId } from "@mend/domain";
-import { BlobStoreConfig } from "@mend/store";
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { BlobStoreConfig, BlobStorePresignEndpoint, makeS3BlobStore } from "@mend/store";
+import { Effect, Layer, ManagedRuntime, Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import type { SessionCaptureApi } from "../src/capture-channel.ts";
+import { dispatchCaptureRoute, type SessionCaptureApi } from "../src/capture-channel.ts";
 import {
   CAPTURE_SOCKET_NAME,
   classifyCaptureSocketRequest,
@@ -800,7 +800,7 @@ describe("binding a scope again as it stands", () => {
 });
 
 describe("the store capture.sock relays to, from the configuration", () => {
-  it("is the origin of the URLs its presigner mints, else the public URL as it is", async () => {
+  it("uses the internal S3 endpoint even when MEND_BLOB_STORE_PUBLIC_URL names a remote Funnel or proxy", async () => {
     expect(
       await Effect.runPromise(
         objectStoreOfConfig({
@@ -811,7 +811,7 @@ describe("the store capture.sock relays to, from the configuration", () => {
             region: "garage",
             forcePathStyle: true,
           },
-          publicUrl: "http://garage:3900",
+          publicUrl: "https://nix-pc.tailc79e49.ts.net:10000",
         }),
       ),
     ).toEqual({ hostname: "garage", port: 3900, protocol: "http" });
@@ -820,6 +820,114 @@ describe("the store capture.sock relays to, from the configuration", () => {
         objectStoreOfConfig({ target: { kind: "dir", root: "/tmp/blobs" }, publicUrl: undefined }),
       ),
     ).toBeNull();
+  });
+
+  it("presigns capture routes over capture.sock against the internal store while network routes keep publicUrl", async () => {
+    const s3 = await Effect.runPromise(
+      makeS3BlobStore({
+        bucket: "mend",
+        endpoint: `http://127.0.0.1:${storePort}`,
+        region: "garage",
+        forcePathStyle: true,
+        publicEndpoint: "https://remote.example.ts.net:10000",
+        credentials: { accessKeyId: "test", secretAccessKey: "test" },
+      }),
+    );
+    const localApi: SessionCaptureApi = {
+      ...capture,
+      uploadUrls: () =>
+        Effect.gen(function* () {
+          const audience = yield* BlobStorePresignEndpoint;
+          const url = yield* s3.presign("captures/w/1/packs/a", "PUT", 60, 2).pipe(Effect.orDie);
+          return {
+            urls: { [audience]: url },
+            multipart: {},
+            present: [],
+            expires_in_secs: 60,
+          };
+        }),
+    };
+    const decodeUrls = Schema.decodeUnknownSync(
+      Schema.Struct({ urls: Schema.Record(Schema.String, Schema.String) }),
+    );
+    let networkPayload: unknown;
+    await dispatchCaptureRoute(
+      localApi,
+      "/upload.urls",
+      { worktree_id: "w", epoch: 1, keys: ["captures/w/1/packs/a"] },
+      (_status, payload) => {
+        networkPayload = payload;
+      },
+    );
+    expect(new URL(decodeUrls(networkPayload).urls["public"] ?? "").origin).toBe(
+      "https://remote.example.ts.net:10000",
+    );
+
+    const internalDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-xs-int-"));
+    const internalScope = "mend-int-1";
+    const internalRuntime = ManagedRuntime.make(
+      executorSocketsAt(internalDir).pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            SessionChannelRegistryLive,
+            SessionChannelTokensRepoMemory,
+            BlobStoreConfig.layerFor(
+              {
+                kind: "s3",
+                bucket: "mend",
+                endpoint: `http://127.0.0.1:${storePort}`,
+                region: "garage",
+                forcePathStyle: true,
+              },
+              "https://remote.example.ts.net:10000",
+            ),
+          ),
+        ),
+      ),
+    );
+    try {
+      const token = await internalRuntime.runPromise(
+        Effect.gen(function* () {
+          const registry = yield* SessionChannelRegistry;
+          const tokens = yield* SessionChannelTokensRepo;
+          const sockets = yield* ExecutorSockets;
+          registry.register(SESSION, {
+            ...sessionApi,
+            capture: localApi,
+            captureAs: () => localApi,
+          });
+          const issued = yield* tokens.issue(SESSION, LAUNCH);
+          yield* sockets.bind({ scope: internalScope, launchId: LAUNCH, mode: "normal" });
+          return issued;
+        }),
+      );
+      const sock = path.join(internalDir, internalScope, CAPTURE_SOCKET_NAME);
+      const answer = await post(sock, "/upload.urls", token, {
+        worktree_id: "w",
+        epoch: 1,
+        keys: ["captures/w/1/packs/a"],
+      });
+      expect(statusOf(answer)).toBe(200);
+      const bodyText = answer.slice(answer.indexOf("{"), answer.lastIndexOf("}") + 1);
+      const parsed = decodeUrls(JSON.parse(bodyText));
+      const minted = new URL(parsed.urls["internal"] ?? "");
+      expect(minted.origin).toBe(`http://127.0.0.1:${storePort}`);
+
+      // The executor then relays that exact internal presigned PUT back through capture.sock.
+      const before = received.length;
+      const put = await exchange(
+        sock,
+        `PUT ${minted.pathname}${minted.search} HTTP/1.1\r\nHost: ${minted.host}\r\n` +
+          `Content-Length: 2\r\nConnection: close\r\n\r\nhi`,
+      );
+      expect(statusOf(put)).toBe(200);
+      expect(received.slice(before)).toEqual([
+        { method: "PUT", url: `${minted.pathname}${minted.search}`, host: minted.host, body: "hi" },
+      ]);
+    } finally {
+      await internalRuntime.dispose();
+      fs.rmSync(internalDir, { recursive: true, force: true });
+    }
   });
 
   it("serves a capture route by plain HTTP whatever host it names, as a plan over the socket asks", () => {

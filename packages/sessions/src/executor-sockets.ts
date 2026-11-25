@@ -95,22 +95,23 @@ export const objectStoreEndpointOf = (
 ): ObjectStoreEndpoint | null => endpointOfUrl(publicUrl) ?? endpointOfUrl(storeEndpoint);
 
 /**
- * The store of a blob store configuration: the origin of the URLs its presigner mints for
- * executors (`presignedObjectOrigin`, the SDK's own rules for the public endpoint, the endpoint,
- * the region and the path style), else a public URL or endpoint read as it is.
+ * The store of a blob store configuration for `capture.sock`: the origin of the URLs Mend's
+ * internal S3 client presigns (`presignedObjectOrigin(..., "internal")`, so a server whose
+ * `MEND_BLOB_STORE_PUBLIC_URL` points at a remote-workspace proxy or Funnel still relays local
+ * executors straight to its internal store such as `http://garage:3900`). Falls back to
+ * `publicUrl` only for non-S3 test configs.
  */
 export const objectStoreOfConfig = (config: {
   readonly target: BlobStoreConfig["Service"]["target"];
   readonly publicUrl: string | undefined;
 }): Effect.Effect<ObjectStoreEndpoint | null> =>
-  presignedObjectOrigin(config).pipe(
+  presignedObjectOrigin(config, "internal").pipe(
     Effect.map(
       (origin) =>
         origin ??
-        objectStoreEndpointOf(
-          config.publicUrl,
-          config.target.kind === "s3" ? config.target.endpoint : undefined,
-        ),
+        (config.target.kind === "s3"
+          ? objectStoreEndpointOf(undefined, config.target.endpoint)
+          : objectStoreEndpointOf(config.publicUrl, undefined)),
     ),
   );
 
@@ -569,8 +570,12 @@ const makeExecutorSockets = (
               return;
             }
             const body = await readJson(request);
-            return dispatchCaptureRoute(auth.capture, sorted.route, body, (status, payload) =>
-              respondJson(response, status, payload),
+            return dispatchCaptureRoute(
+              auth.capture,
+              sorted.route,
+              body,
+              (status, payload) => respondJson(response, status, payload),
+              { presignEndpoint: "internal" },
             );
           })
           .catch(() => {
