@@ -996,19 +996,23 @@ test("a Boat copy removes no Boat image unless it is the copy vm save saves (SLN
   assert.equal(setupBoat(setupWith(ok), true).removesImages, true);
   assert.deepEqual(calls, [[]]);
 
-  // A master whose CLI predates the flag refuses it before changing anything: setup runs once more
-  // without it, and the result says the copy may remove images.
-  calls.length = 0;
-  const old = setupBoat(
-    setupWith((extra) =>
-      extra.length > 0 ? 'Unknown server setup option "--no-boat-image-retention".' : ok(),
-    ),
-    false,
-  );
-  assert.deepEqual(calls, [["--no-boat-image-retention"], []]);
-  assert.equal(old.removesImages, true);
-  assert.match(old.retention, /^REMOVES Boat images: this master's CLI has no/);
-  assert.equal(old.out.stdout, ok());
+  // A master whose CLI predates the flag refuses it before changing anything, in the CLI's own
+  // words (the 25 Nov master's) or setup's: setup runs once more without it, and the result says
+  // the copy may remove images.
+  for (const refusal of [
+    "mend: unknown flag --no-boat-image-retention · usage: mend server setup [--yes] …",
+    'Unknown server setup option "--no-boat-image-retention".',
+  ]) {
+    calls.length = 0;
+    const old = setupBoat(
+      setupWith((extra) => (extra.length > 0 ? refusal : ok())),
+      false,
+    );
+    assert.deepEqual(calls, [["--no-boat-image-retention"], []]);
+    assert.equal(old.removesImages, true);
+    assert.match(old.retention, /^REMOVES Boat images: this master's CLI has no/);
+    assert.equal(old.out.stdout, ok());
+  }
 
   // Any other failure is setup's, returned as it is.
   calls.length = 0;

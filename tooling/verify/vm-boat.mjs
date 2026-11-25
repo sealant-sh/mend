@@ -372,8 +372,12 @@ export const slotRemove = async (root, slot, { bootBare, step, copyRunning }) =>
  */
 export const NO_IMAGE_RETENTION = "--no-boat-image-retention";
 
-/** What a copy's setup said when its CLI predates NO_IMAGE_RETENTION. */
+/**
+ * What a copy's setup said when its CLI predates NO_IMAGE_RETENTION: the CLI's own parser
+ * (`mend: unknown flag --no-boat-image-retention · usage: …`, the 25 Nov master's), or setup's.
+ */
 const unknownRetentionFlag = (out) =>
+  out.includes(`unknown flag ${NO_IMAGE_RETENTION}`) ||
   out.includes(`Unknown server setup option "${NO_IMAGE_RETENTION}"`);
 
 /**
