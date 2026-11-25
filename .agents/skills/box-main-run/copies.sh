@@ -58,6 +58,9 @@ up_lane() {
 up() {
   local lane=$1 with=$2 out flags=(--json) at
   ((with)) && flags+=(--boat)
+  # Lane A's data is saved, so its save records each Boat image it removes; every other copy
+  # removes none (SLNT-1347).
+  ((with)) && [[ $lane == a ]] && flags+=(--will-save)
   at=$(date -u +%FT%TZ)
   out=$(pnpm -s verify vm up "${flags[@]}" 2>/dev/null)
   if jq -e '.status == "passed" and .copy.slot != null' <<<"$out" >/dev/null 2>&1; then

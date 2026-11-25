@@ -46,6 +46,8 @@ export interface ServerFiles {
   readonly mirrors?: string;
   /** compose.workspace-images.yaml: how many workspace images the bundled worker keeps. */
   readonly workspaceImages?: string;
+  /** compose.boat-images.yaml: the bundled worker removes no Boat image (server-boat.ts). */
+  readonly boatImages?: string;
   /** compose.workspace-memory.yaml: the memory limits of each session's workspace. */
   readonly workspaceMemory?: string;
   /** compose.telemetry.yaml: where this server's errors and traces go. */
@@ -253,6 +255,7 @@ const optionalFileKeys = [
   "caddyfile",
   "mirrors",
   "workspaceImages",
+  "boatImages",
   "workspaceMemory",
   "telemetry",
   "hostVm",
@@ -279,6 +282,7 @@ const fileNames = {
   caddyfile: "Caddyfile",
   mirrors: "compose.mirrors.yaml",
   workspaceImages: "compose.workspace-images.yaml",
+  boatImages: "compose.boat-images.yaml",
   workspaceMemory: "compose.workspace-memory.yaml",
   telemetry: "compose.telemetry.yaml",
   hostVm: "compose.host-vm.yaml",
@@ -316,6 +320,7 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   caddyfile: 0o644,
   mirrors: 0o600,
   workspaceImages: 0o600,
+  boatImages: 0o600,
   workspaceMemory: 0o600,
   telemetry: 0o600,
   hostVm: 0o600,
@@ -509,6 +514,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
   const caddyfile = optional("caddyfile");
   const mirrors = optional("mirrors");
   const workspaceImages = optional("workspaceImages");
+  const boatImages = optional("boatImages");
   const workspaceMemory = optional("workspaceMemory");
   const telemetry = optional("telemetry");
   const hostVm = optional("hostVm");
@@ -534,6 +540,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     ...(caddyfile === undefined ? {} : { caddyfile }),
     ...(mirrors === undefined ? {} : { mirrors }),
     ...(workspaceImages === undefined ? {} : { workspaceImages }),
+    ...(boatImages === undefined ? {} : { boatImages }),
     ...(workspaceMemory === undefined ? {} : { workspaceMemory }),
     ...(telemetry === undefined ? {} : { telemetry }),
     ...(hostVm === undefined ? {} : { hostVm }),

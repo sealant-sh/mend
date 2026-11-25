@@ -3,7 +3,7 @@ import * as net from "node:net";
 import type { SessionRuntime } from "@mend/domain";
 import { writePreviewPorts } from "@mend/network";
 
-import { BOAT_COMPOSE_FILE, type ServerBoat } from "./server-boat.ts";
+import { BOAT_COMPOSE_FILE, BOAT_IMAGES_COMPOSE_FILE, type ServerBoat } from "./server-boat.ts";
 import { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY, T3_GATEWAY_CADDYFILE } from "./server-edge-files.ts";
 import { HOST_VM_COMPOSE_FILE, namesHostVm } from "./server-host-vm.ts";
 import { MIRRORS_COMPOSE_FILE, runsMirrors, type ServerMirrors } from "./server-mirrors.ts";
@@ -519,6 +519,7 @@ export const composeOverlays = (
   ...(posture.preview === undefined ? [] : [PREVIEW_COMPOSE_FILE]),
   ...(posture.remoteEndpoints === undefined ? [] : [REMOTE_ENDPOINTS_COMPOSE_FILE]),
   ...(posture.boat === undefined ? [] : [BOAT_COMPOSE_FILE]),
+  ...(posture.boat?.imageRetention === false ? [BOAT_IMAGES_COMPOSE_FILE] : []),
 ];
 
 // ── what `mend server status` says ─────────────────────────────────────────

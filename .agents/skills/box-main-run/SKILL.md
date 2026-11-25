@@ -537,22 +537,29 @@ Every other failure is seen again by you before its lane's copy is deleted. A la
 second look or is one of the two kinds above: it frees room for other checks, and nothing on it is
 kept.
 
-**Read the Boat identity log before any copy goes.** When sealant refuses a saved Boat image, the
-copy's worker logs one line naming each field Boat changed (SLNT-1347):
-`Boat image identity differs: publication <id> quarantined (native-snapshot-identity-mismatch); differences [{"field":…,"recorded":…,"boat":…}]`.
-That line lives only in the copy's container log: `vm save` does not keep it and `vm down` deletes
-it. So right before every `vm down` in this skill, a dead run's copies (Limits) included, and on
-lane A before `vm save` (step 6), read it on that copy, one plain command:
+**Read the Boat identity log before any copy goes.** When sealant refuses or removes a saved Boat
+image, the copy's worker logs one line for it (SLNT-1347):
+`Boat image identity differs: publication <id> quarantined (native-snapshot-identity-mismatch); differences [{"field":…,"recorded":…,"boat":…}]`
+when Boat answers with another snapshot,
+`Boat has no saved snapshot for image: publication <id> quarantined (native-publication-missing)`
+when Boat has none of that name, and `Boat images no workspace can use were removed { … }` when the
+copy's own retention deleted some. Only lane A's copy runs that retention: `copies.sh` boots it with
+`vm up --boat --will-save`, and every other Boat copy with retention off. Those lines live only in
+the copy's container log: `vm save` does not keep them and `vm down` deletes them. So right before
+every `vm down` in this skill, a dead run's copies (Limits) included, and on lane A before `vm save`
+(step 6), read it on that copy, one plain command:
 
 ```sh
 .agents/skills/box-main-run/boat-identity.sh <lane> $E/boat-identity/<lane>.log
 ```
 
-It prints `boat-identity · lane <lane> · read <UTC> · none`, or `found <n>` and each line with
-docker's timestamp in front. Read every lane, B too. `not read: …` means the log could not be read:
-report that, never `none`, and still delete the copy. Its values (a snapshot name, a `bx_` VM id, a
-time, Boat's snapshot id) are not secrets: the report carries every line, under its own heading
-(report.md). File nothing for them; SLNT-1347 reads them there.
+It prints `boat-identity · lane <lane> · read <UTC> · retention <off|on|none: no Boat> · none`, or
+`found <n>` and each line with docker's timestamp in front. Lane A reads `retention on`, a Boat lane
+C `retention off` and lane B `none: no Boat`; a removal line on lane B or C, or `retention on`
+there, is a finding for SLNT-1347. Read every lane, B too. `not read: …` means the log could not be
+read: report that, never `none`, and still delete the copy. Its values (a snapshot name, a `bx_` VM
+id, a time, Boat's snapshot id) are not secrets: the report carries every line, under its own
+heading (report.md). File nothing for them; SLNT-1347 reads them there.
 
 On a Boat lane, `vm down` first stops every live session of both accounts through the copy's own
 Mend and waits up to five minutes for Boat to confirm each VM the copy launched gone. When one is

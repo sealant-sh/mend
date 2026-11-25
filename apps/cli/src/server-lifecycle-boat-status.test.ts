@@ -112,14 +112,16 @@ describe(
         "sessions · offered on this server's Docker and Boat · new organizations run on Boat until an owner chooses · declared",
       );
       const boat = lines.filter((line) => line.startsWith("boat"));
+      // The declared Boat image retention first, with the other settings this install declares.
       expect(boat.map((line) => line.split(" · ")[0])).toEqual([
+        "boat images",
         "boat address",
         "boat address",
         "boat key",
         "boat launch",
         "boat gateway",
       ]);
-      expect(boat[0]).toMatch(
+      expect(boat[1]).toMatch(
         /^boat address · session traffic at https:\/\/mend\.example\.com:8443 · answered HTTP 404 from this machine · observed \d{4}-\d\d-\d\d \d\d:\d\d UTC$/,
       );
       expect(lineOf(lines, "boat key · ")).toMatch(

@@ -52,7 +52,7 @@ const VERBS = {
   drive:
     "Run a recipe against web (the web app from this checkout; --box: against the box's API), desktop, mobile-web, vscode or t3, a CLI batch (cli), or record drive-tui.sh's captures (tui): --recipe <name|path>",
   evidence: "Gather this head's drives, scan them for secrets, write the verdict file",
-  vm: "A throwaway box on this machine per check (KVM): build the master, up a copy (--boat: on a Boat slot's own Funnel), list, down <n>|--all, slot add|remove <n>, save <n> (a copy's data becomes the next master's)",
+  vm: "A throwaway box on this machine per check (KVM): build the master, up a copy (--boat: on a Boat slot's own Funnel; --will-save: the copy `vm save` saves, the only Boat copy that removes Boat images), list, down <n>|--all, slot add|remove <n>, save <n> (a copy's data becomes the next master's)",
   formal: "Run the models whose COVERAGE the diff touches (--all, --full), guard and report drift",
 };
 
@@ -90,6 +90,7 @@ export const parseArgs = (argv) => {
     else if (arg === "--no-restore") options.noRestore = true;
     else if (arg === "--box") options.box = true;
     else if (arg === "--boat") options.boat = true;
+    else if (arg === "--will-save") options.willSave = true;
     else if (arg === "--leave-boat-vms") options.leaveBoatVms = true;
     else if (arg === "--leave-boat-images") options.leaveBoatImages = true;
     else if (arg === "--self") options.self = true;
@@ -374,7 +375,8 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
           fromBox: options.fromBox,
           ...sizing,
         }),
-      up: () => vmUp({ ...sizing, boat: options.boat === true }),
+      up: () =>
+        vmUp({ ...sizing, boat: options.boat === true, willSave: options.willSave === true }),
       down: () =>
         vmDown({
           slot: options.slot,

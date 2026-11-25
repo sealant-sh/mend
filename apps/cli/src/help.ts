@@ -2434,6 +2434,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "run Boat sessions without project resources, and no resource gateway on this host",
       },
       {
+        flag: "--boat-image-retention",
+        text: "once an hour, remove from Boat the images this server built that no session can start from and nothing used in the last day. The default",
+      },
+      {
+        flag: "--no-boat-image-retention",
+        text: "remove no Boat image. For a server that shares its Boat deployment and data with another, such as a throwaway copy of a server's data, whose removals only its own database would record",
+      },
+      {
         flag: "--no-boat",
         text: "forget Boat's settings and this server's own Boat key. New sessions run on Docker, and the server offers Boat no more; sessions already on Boat stop working",
       },
