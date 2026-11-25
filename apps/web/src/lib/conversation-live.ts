@@ -1,7 +1,8 @@
-import { type AgentItemDto, readAgentItemsAfter } from "@mend/agent-conversation";
+import { type AgentItemDto, isOpenTurn, readAgentItemsAfter } from "@mend/agent-conversation";
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 
 import type { WorkbenchEventDto } from "./api.ts";
+import { isShownItem } from "./conversation-rows.ts";
 import {
   CONVERSATION_PAGE_ITEMS,
   type ConversationPage,
@@ -13,6 +14,7 @@ import {
   turnView,
 } from "./conversation.ts";
 import { pruneArrived } from "./outbox.ts";
+import { awaitTurnOutput, turnOutputShown } from "./telemetry.ts";
 import type { TrpcClient, TrpcProxy } from "./trpc.ts";
 
 type Pages = InfiniteData<ConversationPage, string | null>;
@@ -99,6 +101,22 @@ export const skipsTurns = (data: Pages, changes: ConversationChanges): boolean =
 };
 
 /**
+ * What one patch puts on the page for the first-visible-output measure (lib/telemetry.ts): the
+ * turns the agent's first shown item arrived for, then the open turns it holds nothing shown of
+ * yet, which this tab now waits on.
+ */
+const measureOutput = (sessionId: string, changes: ConversationChanges, held: Pages) => {
+  turnOutputShown(new Set(changes.items.filter(isShownItem).map((item) => item.turnId)));
+  const answered = new Set(
+    heldConversation(held.pages)
+      .items.filter(isShownItem)
+      .map((item) => item.turnId),
+  );
+  for (const turn of changes.turns)
+    if (isOpenTurn(turn) && !answered.has(turn.id)) awaitTurnOutput(sessionId, turn.id, "event");
+};
+
+/**
  * Keep every held conversation current from the event stream, the ones on screen and the ones a
  * preload read alike: an event about a session reads what changed since its newest page's `feed`
  * (never the history again) and the newest window's turns and requests, and patches them into the
@@ -160,7 +178,10 @@ export const makeConversationPatcher = (
             data === undefined ? data : withChanges(data, changes),
           );
           // A message this tab sent may now be in the session: it leaves the outbox.
-          if (patched !== undefined) pruneArrived(sessionId, heldConversation(patched.pages));
+          if (patched !== undefined) {
+            pruneArrived(sessionId, heldConversation(patched.pages));
+            measureOutput(sessionId, changes, patched);
+          }
         }
       } while (state.again);
     } finally {

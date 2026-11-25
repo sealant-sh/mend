@@ -9,6 +9,7 @@ import {
   type ErrorEvent,
   eventFiltersIntegration,
   functionToStringIntegration,
+  getActiveSpan,
   getClient,
   globalHandlersIntegration,
   httpContextIntegration,
@@ -16,11 +17,15 @@ import {
   linkedErrorsIntegration,
   startBrowserTracingNavigationSpan,
   startBrowserTracingPageLoadSpan,
+  startInactiveSpan,
+  startNewTrace,
+  withActiveSpan,
 } from "@sentry/browser";
 import type { AnyRouter } from "@tanstack/react-router";
 import { isTRPCClientError } from "@trpc/client";
 
 import type { BrowserTelemetry } from "./telemetry-config.ts";
+import type { Action, Awaiting } from "./telemetry.ts";
 
 type Integration = Exclude<NonNullable<BrowserOptions["integrations"]>, Function>[number];
 
@@ -232,4 +237,116 @@ export const start = (telemetry: BrowserTelemetry, router: AnyRouter): void => {
 export const reportCaught = (error: unknown): void => {
   if (answeredByServer(error)) return;
   captureException(error, { mechanism: { type: "mend.error_boundary", handled: true } });
+};
+
+type Span = NonNullable<ReturnType<typeof getActiveSpan>>;
+
+/** Sentry's span status for a failure (`SPAN_STATUS_ERROR` in @sentry/core, not re-exported). */
+const SPAN_STATUS_ERROR = 2;
+
+/** Each action's span while it runs, by its span id: what a request names to be part of it. */
+const actions = new Map<string, Span>();
+
+/**
+ * The actions whose steps are running now, innermost last. A call made in a step belongs to the
+ * innermost: not to whatever span the page made active meanwhile (a start shows its page first,
+ * and the router's navigation span becomes the active one).
+ */
+const running: Array<string> = [];
+
+/**
+ * Run `step` with `span` active for its synchronous part only. `withActiveSpan` given a promise
+ * keeps its scope until the promise settles, and in a browser that scope is the page's: every
+ * request the page made meanwhile, and a second action, would land in this one's trace.
+ */
+const activeFor = <A>(span: Span, step: () => A): A => {
+  let result: { readonly value: A } | undefined;
+  running.push(span.spanContext().spanId);
+  try {
+    withActiveSpan(span, () => {
+      result = { value: step() };
+    });
+  } finally {
+    running.pop();
+  }
+  if (result === undefined) throw new Error("withActiveSpan did not run its callback");
+  return result.value;
+};
+
+/**
+ * An action as the root span of a trace of its own: a start or a send is not part of the page's
+ * load or of the navigation it happened during. Its span is active only while its own steps run.
+ */
+export const traceAction = async <A>(
+  name: string,
+  attributes: Readonly<Record<string, string>>,
+  run: (action: Action) => Promise<A>,
+): Promise<A> => {
+  const span = startNewTrace(() =>
+    startInactiveSpan({ name, op: "mend.action", attributes, forceTransaction: true }),
+  );
+  const { traceId, spanId } = span.spanContext();
+  actions.set(spanId, span);
+  try {
+    return await activeFor(span, () =>
+      run({
+        annotate: (more) => {
+          span.setAttributes(more);
+        },
+        within: (call) => activeFor(span, call),
+        ref: { traceId, spanId },
+      }),
+    );
+  } catch (error) {
+    span.setStatus({ code: SPAN_STATUS_ERROR, message: "internal_error" });
+    throw error;
+  } finally {
+    actions.delete(spanId);
+    span.end();
+  }
+};
+
+/** The action whose step is running now, if any: a tRPC call made now is part of it. */
+export const currentAction = (): string | null => {
+  const spanId = running.at(-1);
+  return spanId !== undefined && actions.has(spanId) ? spanId : null;
+};
+
+/** Run `call` (a request leaving) with the named action's span active, if it still runs. */
+export const withinAction = <A>(key: string, call: () => A): A => {
+  const span = actions.get(key);
+  return span === undefined ? call() : activeFor(span, call);
+};
+
+/**
+ * A turn's first visible output, as a span of its own carrying `mend.turn_id`: from when this tab
+ * sent the turn (linked to that send's trace) or first saw it open, to the frame after the agent's
+ * first item reached the page.
+ */
+export const firstVisibleOutput = (turnId: string, waited: Awaiting): void => {
+  requestAnimationFrame(() => {
+    startNewTrace(() => {
+      startInactiveSpan({
+        name: "mend.web.turn.first_visible_output",
+        op: "mend.ui",
+        startTime: waited.since,
+        forceTransaction: true,
+        attributes: {
+          "mend.turn_id": turnId,
+          "mend.session_id": waited.sessionId,
+          "mend.turn.waited_from": waited.from,
+        },
+        ...(waited.ref === null
+          ? {}
+          : {
+              links: [
+                {
+                  context: { ...waited.ref, traceFlags: 1 },
+                  attributes: { "sentry.link.type": "mend.send" },
+                },
+              ],
+            }),
+      }).end();
+    });
+  });
 };

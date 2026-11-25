@@ -19,6 +19,7 @@ import {
   startCreated,
 } from "./pending-starts.ts";
 import { failureWords } from "./refusal.ts";
+import { traceAction } from "./telemetry.ts";
 
 /** The server call a start makes; the browser's is `startSessionNow` in `api.ts`. */
 export interface StartCalls {
@@ -162,27 +163,32 @@ const settleStart = async (
  * never blanks. What the person wrote while it started moves with it. A refusal ends the start:
  * `place.refuse` takes the person back, with everything they wrote and Mend's words.
  */
-export const startInstantly = async (place: StartPlace, start: InstantStart): Promise<void> => {
-  const sentAt = start.now ?? new Date();
-  beginStart({
-    draftId: start.draftId,
-    userId: start.userId,
-    project: start.project,
-    harness: start.harness,
-    prompt: start.prompt,
-    selection: start.selection,
-    sentAt,
+export const startInstantly = (place: StartPlace, start: InstantStart): Promise<void> =>
+  // One trace from the person's start to the session's page (SLNT-1356): the start's request is
+  // made in this action's first step, so it carries the action's trace to Mend's server.
+  traceAction("mend.web.session.start", { "mend.harness": start.harness }, async (action) => {
+    const sentAt = start.now ?? new Date();
+    beginStart({
+      draftId: start.draftId,
+      userId: start.userId,
+      project: start.project,
+      harness: start.harness,
+      prompt: start.prompt,
+      selection: start.selection,
+      sentAt,
+    });
+    place.show(start.draftId);
+    let sessionId: string;
+    try {
+      sessionId = await start.start(keyOfDraft(start.draftId));
+    } catch (cause) {
+      action.annotate({ "mend.start.outcome": "refused" });
+      refuseStart(place, start, refusalWords(start.failure ?? "The session didn't start.", cause));
+      return;
+    }
+    action.annotate({ "mend.session_id": sessionId, "mend.start.outcome": "made" });
+    await settleStart(place, start, sessionId);
   });
-  place.show(start.draftId);
-  let sessionId: string;
-  try {
-    sessionId = await start.start(keyOfDraft(start.draftId));
-  } catch (cause) {
-    refuseStart(place, start, refusalWords(start.failure ?? "The session didn't start.", cause));
-    return;
-  }
-  await settleStart(place, start, sessionId);
-};
 
 /** How often a page reloaded during a start reads it, and how long Mend may not know its key. */
 export const RECOVERY_READ_MS = 500;

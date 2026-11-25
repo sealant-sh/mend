@@ -2,6 +2,6 @@
   "$comment": "What a browser downloads before the new web app draws a page, in bytes, as scripts/ci-web-size.mjs measures it in CI's static job (raw files and nitro's .gz copies). Set about 5% above the build of SLNT-1178 (entry 247.5 KB raw, 76.8 KB gzip; sign-in 1,023.5 KB raw, 322.6 KB gzip; the old app's sign-in is 931.2 KB and 299.7 KB). To raise one on purpose, change its number here in the pull request that needs it and say in the body what grew and why.",
   "entry": { "raw": 260000, "gzip": 81000 },
   "pages": {
-    "sign-in": { "raw": 1082000, "gzip": 347000 }
+    "sign-in": { "raw": 1087000, "gzip": 349000 }
   }
 }

@@ -3,6 +3,7 @@ import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import {
   createTRPCClient,
+  getFetch,
   httpBatchLink,
   httpLink,
   splitLink,
@@ -17,6 +18,7 @@ import type { TrpcContext } from "../server/api/run.ts";
 import { appRouter, type AppRouter } from "../server/routers/index.ts";
 import { makeLoginWalk } from "./login-walk.ts";
 import { signInPath } from "./sign-in.ts";
+import { actionContext, actionFetch, actionHeaders } from "./telemetry.ts";
 
 /**
  * Calls that go out alone, never in a batch: a batch answers when its slowest call does, so one
@@ -38,22 +40,35 @@ type TrpcFetch = NonNullable<Parameters<typeof httpLink>[0]["fetch"]>;
 
 /**
  * The browser's links to the web tier's /trpc. superjson matches the server's transformer, so
- * Dates, bigints and branded ids arrive as themselves; the cookie goes by itself.
+ * Dates, bigints and branded ids arrive as themselves; the cookie goes by itself. A call made in a
+ * traced action (a start, a send: lib/telemetry.ts) carries that action's trace to the server.
  */
 export const trpcLinks = (url: string, fetch?: TrpcFetch): TRPCLink<AppRouter>[] => {
   const options = {
     url,
     transformer: superjson,
     methodOverride: "POST",
-    ...(fetch === undefined ? {} : { fetch }),
+    // The page's `fetch` as it is when each request leaves: Sentry wraps it once it loads.
+    fetch: actionFetch<Parameters<TrpcFetch>[0], Parameters<TrpcFetch>[1], ReturnType<TrpcFetch>>(
+      (input, init) => getFetch(fetch)(input, init),
+    ),
   } satisfies Parameters<typeof httpLink<AppRouter>>[0];
   return [
+    // Each call is stamped with the action it was made in, as it is made: by the time its request
+    // leaves, after an await, the action's span is no longer the page's active one.
+    () =>
+      ({ op, next }) =>
+        next({ ...op, context: { ...op.context, ...actionContext() } }),
     splitLink({
       condition: (op) => UNBATCHED_PATHS.has(op.path),
-      true: httpLink(options),
+      true: httpLink({ ...options, headers: ({ op }) => actionHeaders([op.context]) }),
       // A batch's URL names every procedure in it; maxURLLength splits a big
       // one instead of overflowing URL limits.
-      false: httpBatchLink({ ...options, maxURLLength: 2083 }),
+      false: httpBatchLink({
+        ...options,
+        maxURLLength: 2083,
+        headers: ({ opList }) => actionHeaders(opList.map((op) => op.context)),
+      }),
     }),
   ];
 };

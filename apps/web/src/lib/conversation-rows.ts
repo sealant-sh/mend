@@ -76,6 +76,9 @@ const ENDED_BADLY: ReadonlySet<string> = new Set(["failed", "interrupted", "canc
 /** Kinds that are the agent thinking aloud: never shown as steps. */
 const SILENT: ReadonlySet<string> = new Set(["reasoning", "user-message"]);
 
+/** Whether the conversation shows an item: anything but the agent thinking aloud. */
+export const isShownItem = (item: AgentItemDto): boolean => !SILENT.has(item.kind);
+
 const isText = (item: AgentItemDto) => item.kind === "assistant-message";
 
 /**
