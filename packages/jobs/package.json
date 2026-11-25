@@ -21,6 +21,7 @@
     "@mend/sessions": "workspace:*",
     "@mend/slack": "workspace:*",
     "@mend/store": "workspace:*",
+    "@mend/telemetry": "workspace:*",
     "@sealant/sdk": "catalog:",
     "effect": "catalog:",
     "pg": "catalog:",

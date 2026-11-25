@@ -1156,6 +1156,7 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   rekeyWaitingTurn: () => Effect.void,
   protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
   saveProtocolCursor: () => Effect.void,
+  traceOf: () => Effect.succeed(null),
 };
 
 export const recordedTurnsLayer = (

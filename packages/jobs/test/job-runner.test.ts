@@ -4,6 +4,7 @@ import { it } from "@mend/test-ci/effect-vitest";
 import {
   Cause,
   ConfigProvider,
+  Option,
   Deferred,
   Effect,
   Exit,
@@ -145,7 +146,8 @@ describe.skipIf(postgres.skip)("JobRunner on pg-boss", () => {
         (yield* boss((client) => client.findJobs(job.name, { key: job.idempotencyKey }))).map(
           (row) => row.data,
         ),
-      ).toEqual([{ first: true }]);
+        // The first job's payload, with the trace it was queued in (`_trace`; job-trace.ts).
+      ).toEqual([{ first: true, _trace: { traceparent: expect.stringMatching(/^00-/) } }]);
     }),
   );
 
@@ -498,6 +500,61 @@ describe.skipIf(postgres.skip)("JobRunner on pg-boss", () => {
           enqueueKey("dedup-probe:change-1").pipe(Effect.map((id) => id !== null)),
           "the key to be free",
         );
+      }),
+    30_000,
+  );
+
+  it.live(
+    "runs each attempt in a span of the trace that queued the job, and hands the handler its payload",
+    () =>
+      Effect.gen(function* () {
+        const seen = yield* Deferred.make<{
+          readonly payload: unknown;
+          readonly span: {
+            readonly name: string;
+            readonly traceId: string;
+            readonly parent: string;
+          };
+        }>();
+        const queued = yield* Effect.promise(() =>
+          jobs().runPromise(
+            Effect.gen(function* () {
+              const runner = yield* JobRunner;
+              yield* runner.work("trace-probe", (payload) =>
+                Effect.gen(function* () {
+                  const span = yield* Effect.currentSpan;
+                  yield* Deferred.succeed(seen, {
+                    payload,
+                    span: {
+                      name: span.name,
+                      traceId: span.traceId,
+                      parent: Option.match(span.parent, {
+                        onNone: () => "",
+                        onSome: (parent) => parent.spanId,
+                      }),
+                    },
+                  });
+                }).pipe(Effect.orDie),
+              );
+              const request = yield* Effect.makeSpan("request");
+              const enqueued = yield* runner
+                .enqueue({ name: "trace-probe", payload: { change: "chg_1" } })
+                .pipe(Effect.withParentSpan(request));
+              return { traceId: request.traceId, id: idOf(enqueued) };
+            }),
+          ),
+        );
+        const { payload, span } = yield* Deferred.await(seen).pipe(Effect.timeout("10 seconds"));
+        expect(payload).toEqual({ change: "chg_1" });
+        expect(span.name).toBe("mend.job.process");
+        expect(span.traceId).toBe(queued.traceId);
+        const [stored] = yield* boss((client) =>
+          client.findJobs("trace-probe", { id: queued.id ?? "" }),
+        );
+        expect(stored?.data).toMatchObject({
+          change: "chg_1",
+          _trace: { traceparent: `00-${queued.traceId}-${span.parent}-01` },
+        });
       }),
     30_000,
   );

@@ -316,6 +316,9 @@ describe("worktree asset URLs", () => {
             },
           });
           assert.include(options.headers["access-control-allow-headers"], "range");
+          // A browser's trace headers pass the preflight, so its trace reaches the gateway.
+          for (const header of ["traceparent", "tracestate", "baggage", "sentry-trace"])
+            assert.include(options.headers["access-control-allow-headers"], header);
           assert.isFalse(
             logs.some((line) => line.includes(url.relativeUrl) || line.includes("movie.mp4")),
           );

@@ -17,7 +17,16 @@ import { postgresTestConfig } from "@mend/db/testing";
 import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import type { Session } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
-import { Deferred, Effect, Fiber, Layer, ManagedRuntime, Redacted, String as Str } from "effect";
+import {
+  Deferred,
+  Effect,
+  Fiber,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Redacted,
+  String as Str,
+} from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -62,6 +71,8 @@ const makeProcess = async (
   } = {},
 ) => {
   const asked: Asked[] = [];
+  /** The span each launch ran in: its name, its trace, and the span it was parented on. */
+  const launchSpans: Array<{ name: string; traceId: string; parent: string | null }> = [];
   const sessionStart = Layer.effect(
     SessionStart,
     Effect.gen(function* () {
@@ -107,6 +118,12 @@ const makeProcess = async (
                 message: "Too many sessions are starting at once.",
               });
             yield* answer?.onAdmitted ?? Effect.void;
+            const span = yield* Effect.currentSpan.pipe(Effect.orDie);
+            launchSpans.push({
+              name: span.name,
+              traceId: span.traceId,
+              parent: Option.getOrNull(Option.map(span.parent, (parent) => parent.spanId)),
+            });
             asked.push({ _tag: "launched", sessionId: session.id, prompt: launch.prompt ?? "" });
             return session;
           }),
@@ -125,7 +142,7 @@ const makeProcess = async (
   const layer = SessionStartsLive.pipe(Layer.provide(sessionStart), Layer.provide(engine));
   const runtime = ManagedRuntime.make(layer.pipe(Layer.provideMerge(repos)));
   await runtime.runPromise(Effect.void);
-  return { runtime, asked };
+  return { runtime, asked, launchSpans };
 };
 
 const onDatabase = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof repos>>) =>
@@ -238,6 +255,23 @@ describe("SessionStarts (SLNT-1239)", () => {
     // A page reloaded meanwhile finds it by its key.
     const read = await runtime.runPromise(withStarts((starts) => starts.read(ADA, key)));
     expect(read).toMatchObject({ state: "made", sessionId: made?.sessionId });
+    await runtime.dispose();
+  });
+
+  it("launches in one span parented on the request, which joins the request's trace", async () => {
+    const { runtime, launchSpans } = await makeProcess();
+    const request = await runtime.runPromise(
+      Effect.gen(function* () {
+        const span = yield* Effect.makeSpan("request");
+        yield* withStarts((starts) =>
+          starts.start(ADA, startRequest(crypto.randomUUID()), null),
+        ).pipe(Effect.withParentSpan(span));
+        return span;
+      }),
+    );
+    await eventually(() => launchSpans.length === 1);
+    expect(launchSpans[0]?.name).toBe("mend.session.start");
+    expect(launchSpans[0]?.traceId).toBe(request.traceId);
     await runtime.dispose();
   });
 

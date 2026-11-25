@@ -412,7 +412,8 @@ export const OrchestrationGroupLive = HttpApiBuilder.group(
 /**
  * t3code's browser CORS (`t3:apps/server/src/http.ts`, `browserApiCorsLayer`, packaged mode):
  * any origin, no credentials, its methods and headers. The desktop renderer and the hosted app
- * call the environment cross-origin.
+ * call the environment cross-origin. A browser's trace headers too (SLNT-1349): W3C's, the
+ * `sentry-*` baggage Sentry forwards beside them, and Sentry's own.
  */
 export const GatewayCorsLive: Layer.Layer<never, never, HttpRouter.HttpRouter> = HttpRouter.cors({
   allowedMethods: ["GET", "HEAD", "POST", "OPTIONS"],
@@ -420,6 +421,9 @@ export const GatewayCorsLive: Layer.Layer<never, never, HttpRouter.HttpRouter> =
     "authorization",
     "b3",
     "traceparent",
+    "tracestate",
+    "baggage",
+    "sentry-trace",
     "content-type",
     "dpop",
     "range",

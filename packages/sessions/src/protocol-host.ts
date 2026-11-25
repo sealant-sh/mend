@@ -106,6 +106,7 @@ import {
   type TurnSteerKeyConflictError,
   type SteerTurnInput,
 } from "./protocol-steer.ts";
+import { makeTurnTraces } from "./turn-trace.ts";
 
 /** A live protocol process or provider request cannot be addressed by this Mend process. */
 export class ProtocolHostNotLiveError extends Schema.TaggedError<ProtocolHostNotLiveError>()(
@@ -595,6 +596,8 @@ export const ProtocolHostLive: Layer.Layer<
 > = Layer.effectContext(
   Effect.gen(function* () {
     const conversations = yield* AgentConversationRepo;
+    // Each turn's trace, continued from the context it was accepted in (turn-trace.ts).
+    const turnTraces = makeTurnTraces(conversations.traceOf);
     const processes = yield* SessionProcessesRepo;
     const sessions = yield* SessionsRepo;
     const apps = yield* McpAppsRepo;
@@ -713,7 +716,10 @@ export const ProtocolHostLive: Layer.Layer<
           ended.error,
           entry.endpoint ? (ended.unreachable ?? null) : null,
         );
-        if (turn !== null) yield* reportEnded(entry, turn, ended.nativeHistory);
+        if (turn !== null) {
+          yield* turnTraces.end(turn, ended.providerTurnId);
+          yield* reportEnded(entry, turn, ended.nativeHistory);
+        }
         return turn;
       });
 
@@ -789,6 +795,7 @@ export const ProtocolHostLive: Layer.Layer<
         );
         entry.dispatch = { _tag: "Written", attempt, turn };
         const own = send.held.filter((ended) => ended.providerTurnId === providerTurnId);
+        if (bound !== null || own.length > 0) yield* turnTraces.begin(turn, providerTurnId);
         if (bound === null && own.length === 0) {
           entry.activeTurns.delete(providerTurnId);
           yield* entry.adapter.interrupt().pipe(Effect.ignore);
@@ -844,6 +851,26 @@ export const ProtocolHostLive: Layer.Layer<
         const turn = yield* conversations.claimNextTurn(entry.process.id, attempt);
         if (turn === null) return "done";
         entry.dispatch = { _tag: "Claimed", attempt, turn };
+        return yield* turnTraces.dispatch(turn, dispatchClaimed(entry, attempt, turn));
+      }).pipe(
+        withSealantRequestPriority("interactive"),
+        Effect.onError(() => leaveNothingStuck(entry)),
+        Effect.ensuring(
+          Effect.sync(() => {
+            entry.dispatch = { _tag: "Idle" };
+            liveAttempts.delete(attempt);
+          }),
+        ),
+      );
+    };
+
+    /** The rest of a dispatch, once it claimed `turn`: in the turn's own trace (`dispatchOne`). */
+    const dispatchClaimed = (
+      entry: HostedProcess,
+      attempt: DispatchAttemptId,
+      turn: AgentTurn,
+    ): Effect.Effect<"next" | "done"> =>
+      Effect.gen(function* () {
         const steering = entry.hooks.sharedControl;
         if (steering !== undefined) {
           const decision = yield* steering.decide(turn);
@@ -899,7 +926,7 @@ export const ProtocolHostLive: Layer.Layer<
             turn.selection,
             { appContext },
           )
-          .pipe(Effect.result);
+          .pipe(Effect.withSpan("mend.turn.input"), Effect.result);
         if (sent._tag === "Success") {
           yield* finishSend(entry, writing, sent.success);
           return "done";
@@ -969,17 +996,7 @@ export const ProtocolHostLive: Layer.Layer<
           return (yield* failClaimed(entry, attempt, TURN_DELIVERY_UNCONFIRMED)) ? "next" : "done";
         yield* failClaimed(entry, attempt, String(failure), started);
         return "next";
-      }).pipe(
-        withSealantRequestPriority("interactive"),
-        Effect.onError(() => leaveNothingStuck(entry)),
-        Effect.ensuring(
-          Effect.sync(() => {
-            entry.dispatch = { _tag: "Idle" };
-            liveAttempts.delete(attempt);
-          }),
-        ),
-      );
-    };
+      });
 
     const dispatchNext = (entry: HostedProcess): Effect.Effect<void> =>
       entry.dispatchPermit.withPermit(
@@ -1355,6 +1372,7 @@ export const ProtocolHostLive: Layer.Layer<
             event.providerTurnId,
             send.payer,
           );
+          yield* turnTraces.begin(phase.turn, event.providerTurnId);
           return;
         }
         case "harness-turn.started": {
@@ -1667,7 +1685,11 @@ export const ProtocolHostLive: Layer.Layer<
             forkSealantBackground(scope),
           );
         });
-      const onEvent = (event: AgentEvent): Effect.Effect<void> => {
+      // Each event is projected untraced: an agent reports many per turn, and a span each would
+      // be one per token. The turn's own stages are spans of its trace (turn-trace.ts).
+      const onEvent = (event: AgentEvent): Effect.Effect<void> =>
+        projectUntraced(event).pipe(Effect.withTracerEnabled(false));
+      const projectUntraced = (event: AgentEvent): Effect.Effect<void> => {
         const position = {
           outputSequence: currentOutputSequence,
           eventIndex: currentEventIndex,
@@ -1678,7 +1700,10 @@ export const ProtocolHostLive: Layer.Layer<
         if (activeEntry === null || !flushed) {
           return Effect.sync(() => pendingEvents.push({ event, position })).pipe(Effect.asVoid);
         }
-        if (event._tag === "item.updated") return queueItem(event, position);
+        if (event._tag === "item.updated")
+          return turnTraces
+            .output(event.item.providerTurnId)
+            .pipe(Effect.andThen(queueItem(event, position)));
         // Deltas have a whole-item update beside them and are never persisted separately.
         if (event._tag === "content.delta") return Effect.void;
         const entry = activeEntry;
@@ -1917,6 +1942,7 @@ export const ProtocolHostLive: Layer.Layer<
             Effect.fail(new ProtocolHostNotLiveError({ processId: place.processId })),
           ),
         );
+      yield* Effect.annotateCurrentSpan({ "mend.turn_id": turn.id, "mend.session_id": sessionId });
       const dispatched = yield* dispatchAdmitted(sessionId, place, dispatchJoined).pipe(
         Effect.exit,
       );
