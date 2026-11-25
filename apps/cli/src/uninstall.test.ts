@@ -419,6 +419,42 @@ describe("leftovers of an install with no configuration here", () => {
     expect((await describeUninstall(f.runtime, "server")).server).toBe("none");
   });
 
+  it("removes egress and proxy networks for owned workspaces without touching another workspace's networks", async () => {
+    const daemon = leftoversDaemon();
+    daemon.networks.set("sealant-w1-egress", null);
+    daemon.networks.set("sealant-w1-isolated", null);
+    daemon.networks.set("sealant-w1-proxy-egress", null);
+    daemon.networks.set("sealant-other-egress", null);
+    daemon.networks.set("sealant-other-isolated", null);
+    daemon.networks.set("sealant-other-proxy-egress", null);
+    daemon.containers.set("sealant-w1-proxy", { "sealant.workspace": "sealant-w1" });
+    daemon.facts.set("sealant-w1-proxy", {
+      networks: ["sealant-w1-isolated", "sealant-w1-proxy-egress"],
+    });
+    const f = laptop({ daemon, signedIn: false });
+    const plan = await describeUninstall(f.runtime, "server");
+    expect(plan.server).toMatchObject({
+      kind: "leftovers",
+      holdings: {
+        sidecars: ["sealant-w1-docker", "sealant-w1-proxy"],
+        networks: [
+          "sealant-w1-network",
+          "sealant-w1-egress",
+          "sealant-w1-isolated",
+          "sealant-w1-proxy-egress",
+        ],
+      },
+    });
+    const outcome = await executeUninstall(f.runtime, plan);
+    expect(outcome).toEqual({ failures: [], leftovers: [], remaining: [] });
+    expect([...daemon.networks.keys()]).toEqual([
+      "other_default",
+      "sealant-other-egress",
+      "sealant-other-isolated",
+      "sealant-other-proxy-egress",
+    ]);
+  });
+
   it("leaves an installation that still has its anchor alone, whoever's it is", async () => {
     const f = laptop({ daemon: leftoversDaemon({ anchor: true }) });
     expect((await describeUninstall(f.runtime, "server")).server).toBe("none");

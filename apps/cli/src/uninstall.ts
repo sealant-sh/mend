@@ -128,9 +128,9 @@ export interface WorkspaceHolding {
 /** What Docker holds for the installation's sessions: workspaces, their sidecars and networks. */
 export interface DockerHoldings {
   readonly workspaces: ReadonlyArray<WorkspaceHolding>;
-  /** Each workspace's Docker service (`<workspace>-docker`), labelled with its workspace. */
+  /** Each workspace's sidecars (`<workspace>-docker`, `<workspace>-proxy`), labelled with its workspace. */
   readonly sidecars: ReadonlyArray<string>;
-  /** Each workspace's own network (`<workspace>-network`). */
+  /** Each workspace's own networks (`-network`, `-egress`, `-isolated`, `-proxy-egress`). */
   readonly networks: ReadonlyArray<string>;
   /** The images the workspaces and sidecars run, for `all` to remove with the rest. */
   readonly images: ReadonlyArray<string>;
@@ -532,7 +532,14 @@ export const findWorkspaces = async (
   });
   const networks = await listNamesIn(run, context, "network", ["name=sealant-"]);
   if ("problem" in networks) return networks;
-  const wanted = new Set([...names].map((name) => `${name}-network`));
+  const wanted = new Set(
+    [...names].flatMap((name) => [
+      `${name}-network`,
+      `${name}-egress`,
+      `${name}-isolated`,
+      `${name}-proxy-egress`,
+    ]),
+  );
   return {
     workspaces,
     sidecars,

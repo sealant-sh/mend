@@ -1919,9 +1919,12 @@ async function main() {
       afterUninstall.containers.every((item) => initialContainers.has(item.Id)),
     "Uninstall must remove the live workspace and every container the installation started",
   );
+  const networksLeft = afterUninstall.networks
+    .filter((item) => !initialNetworks.has(item.Id))
+    .map((item) => item.Name);
   check(
-    afterUninstall.networks.every((item) => initialNetworks.has(item.Id)),
-    "Uninstall must remove the project network and every workspace network",
+    networksLeft.length === 0,
+    `Uninstall must remove the project network and every workspace network; left: ${networksLeft.join("; ")}`,
   );
   // This run's own fixtures (the git remote's volume) are the acceptance's, not Mend's.
   const volumesLeft = afterUninstall.volumes
