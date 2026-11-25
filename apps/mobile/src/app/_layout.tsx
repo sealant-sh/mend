@@ -21,9 +21,13 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import { AskDialog } from "@/components/ask";
 import { NotificationRouting } from "@/components/notification-routing";
+import { startErrorReporting } from "@/data/error-reporting";
 import { configureForegroundPresentation } from "@/data/notification-navigation";
 import { PairingBoundary } from "@/data/pairing-scope";
 import { fontFamilies, useEvidenceTheme } from "@/theme/evidence";
+
+// First, so an error while the app starts is reported too. A build with no DSN does nothing here.
+startErrorReporting();
 
 // React Native has no window focus: teach React Query that foregrounding IS
 // focus, so every stale query refetches the moment the app comes back —
