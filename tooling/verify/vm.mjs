@@ -17,6 +17,7 @@ import { homedir, constants as osConstants, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { mainMigrations, restoreScript, saveScript, storeLoadScript, sshRunner } from "./box.mjs";
+import { telemetryFlags } from "./stack.mjs";
 import {
   boatOn,
   claimSlot,
@@ -1134,7 +1135,11 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
     const url = urlOf(slot);
     const web = runPhase(root, slot, "web", [addressOf(slot)], dir);
     if (web.code !== 0) return fail("web", "Mend's web port forwarded", lastLine(web.out));
-    const setup = ssh(`mend server setup --offline --url ${url} 2>&1 | tail -5`);
+    // Telemetry only when this machine names the projects (MEND_VERIFY_SENTRY_DSN and the rest).
+    const telemetry = telemetryFlags(process.env, "check-vm")
+      .map((part) => `'${part.replaceAll("'", "")}'`)
+      .join(" ");
+    const setup = ssh(`mend server setup --offline --url ${url} ${telemetry} 2>&1 | tail -5`);
     if (setup.code !== 0)
       return fail("url", `mend server setup --url ${url}`, lastLine(setup.stdout));
     const healthy = await waitForHealth(url, 300_000);

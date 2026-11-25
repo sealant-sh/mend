@@ -395,6 +395,16 @@ Limits of a check VM:
   logins went stale at the run's first refresh on a copy, and loading it there signs nothing in.
 - **Memory.** A copy takes about 9 GB of the host's memory once its sessions run.
 
+### Telemetry on a stack or a check VM
+
+A verify stack and a check VM report their errors and traces to Sentry only when this machine names
+the projects, in the verifier's own environment, never in the repository: `MEND_VERIFY_SENTRY_DSN`
+(Mend's servers, mend-server), `MEND_VERIFY_SEALANT_SENTRY_DSN` (the bundled sealant,
+sealant-server) and `MEND_VERIFY_SENTRY_BROWSER_DSN` (the web app in the browser, mend-web); the
+DSNs are in SLNT-1349's contract. `pnpm verify stack up` hands them to the stack's
+`mend server setup` under the environment `verify-stack`, and `pnpm verify vm up` to the copy's
+under `check-vm`. Unset, both report to nobody, as every install does.
+
 ## The box
 
 Two Mend servers run as VMs on one Proxmox host. A check on the box uses VM 131, the preview server
@@ -439,6 +449,14 @@ on it.
 
   The `mend` CLI on the box is whatever `npm install --global @sealant/mend@<version>` put there
   last. No deploy updates it.
+
+  Telemetry is off on both servers until their operator turns it on, once, with the DSNs in
+  SLNT-1349's contract; a setup keeps them across reruns and upgrades:
+
+  ```sh
+  mend server setup --offline --sentry-dsn <mend-server DSN> --sealant-sentry-dsn <sealant-server DSN> \
+    --sentry-browser-dsn <mend-web DSN> --sentry-environment <alpha|box>
+  ```
 
 - **VM 131, `mend-boat-preview`** (`10.0.0.41`), the preview server made on 5 Nov 2026 for the Boat
   work, where checks on the box run:

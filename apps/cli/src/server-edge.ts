@@ -12,6 +12,7 @@ import {
   type ServerRemoteEndpoints,
 } from "./server-remote-endpoints.ts";
 import { storeFileGroup } from "./server-store.ts";
+import { type ServerTelemetry, TELEMETRY_COMPOSE_FILE } from "./server-telemetry.ts";
 import {
   type ServerWorkspaceImages,
   WORKSPACE_IMAGES_COMPOSE_FILE,
@@ -502,6 +503,7 @@ export const composeOverlays = (
     readonly mirrors?: ServerMirrors;
     readonly workspaceImages?: ServerWorkspaceImages;
     readonly workspaceMemory?: ServerWorkspaceMemory;
+    readonly telemetry?: ServerTelemetry;
     readonly remoteEndpoints?: ServerRemoteEndpoints;
     readonly boat?: ServerBoat;
   },
@@ -511,6 +513,7 @@ export const composeOverlays = (
   ...(runsMirrors(posture.mirrors) ? [MIRRORS_COMPOSE_FILE] : []),
   ...(posture.workspaceImages === undefined ? [] : [WORKSPACE_IMAGES_COMPOSE_FILE]),
   ...(posture.workspaceMemory === undefined ? [] : [WORKSPACE_MEMORY_COMPOSE_FILE]),
+  ...(posture.telemetry === undefined ? [] : [TELEMETRY_COMPOSE_FILE]),
   ...(namesHostVm(posture) ? [HOST_VM_COMPOSE_FILE] : []),
   ...(posture.t3GatewayPort === undefined ? [] : [T3_GATEWAY_COMPOSE_FILE]),
   ...(posture.preview === undefined ? [] : [PREVIEW_COMPOSE_FILE]),

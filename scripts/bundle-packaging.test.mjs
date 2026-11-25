@@ -815,7 +815,11 @@ test("each product's processes report to their own Sentry project, and none with
   };
   const mend = childEnvironment(container, "mend", { PORT: "3101" });
   assert.equal(mend.SENTRY_DSN, "https://m@sentry.example/3");
-  assert.equal(mend.SENTRY_BROWSER_DSN, "https://b@sentry.example/4");
+  // Only the web app serves the browser its DSN.
+  assert.equal(mend.SENTRY_BROWSER_DSN, undefined);
+  const web = childEnvironment(container, "mend", {}, { web: true });
+  assert.equal(web.SENTRY_DSN, "https://m@sentry.example/3");
+  assert.equal(web.SENTRY_BROWSER_DSN, "https://b@sentry.example/4");
   assert.equal(mend.SENTRY_ENVIRONMENT, "box");
   assert.equal(mend.PORT, "3101");
   assert.equal(mend.MEND_SENTRY_DSN, undefined);

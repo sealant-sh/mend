@@ -105,6 +105,25 @@ export const runName = (date) => {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * A server's telemetry flags, from the verifier's own environment and never from the repository: a
+ * stack or a check VM reports to Sentry only when this machine names the projects (SLNT-1355),
+ * under `environment` (`verify-stack`, `check-vm`).
+ */
+export const telemetryFlags = (env, environment = "verify-stack") => {
+  const named = [
+    ["--sentry-dsn", env.MEND_VERIFY_SENTRY_DSN],
+    ["--sealant-sentry-dsn", env.MEND_VERIFY_SEALANT_SENTRY_DSN],
+    ["--sentry-browser-dsn", env.MEND_VERIFY_SENTRY_BROWSER_DSN],
+  ].filter(([, value]) => typeof value === "string" && value.trim() !== "");
+  if (named.length === 0) return [];
+  return [
+    ...named.flatMap(([flag, value]) => [flag, value.trim()]),
+    "--sentry-environment",
+    environment,
+  ];
+};
+
+/**
  * Launch steps 1 to 7, then the doctor. Stops at the first step that does not pass and leaves what
  * it made for `down`, which the result's `next` names.
  */
@@ -303,6 +322,7 @@ export const stackUp = async (
     "--port",
     String(port),
     ...sources,
+    ...telemetryFlags(env),
   ];
   const service = await step("service", "Start the stack's Service", "mend", [
     "service",

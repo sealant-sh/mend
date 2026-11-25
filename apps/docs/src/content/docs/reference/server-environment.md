@@ -510,6 +510,29 @@ Sealant no longer reads `SEALANT_BOAT_ADMISSION_OWNER_IDS`, `SEALANT_BOAT_GATEWA
 `SEALANT_BOAT_AUTOMATIC_PARKING` or `SEALANT_BOAT_PARKING_DELAY_SECONDS`. A server that still sets
 them starts and ignores them.
 
+## Telemetry
+
+Mend's servers report nothing unless an operator names where: Mend runs on people's own machines,
+and an install never reports to anyone by default. Given a Sentry DSN, the API, its worker and the
+t3code gateway send their errors, traces and logs to that project, and a server with none makes no
+call at all.
+
+| Variable                                                    | Default                 | What it does                                                                                                                                           |
+| ----------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SENTRY_DSN`                                                | unset                   | The Sentry project this process reports to. Unset, telemetry is off. A value that is not a DSN is logged and leaves it off; it never stops the server. |
+| `SENTRY_ENVIRONMENT`                                        | `development`           | The environment every report names.                                                                                                                    |
+| `SENTRY_RELEASE`                                            | `mend-server@<version>` | The release errors are filed under, the one CI uploads the source maps for. Derived from `MEND_VERSION`; a `dev` build names none.                     |
+| `SENTRY_TRACES_SAMPLE_RATE`                                 | `1`                     | The share of traces kept, from 0 to 1. A trace that arrives with its caller's decision keeps it.                                                       |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` | the DSN's own           | With a DSN set, send traces and logs to this OTLP collector instead, with these headers (`name=value,…`).                                              |
+
+What leaves the process is scrubbed first: no request or response bodies, prompts, agent or terminal
+output, file contents, headers, cookies, tokens or environment; URLs lose their queries and server
+paths their directories. Trace and span IDs are kept whole.
+
+The Docker bundle runs Mend and sealant in one container, and each reports to a project of its own:
+the bundle hands Mend's processes `MEND_SENTRY_DSN` and sealant's `SEALANT_SENTRY_DSN`, each as
+their `SENTRY_DSN`, and only the web app `SENTRY_BROWSER_DSN`, which it serves to the browser.
+
 ## Set them on the Docker install
 
 `mend server setup` takes no environment variables. It writes the installation's `server.env`
@@ -529,7 +552,11 @@ each workspace network; `--t3-gateway` writes `compose.t3.yaml`, which sets
 `compose.workspace-images.yaml`, which sets `WORKSPACE_IMAGE_RETAINED_PLANS` and
 `WORKSPACE_IMAGE_MIN_AGE_HOURS` with the values written in the overlay itself, not in `server.env`;
 `--workspace-memory` and `--workspace-docker-memory` write `compose.workspace-memory.yaml`, which
-sets `SEALANT_DOCKER_WORKSPACE_MEMORY_LIMIT` and `SEALANT_DOCKER_SERVICE_MEMORY_LIMIT` the same way.
+sets `SEALANT_DOCKER_WORKSPACE_MEMORY_LIMIT` and `SEALANT_DOCKER_SERVICE_MEMORY_LIMIT` the same way;
+and `--sentry-dsn`, `--sealant-sentry-dsn`, `--sentry-browser-dsn`, `--sentry-environment` and
+`--sentry-traces-sample-rate` write `compose.telemetry.yaml`, which sets `MEND_SENTRY_DSN`,
+`SEALANT_SENTRY_DSN`, `SENTRY_BROWSER_DSN`, `SENTRY_ENVIRONMENT` and `SENTRY_TRACES_SAMPLE_RATE` the
+same way.
 
 What `server.env` holds, all read by the compose files:
 
@@ -621,6 +648,9 @@ extraEnv:
   - { name: MEND_CAPTURE_REQUIRE_SIZES, value: "true" }
   - { name: MEND_BUDGET_ACCOUNT_LIVE_SESSIONS, value: "12" }
 ```
+
+Telemetry is off on the chart too until it is set there. To turn it on, put `SENTRY_DSN`,
+`SENTRY_ENVIRONMENT` and `SENTRY_TRACES_SAMPLE_RATE` in `extraEnv`.
 
 Use `extraEnv` for the variables the chart does not set, and the value that maps to a variable for
 the ones it does. See [Deploy on Kubernetes](/operate/deploy-kubernetes/).

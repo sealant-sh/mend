@@ -218,6 +218,18 @@ import {
   type ServerGeneration,
 } from "./server-store.ts";
 import {
+  parseTelemetryField,
+  parseTelemetryValue,
+  renderTelemetryOverlay,
+  resolveTelemetry,
+  type ServerTelemetry,
+  TELEMETRY_COMPOSE_FILE,
+  TELEMETRY_FIELDS,
+  type TelemetryValue,
+  telemetryChangedLines,
+  telemetryLine,
+} from "./server-telemetry.ts";
+import {
   parseWorkspaceImageKeep,
   parseWorkspaceImageMinAge,
   parseWorkspaceImagesField,
@@ -485,6 +497,12 @@ interface SetupOptions {
    */
   readonly workspaceMemory: WorkspaceMemoryValue | undefined;
   readonly workspaceDockerMemory: WorkspaceMemoryValue | undefined;
+  /**
+   * `--sentry-dsn`, `--sealant-sentry-dsn`, `--sentry-browser-dsn`, `--sentry-environment`,
+   * `--sentry-traces-sample-rate` (server-telemetry.ts): where errors and traces go. `default`
+   * takes a saved value away; omitted keeps the saved one.
+   */
+  readonly telemetry: Readonly<Partial<Record<keyof ServerTelemetry, TelemetryValue>>>;
   /** `--docker-hub-username` with `--docker-hub-token-stdin`: the Docker mirror's upstream login. */
   readonly dockerHubUsername: string | undefined;
   readonly dockerHubTokenStdin: boolean;
@@ -586,6 +604,8 @@ export interface ServerConfig {
    * (server-workspace-memory.ts). Absent, sealant's `auto` applies.
    */
   readonly workspaceMemory?: ServerWorkspaceMemory;
+  /** Where this server's errors and traces go (server-telemetry.ts). Absent, nowhere. */
+  readonly telemetry?: ServerTelemetry;
   /**
    * The t3code gateway's port (docs/adr/0012), when the operator turned it on with `--t3-gateway`;
    * absent, it does not run. Published where the web port is (`t3GatewayPlacement`).
@@ -955,6 +975,7 @@ const SETUP_FLAGS = new Set([
   "--workspace-image-min-age",
   "--workspace-memory",
   "--workspace-docker-memory",
+  ...TELEMETRY_FIELDS.map(({ flag }) => flag),
   "--docker-hub-username",
   "--docker-hub-token-stdin",
   "--docker-hub-public-only",
@@ -1189,6 +1210,14 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     throw setupError(
       `--workspace-docker-memory must be ${WORKSPACE_MEMORY_RULE}, not "${dockerMemoryFlag ?? ""}".`,
     );
+  const telemetry: Partial<Record<keyof ServerTelemetry, TelemetryValue>> = {};
+  for (const field of TELEMETRY_FIELDS) {
+    const given = flagValue(field.flag);
+    if (given === undefined) continue;
+    const value = parseTelemetryValue(field, given);
+    if (value === null) throw setupError(`${field.flag} must be ${field.rule}.`);
+    telemetry[field.key] = value;
+  }
   const dockerHubUsername = flagValue("--docker-hub-username");
   const dockerHubTokenStdin = values.has("--docker-hub-token-stdin");
   const noDockerHubLogin = values.has("--no-docker-hub-login");
@@ -1358,6 +1387,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     workspaceImageMinAge,
     workspaceMemory,
     workspaceDockerMemory,
+    telemetry,
     dockerHubUsername,
     dockerHubTokenStdin,
     noDockerHubLogin,
@@ -1983,6 +2013,13 @@ const parseServerConfig = (raw: string): ServerConfig => {
     throw setupError(
       "Server config is corrupt: workspaceMemory must hold workspace and dockerService, each auto, none or a size of at least 64m such as 4g. Run mend server setup with --workspace-memory and --workspace-docker-memory.",
     );
+  const telemetry = fields.has("telemetry")
+    ? parseTelemetryField(fields.get("telemetry"))
+    : undefined;
+  if (telemetry === null)
+    throw setupError(
+      "Server config is corrupt: telemetry must hold Sentry DSNs, an environment name and a sample rate from 0 to 1. Run mend server setup with --sentry-dsn and the flags beside it.",
+    );
   const config: ServerConfig = {
     ...(fields.has("sessionRuntime")
       ? { sessionRuntime: savedSessionRuntimeOf(fields.get("sessionRuntime")) }
@@ -2018,6 +2055,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     ...(fields.has("mirrors") ? { mirrors: parseMirrorsField(fields.get("mirrors")) } : {}),
     ...(workspaceImages === undefined ? {} : { workspaceImages }),
     ...(workspaceMemory === undefined ? {} : { workspaceMemory }),
+    ...(telemetry === undefined ? {} : { telemetry }),
     ...(t3GatewayPort === undefined ? {} : { t3GatewayPort }),
     ...(t3GatewayOrigin === undefined ? {} : { t3GatewayOrigin }),
     ...(preview === undefined ? {} : { preview }),
@@ -2067,6 +2105,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     workspaceImageMinAge: undefined,
     workspaceMemory: undefined,
     workspaceDockerMemory: undefined,
+    telemetry: {},
     dockerHubUsername: undefined,
     dockerHubTokenStdin: false,
     noDockerHubLogin: false,
@@ -2904,6 +2943,10 @@ const validateOverlays = (
     throw setupError(
       `Server generation is corrupt: ${WORKSPACE_MEMORY_COMPOSE_FILE} does not match the saved workspace memory settings.`,
     );
+  if (files.telemetry !== renderTelemetryOverlay(config.telemetry))
+    throw setupError(
+      `Server generation is corrupt: ${TELEMETRY_COMPOSE_FILE} does not match the saved telemetry settings.`,
+    );
   if (files.hostVm !== renderHostVmOverlay(config))
     throw setupError(
       `Server generation is corrupt: ${HOST_VM_COMPOSE_FILE} does not match the saved session runtimes.`,
@@ -3244,6 +3287,9 @@ export const readServerInstallationFacts = async (
           ...(generation.files.workspaceMemory === undefined
             ? []
             : [{ name: WORKSPACE_MEMORY_COMPOSE_FILE, content: generation.files.workspaceMemory }]),
+          ...(generation.files.telemetry === undefined
+            ? []
+            : [{ name: TELEMETRY_COMPOSE_FILE, content: generation.files.telemetry }]),
           ...(generation.files.hostVm === undefined
             ? []
             : [{ name: HOST_VM_COMPOSE_FILE, content: generation.files.hostVm }]),
@@ -3354,6 +3400,7 @@ const generationFiles = (
   const mirrors = renderMirrorsOverlay(config.mirrors);
   const workspaceImages = renderWorkspaceImagesOverlay(config.workspaceImages);
   const workspaceMemory = renderWorkspaceMemoryOverlay(config.workspaceMemory);
+  const telemetry = renderTelemetryOverlay(config.telemetry);
   const hostVm = renderHostVmOverlay(config);
   const t3Gateway = renderT3GatewayOverlay(config);
   const remoteEndpoints = renderRemoteEndpointsOverlay(config.remoteEndpoints, config.edgeHost);
@@ -3382,6 +3429,7 @@ const generationFiles = (
     ...(mirrors === undefined ? {} : { mirrors }),
     ...(workspaceImages === undefined ? {} : { workspaceImages }),
     ...(workspaceMemory === undefined ? {} : { workspaceMemory }),
+    ...(telemetry === undefined ? {} : { telemetry }),
     ...(hostVm === undefined ? {} : { hostVm }),
     ...(config.mirrors === undefined || config.mirrors.npm === null
       ? {}
@@ -4950,6 +4998,7 @@ const setupServer = async (
   const mirrors = resolveMirrors(existing?.config.mirrors, options);
   const workspaceImages = resolveWorkspaceImages(existing?.config.workspaceImages, options);
   const workspaceMemory = resolveWorkspaceMemory(existing?.config.workspaceMemory, options);
+  const telemetry = resolveTelemetry(existing?.config.telemetry, options.telemetry);
   const configWithoutBucket: ServerConfig = {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     assetContract: ASSET_CONTRACT,
@@ -4964,6 +5013,7 @@ const setupServer = async (
     mirrors,
     ...(workspaceImages === undefined ? {} : { workspaceImages }),
     ...(workspaceMemory === undefined ? {} : { workspaceMemory }),
+    ...(telemetry === undefined ? {} : { telemetry }),
   };
   const dockerHubToken = await resolveDockerHubToken(runtime, options, mirrors, store);
   const boatKey = await resolveServerBoatKey(runtime, options, configWithoutBucket.boat, store);
@@ -5154,6 +5204,8 @@ const setupServer = async (
     existing?.config.workspaceMemory,
     config.workspaceMemory,
   ))
+    runtime.writeLine(line);
+  for (const line of telemetryChangedLines(existing?.config.telemetry, config.telemetry))
     runtime.writeLine(line);
   // A changed URL says how every CLI follows it; otherwise the last word is how to sign in, and
   // the first account only while there is none.
@@ -6204,6 +6256,7 @@ const serverStatus = async (
   for (const line of declaredPostureLines(config)) runtime.writeLine(line);
   runtime.writeLine(workspaceImagesLine(config.workspaceImages));
   runtime.writeLine(workspaceMemoryLine(config.workspaceMemory));
+  runtime.writeLine(telemetryLine(config.telemetry));
   const state = await composeCommand(runtime, installation, ["ps", "--all"]);
   runtime.writeLine(state.stdout.trim() || "No Compose containers found. Run mend server start.");
   const running = await composeCommand(runtime, installation, [
