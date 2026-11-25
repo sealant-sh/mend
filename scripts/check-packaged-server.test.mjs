@@ -429,6 +429,35 @@ test("a store-less Sealant executor passes acceptance and is owned for cleanup b
   assert.equal(isSealantExecutor(foreign), false);
   assert.equal(ownsWorkspaceContainer(foreign, new Set()), false);
   assert.throws(() => assertCaptureExecutor(foreign), /must be a Sealant executor/);
+
+  // Launch-scoped executor sockets (`mend-<24 hex>`, labelled `sealant.control-scope`).
+  const launchScope = "mend-0123456789abcdef01234567";
+  const scoped = executor({
+    Config: { Labels: { "sealant.control-scope": launchScope } },
+  });
+  scoped.HostConfig.Mounts[0].VolumeOptions.Subpath = launchScope;
+  assert.equal(isSealantExecutor(scoped), true);
+  assert.doesNotThrow(() => assertCaptureExecutor(scoped));
+  assert.equal(ownsWorkspaceContainer(scoped, new Set()), true);
+
+  // Launch-scoped executor fails if the label is missing/mismatched or secret scope mismatches.
+  const unlabelled = executor();
+  unlabelled.HostConfig.Mounts[0].VolumeOptions.Subpath = launchScope;
+  assert.throws(() => assertCaptureExecutor(unlabelled), /Capture executor must mount nothing/);
+
+  const wrongLabel = executor({
+    Config: { Labels: { "sealant.control-scope": "mend-fedcba9876543210fedcba98" } },
+  });
+  wrongLabel.HostConfig.Mounts[0].VolumeOptions.Subpath = launchScope;
+  assert.throws(() => assertCaptureExecutor(wrongLabel), /Capture executor must mount nothing/);
+
+  const wrongSecret = executor({
+    Config: { Labels: { "sealant.control-scope": launchScope } },
+  });
+  wrongSecret.HostConfig.Mounts[0].VolumeOptions.Subpath = launchScope;
+  wrongSecret.HostConfig.Mounts[1].VolumeOptions.Subpath =
+    "_dotfiles/sealant-secret-env-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  assert.throws(() => assertCaptureExecutor(wrongSecret), /Capture executor must mount nothing/);
 });
 
 const rejectedExecutors = [

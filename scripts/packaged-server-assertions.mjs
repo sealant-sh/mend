@@ -75,6 +75,8 @@ export function ownsComposeContainer(container, initialIds, configRoot) {
 }
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const executorScopePattern = /^mend-[0-9a-f]{24}$/;
+const secretEnvPrefix = "_dotfiles/sealant-secret-env-";
 
 /**
  * Recognize executor candidates by a Sealant name or a mend-control root mount, even when its
@@ -145,21 +147,31 @@ export function captureExecutorMountsAreValid(container) {
   const actualControl = controlMounts.find((mount) => mount.Destination === "/run/sealant");
   const actualSecret = controlMounts.find((mount) => mount.Destination === "/run/sealant/secrets");
   const subpath = control?.VolumeOptions?.Subpath;
-  if (
-    typeof subpath !== "string" ||
-    !subpath.startsWith("sealant-") ||
-    !uuidPattern.test(subpath.slice(8))
-  )
-    return false;
+  const isLegacyScope =
+    typeof subpath === "string" &&
+    subpath.startsWith("sealant-") &&
+    uuidPattern.test(subpath.slice(8));
+  const isLaunchScope = typeof subpath === "string" && executorScopePattern.test(subpath);
+  if (!isLegacyScope && !isLaunchScope) return false;
   const name = typeof container.Name === "string" ? container.Name.replace(/^\//, "") : "";
-  if (/^sealant-[0-9a-f-]+$/i.test(name) && name.toLowerCase() !== subpath.toLowerCase())
+  const isSealantName = /^sealant-[0-9a-f-]+$/i.test(name);
+  if (isLegacyScope && isSealantName && name.toLowerCase() !== subpath.toLowerCase()) return false;
+  if (isLaunchScope && container.Config?.Labels?.["sealant.control-scope"] !== subpath)
     return false;
+  const secretSubpath = secret?.VolumeOptions?.Subpath;
+  const validSecretSubpath = isLegacyScope
+    ? secretSubpath === `${secretEnvPrefix}${subpath.slice(8)}`
+    : typeof secretSubpath === "string" &&
+      secretSubpath.startsWith(secretEnvPrefix) &&
+      (isSealantName
+        ? secretSubpath.toLowerCase() === `${secretEnvPrefix}${name.slice(8).toLowerCase()}`
+        : uuidPattern.test(secretSubpath.slice(secretEnvPrefix.length)));
   if (
     control?.Type !== "volume" ||
     control.Source !== "mend-control" ||
     secret?.Type !== "volume" ||
     secret.Source !== "mend-control" ||
-    secret.VolumeOptions?.Subpath !== `_dotfiles/sealant-secret-env-${subpath.slice(8)}` ||
+    !validSecretSubpath ||
     secret.ReadOnly !== true ||
     actualControl?.Type !== "volume" ||
     actualControl.Name !== "mend-control" ||
