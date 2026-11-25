@@ -31,6 +31,8 @@ vi.mock("expo-splash-screen", () => ({
   hideAsync: async () => undefined,
 }));
 vi.mock("expo-system-ui", () => ({ setBackgroundColorAsync: async () => undefined }));
+// The Sentry SDK's native host does not exist in jsdom; the layout starts reporting off without a DSN.
+vi.mock("@/data/error-reporting", () => ({ startErrorReporting: () => undefined }));
 vi.mock("expo-status-bar", () => ({ StatusBar: () => null }));
 vi.mock("react-native-gesture-handler", () => ({
   GestureHandlerRootView: ({ children }: { readonly children: unknown }) => children,
