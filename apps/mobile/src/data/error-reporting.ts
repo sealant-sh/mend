@@ -36,6 +36,15 @@ export const startErrorReporting = (): void => {
     attachScreenshot: false,
     attachViewHierarchy: false,
     sendClientReports: false,
+    // Uncaught errors only. With @sentry/react-native 7.11 on React Native 0.86, its tracker for
+    // unhandled rejections crashed Hermes (SIGSEGV in a timer callback) on the first rejection, where
+    // React Native's own tracker only warns; the app keeps React Native's.
+    integrations: (defaults) =>
+      defaults.map((integration) =>
+        integration.name === "ReactNativeErrorHandlers"
+          ? Sentry.reactNativeErrorHandlersIntegration({ onunhandledrejection: false })
+          : integration,
+      ),
     beforeSend: (event) => scrubEvent(event, PATHS),
   });
   // Which over-the-air update was running: the same version ships many bundles.
