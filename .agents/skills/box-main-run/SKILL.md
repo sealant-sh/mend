@@ -612,7 +612,7 @@ the same image. Report `warm-up · second account's image built in <m> min`, `·
    `vm down`.
 
    ```sh
-   pnpm verify vm build --version <version> --sha $SHA --cli "$(npm view @sealant/mend dist-tags.next)"
+   pnpm verify vm build --version <version> --sha $SHA
    ```
 
    (no `--from-box`: it builds from `$VMS/box`). Record `master` in the ledger from `vm list`. When

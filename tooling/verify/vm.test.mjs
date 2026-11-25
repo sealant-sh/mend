@@ -20,6 +20,7 @@ import {
   hostOf,
   LOGIN_CLAIM,
   masterHostKey,
+  packCli,
   SLOTS,
   unitArgs,
   unitOf,
@@ -243,6 +244,18 @@ test("vm build without what to install changes nothing, and the master stays", a
     assert.equal(result.steps[0].status, "failed");
     assert.match(result.steps[0].detail, /--version <preview>/);
     assert.deepEqual(readdirSync(root).toSorted(), ["master"]);
+
+    // --cli is refused: the master's CLI is packed from --sha, never npm's next tag (SLNT-1343).
+    const withCli = await vmBuild({
+      root,
+      version: "v",
+      sha: "s".repeat(40),
+      cli: "0.37.0-next.1742",
+    });
+    assert.equal(withCli.steps[0].status, "failed");
+    assert.match(withCli.steps[0].detail, /packs the mend CLI from --sha/);
+    assert.deepEqual(withCli.next, [`pnpm verify vm build --version v --sha ${"s".repeat(40)}`]);
+    assert.deepEqual(readdirSync(root).toSorted(), ["master"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -416,4 +429,79 @@ test("a saved copy's logins are held against refresh by a claim no sweeper reach
 test("verify vm save takes a copy's number", () => {
   const { words } = parseArgs(["vm", "save", "2"]);
   assert.deepEqual(words, ["vm", "save", "2"]);
+});
+
+test("the master's CLI is packed from the preview's commit, stamped with its version, in a worktree removed after", () => {
+  const out = scratch();
+  const calls = [];
+  const exec = (command, args, options = {}) => {
+    calls.push({ line: [command, ...args].join(" "), cwd: options.cwd ?? null });
+    if (command === "pnpm" && args[2] === "pack") {
+      mkdirSync(args[4], { recursive: true });
+      writeFileSync(join(args[4], "sealant-mend-0.37.0-next.1751.preview.334.tgz"), "");
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  try {
+    const packed = packCli({
+      repoRoot: "/repo",
+      sha: "c".repeat(40),
+      version: "0.37.0-next.1751.preview.334",
+      out,
+      run: exec,
+    });
+    assert.equal(packed.ok, true);
+    assert.equal(packed.tarball, join(out, "sealant-mend-0.37.0-next.1751.preview.334.tgz"));
+    const lines = calls.map(({ line }) => line);
+    const added = lines.find((line) => line.startsWith("git -C /repo worktree add"));
+    assert.match(added, new RegExp(`--detach \\S+/src ${"c".repeat(40)}$`));
+    const stamp = calls.find(({ line }) => line.startsWith("npm pkg set"));
+    assert.equal(stamp.line, "npm pkg set version=0.37.0-next.1751.preview.334");
+    assert.match(stamp.cwd, /\/src\/apps\/cli$/);
+    assert.ok(lines.indexOf(stamp.line) < lines.findIndex((line) => line.includes(" pack ")));
+    assert.match(lines.at(-1), /^git -C \/repo worktree remove --force \S+\/src$/);
+    assert.ok(!lines.some((line) => line.includes("npm view") || line.includes("dist-tags")));
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("a commit the checkout lacks is fetched, and a pack that fails says which step and still removes its worktree", () => {
+  const out = scratch();
+  const calls = [];
+  const exec = (command, args) => {
+    const line = [command, ...args].join(" ");
+    calls.push(line);
+    if (line.includes("cat-file")) return { code: 1, stdout: "", stderr: "" };
+    if (command === "pnpm" && args[0] === "install")
+      return { code: 1, stdout: "", stderr: "ERR_PNPM_OUTDATED_LOCKFILE  lockfile out of date" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  try {
+    const packed = packCli({
+      repoRoot: "/repo",
+      sha: "d".repeat(40),
+      version: "1.0.0",
+      out,
+      run: exec,
+    });
+    assert.equal(packed.ok, false);
+    assert.match(packed.detail, /^pnpm install: ERR_PNPM_OUTDATED_LOCKFILE/);
+    assert.ok(calls.includes(`git -C /repo fetch --quiet origin ${"d".repeat(40)}`));
+    assert.match(calls.at(-1), /worktree remove --force/);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("the git phase leaves server.env alone: every mend server command refuses a line its config cannot render", () => {
+  const script = readFileSync(new URL("./vm-provision.sh", import.meta.url), "utf8");
+  const git = script.slice(script.indexOf("\ngit)\n"), script.indexOf("\nseal)\n"));
+  assert.ok(git.length > 0);
+  assert.doesNotMatch(git, /server\.env"?\s*$/m);
+  assert.doesNotMatch(git, />>\s*"?\$env_file/);
+  assert.doesNotMatch(
+    git.replace(/^\s*#.*$/gm, ""),
+    /server\.env|MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS/,
+  );
 });

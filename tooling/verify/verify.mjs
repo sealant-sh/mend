@@ -365,9 +365,10 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
     const { steps, next, ...rest } = await {
       build: () =>
         vmBuild({
+          repoRoot: root,
           version: options.vmVersion,
           sha: options.vmSha,
-          cliVersion: options.vmCli,
+          cli: options.vmCli,
           fromBox: options.fromBox,
           ...sizing,
         }),

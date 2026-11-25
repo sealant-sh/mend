@@ -190,7 +190,7 @@ copy of a box, one per check, so no check waits for another. A check that needs 
 four Boat slots (below); VM 131 is used only for what a check VM cannot do.
 
 ```sh
-pnpm verify vm build --version <preview> --sha <commit> --cli <mend version> [--from-box '<ssh args>']
+pnpm verify vm build --version <preview> --sha <commit> [--from-box '<ssh args>']
 pnpm verify vm up            # a fresh copy: prints MEND_VERIFY_BOX_SSH and MEND_VERIFY_OUTER_URL
 pnpm verify vm list          # the master and each copy
 pnpm verify vm down <n>      # or --all: stops the copy and deletes its disk
@@ -199,7 +199,10 @@ pnpm verify vm save <n>      # the copy's data becomes the next master's (the da
 ```
 
 **The master disk** is a stock Ubuntu 24.04 cloud image under QEMU/KVM with Docker, Node and the
-`mend` CLI, and Mend installed by `scripts/preview-deploy.sh` (so by `mend server setup`, with
+`mend` CLI of the preview it installs (`vm build` packs `@sealant/mend` from `--sha` in a scratch
+worktree, stamped `--version`, and never reads npm's `next` tag; the same build is the checker's CLI
+in `~/.local/share/mend-check-vms/cli` once the master is sealed), and Mend installed by
+`scripts/preview-deploy.sh` (so by `mend server setup`, with
 `--session-runtime docker --session-runtimes docker --allow-userns`) over VM 131's own
 `identity.env`. Setup reuses an identity it finds, so the box run's data loads as it is: `world.sql`
 and its store archive, the git service's repositories in `/srv/mend-git` on the same bridge gateway,

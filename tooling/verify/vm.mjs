@@ -4,6 +4,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -12,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
-import { homedir, constants as osConstants } from "node:os";
+import { homedir, constants as osConstants, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { mainMigrations, restoreScript, saveScript, storeLoadScript, sshRunner } from "./box.mjs";
@@ -441,6 +442,89 @@ const keepFailure = (root, slot, dir) => {
 const step = (id, title, status, detail) => ({ id, title, status, ...(detail ? { detail } : {}) });
 
 /**
+ * The mend CLI of the preview a master installs (SLNT-1343): `@sealant/mend` packed from `sha` in a
+ * scratch worktree of `repoRoot`, its version stamped as `version`, as the preview's own image is. A
+ * master's CLI then never depends on what npm's `next` tag points at, nor on the caller's checkout.
+ * Returns the tarball's path in `out`, or what went wrong.
+ */
+export const packCli = ({ repoRoot, sha, version, out, run: exec = run }) => {
+  const scratch = mkdtempSync(join(tmpdir(), "mend-vm-cli-"));
+  const src = join(scratch, "src");
+  const failed = (what, result) => ({
+    ok: false,
+    detail: `${what}: ${lastLine(result.stderr) || lastLine(result.stdout) || `exit ${result.code}`}`,
+  });
+  try {
+    if (exec("git", ["-C", repoRoot, "cat-file", "-e", `${sha}^{commit}`]).code !== 0) {
+      const fetched = exec("git", ["-C", repoRoot, "fetch", "--quiet", "origin", sha]);
+      if (fetched.code !== 0) return failed(`git fetch origin ${sha.slice(0, 12)}`, fetched);
+    }
+    const added = exec("git", ["-C", repoRoot, "worktree", "add", "--quiet", "--detach", src, sha]);
+    if (added.code !== 0) return failed("git worktree add", added);
+    const installed = exec(
+      "pnpm",
+      ["install", "--frozen-lockfile", "--prefer-offline", "--ignore-scripts", "--silent"],
+      { cwd: src, timeout: 600_000 },
+    );
+    if (installed.code !== 0) return failed("pnpm install", installed);
+    const stamped = exec("npm", ["pkg", "set", `version=${version}`], {
+      cwd: join(src, "apps/cli"),
+    });
+    if (stamped.code !== 0) return failed("npm pkg set version", stamped);
+    rmSync(out, { recursive: true, force: true });
+    mkdirSync(out, { recursive: true, mode: 0o700 });
+    const packed = exec("pnpm", ["--filter", "@sealant/mend", "pack", "--pack-destination", out], {
+      cwd: src,
+      timeout: 600_000,
+    });
+    const tarball = existsSync(out) ? readdirSync(out).find((name) => name.endsWith(".tgz")) : null;
+    if (packed.code !== 0 || !tarball) return failed("pnpm pack", packed);
+    return { ok: true, tarball: join(out, tarball) };
+  } finally {
+    exec("git", ["-C", repoRoot, "worktree", "remove", "--force", src]);
+    rmSync(scratch, { recursive: true, force: true });
+  }
+};
+
+/**
+ * Installs the packed CLI under `dir` (`<dir>/node_modules/.bin/mend`) and checks it reads
+ * `version`. Returns null once it does, or what went wrong.
+ */
+const installCliKit = (dir, tarball, version, exec = run) => {
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const installed = exec("npm", [
+    "install",
+    "--silent",
+    "--no-audit",
+    "--no-fund",
+    "--prefix",
+    dir,
+    tarball,
+  ]);
+  if (installed.code !== 0) return `npm install: ${lastLine(installed.stderr)}`;
+  const said = lastLine(
+    exec(join(dir, "node_modules/.bin/mend"), ["--version"]).stdout.split("\n")[0] ?? "",
+  );
+  return said === `mend ${version}`
+    ? null
+    : `the installed CLI reads "${said}", not mend ${version}`;
+};
+
+/**
+ * Puts the build's CLI kit in place of <root>/cli, the one `vm down` and the warm step run as the
+ * checker, once the master it belongs to is sealed. A `vm down` running just then finds no CLI and
+ * skips its stops; the rename leaves no half-installed kit.
+ */
+const swapCliKit = (root, kit) => {
+  const target = join(root, "cli");
+  const old = join(root, `cli.old.${process.pid}`);
+  if (existsSync(target)) renameSync(target, old);
+  renameSync(kit, target);
+  rmSync(old, { recursive: true, force: true });
+};
+
+/**
  * vm build: the master disk. From VM 131 it copies (with --from-box) the install identity, the box
  * run's data and its git repositories into <root>/box; then it boots a stock cloud image, installs
  * Docker, Node and the mend CLI, installs Mend with preview-deploy.sh over that identity, loads the
@@ -450,26 +534,39 @@ const step = (id, title, status, detail) => ({ id, title, status, ...(detail ? {
  */
 export const vmBuild = async ({
   root = vmRoot(),
+  repoRoot,
   version,
   sha,
-  cliVersion,
+  cli,
   fromBox,
   cpus = 8,
   memory = "12G",
 }) => {
   const p = paths(root);
   const steps = [];
-  if (!version || !sha || !cliVersion)
+  if (!version || !sha)
     return {
       steps: [
         step(
           "args",
           "What to install",
           "failed",
-          "--version <preview>, --sha <commit> and --cli <version> are required",
+          "--version <preview> and --sha <commit> are required",
         ),
       ],
       next: [],
+    };
+  if (cli !== undefined)
+    return {
+      steps: [
+        step(
+          "args",
+          "What to install",
+          "failed",
+          "--cli is gone: vm build packs the mend CLI from --sha, so the master's CLI is the preview's own (SLNT-1343)",
+        ),
+      ],
+      next: [`pnpm verify vm build --version ${version} --sha ${sha}`],
     };
   if (qemuPid(p.build) !== null)
     return {
@@ -654,27 +751,53 @@ export const vmBuild = async ({
     );
     return out.status === 0;
   };
-  const phases = [
-    ["system", [NODE_VERSION], "Docker, git, jq and Node"],
-    ["cli", [cliVersion], `The mend CLI ${cliVersion}`],
-  ];
-  for (const [name, args, title] of phases) {
-    const done = phase(name, args);
-    if (done.code !== 0)
-      return fail(
-        name,
-        title,
-        `${lastLine(done.out)} (log: ${join(p.build, `provision-${name}.log`)})`,
-      );
-    steps.push(
-      step(
-        name,
-        title,
-        "passed",
-        `${lastLine(done.out).replace(/^vm-provision: /, "")} in ${done.took}s`,
-      ),
+  const system = phase("system", [NODE_VERSION]);
+  if (system.code !== 0)
+    return fail(
+      "system",
+      "Docker, git, jq and Node",
+      `${lastLine(system.out)} (log: ${join(p.build, "provision-system.log")})`,
     );
-  }
+  steps.push(
+    step(
+      "system",
+      "Docker, git, jq and Node",
+      "passed",
+      `${lastLine(system.out).replace(/^vm-provision: /, "")} in ${system.took}s`,
+    ),
+  );
+
+  // The CLI, packed from --sha: on the master as the box's global CLI, and in <root>/cli, the one
+  // the warm step and `vm down` run as the checker.
+  const cliTitle = `The mend CLI ${version}, packed from ${sha.slice(0, 12)}`;
+  const cliAt = Date.now();
+  const packed = packCli({ repoRoot, sha, version, out: join(p.build, "cli") });
+  if (!packed.ok) return fail("cli", cliTitle, packed.detail);
+  const tarballOnVm = "/root/mend-cli.tgz";
+  const sent = spawnSync(
+    "ssh",
+    ["-o", "BatchMode=yes", ...boxSshArgs(root, MASTER_SLOT), `umask 077; cat > ${tarballOnVm}`],
+    { input: readFileSync(packed.tarball), maxBuffer: 1024 * 1024 },
+  );
+  if (sent.status !== 0) return fail("cli", cliTitle, `the tarball could not be copied in`);
+  const installed = phase("cli", [tarballOnVm, version]);
+  if (installed.code !== 0)
+    return fail(
+      "cli",
+      cliTitle,
+      `${lastLine(installed.out)} (log: ${join(p.build, "provision-cli.log")})`,
+    );
+  const cliKit = join(p.build, "cli-kit");
+  const local = installCliKit(cliKit, packed.tarball, version);
+  if (local !== null) return fail("cli", cliTitle, local);
+  steps.push(
+    step(
+      "cli",
+      cliTitle,
+      "passed",
+      `${lastLine(installed.out).replace(/^vm-provision: /, "")} on the master and beside it, in ${seconds(cliAt)}s`,
+    ),
+  );
   for (const [file, target] of [
     ["identity.env", "/root/.config/mend/identity.env"],
     ["world.sql", "/root/main-run/world.sql"],
@@ -767,9 +890,14 @@ if [ -s /root/main-run/mend-garage.tgz ]; then
 fi`);
   if (keys.code !== 0)
     return fail("load", "Load the box run's data", `the box's keys: ${lastLine(keys.stderr)}`);
-  const startedMend = ssh("mend server start --offline 2>&1 | tail -3");
+  // The CLI's own exit and last line: a start it refuses fails here, not as a health wait.
+  const startedMend = ssh("mend server start --offline 2>&1");
   if (startedMend.code !== 0)
-    return fail("load", "Load the box run's data", lastLine(startedMend.stdout));
+    return fail(
+      "load",
+      "Load the box run's data",
+      `mend server start exited ${startedMend.code}: ${lastLine(startedMend.stdout)}`,
+    );
   const healthy = await waitForHealth(urlOf(MASTER_SLOT), 300_000);
   if (!healthy.ok)
     return fail("load", "Load the box run's data", `Mend did not answer health: ${healthy.seen}`);
@@ -788,24 +916,7 @@ fi`);
   const kit = join(homedir(), ".local/share/mend-boat-check/cli");
   if (existsSync(kit)) {
     const warmAt = Date.now();
-    const cliDir = join(root, "cli");
-    if (!existsSync(join(cliDir, "node_modules/.bin/mend"))) {
-      const installed = run("npm", [
-        "install",
-        "--silent",
-        "--no-audit",
-        "--no-fund",
-        "--prefix",
-        cliDir,
-        `@sealant/mend@${cliVersion}`,
-      ]);
-      if (installed.code !== 0)
-        return fail(
-          "warm",
-          "Warm the workspace images",
-          `npm install: ${lastLine(installed.stderr)}`,
-        );
-    }
+    const cliDir = cliKit;
     const env = { ...process.env, XDG_CONFIG_HOME: kit, MEND_URL: urlOf(MASTER_SLOT) };
     for (const project of WARM_PROJECTS) {
       const warmed = run(
@@ -823,11 +934,14 @@ fi`);
     const again = ssh(restoreScript("/root/main-run/world.sql"));
     if (!again.stdout.includes("restore=done"))
       return fail("warm", "Warm the workspace images", `reload: ${lastLine(again.stdout)}`);
-    const restarted = ssh("mend server start --offline 2>&1 | tail -3");
+    const restarted = ssh("mend server start --offline 2>&1");
     const back =
       restarted.code === 0
         ? await waitForHealth(urlOf(MASTER_SLOT), 300_000)
-        : { ok: false, seen: lastLine(restarted.stdout) };
+        : {
+            ok: false,
+            seen: `mend server start exited ${restarted.code}: ${lastLine(restarted.stdout)}`,
+          };
     if (!back.ok)
       return fail("warm", "Warm the workspace images", `Mend after the reload: ${back.seen}`);
     const images = ssh(
@@ -865,10 +979,11 @@ fi`);
   const meta = join(p.master, `master.json.${process.pid}.tmp`);
   writeFileSync(
     meta,
-    `${JSON.stringify({ version, sha, cliVersion, builtAt: new Date().toISOString(), seconds: seconds(started) }, null, 2)}\n`,
+    `${JSON.stringify({ version, sha, cliVersion: version, builtAt: new Date().toISOString(), seconds: seconds(started) }, null, 2)}\n`,
     { mode: 0o600 },
   );
   renameSync(meta, p.masterMeta);
+  swapCliKit(root, cliKit);
   rmSync(p.buildMarker, { force: true });
   writeSshConfig(p);
   const size = statSync(p.masterDisk).size;
@@ -900,7 +1015,7 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
           "no master: pnpm verify vm build",
         ),
       ],
-      next: ["pnpm verify vm build --version <preview> --sha <commit> --cli <version>"],
+      next: ["pnpm verify vm build --version <preview> --sha <commit>"],
     };
   const master = readJson(p.masterMeta);
   if (boat && joinedSlots(root).length === 0)
@@ -1302,7 +1417,7 @@ export const vmSave = async ({ root = vmRoot(), repoRoot, slot }) => {
     steps,
     next: [
       `pnpm verify vm down ${slot}`,
-      "pnpm verify vm build --version <preview> --sha <commit> --cli <version>   # once no copy runs",
+      "pnpm verify vm build --version <preview> --sha <commit>   # once no copy runs",
     ],
   };
 };
