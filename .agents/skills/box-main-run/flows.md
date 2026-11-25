@@ -3453,21 +3453,30 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 
 - **Map:** no feature file yet (SLNT-1349's trace from the browser through Mend's web server to its
   API; SLNT-1356)
-- **Needs:** no session; no turn; web; none
-- **Do:** Only on a copy started with this machine's `MEND_VERIFY_SENTRY_DSN` (the `telemetry · …`
-  line of `server.status-logs` says so); on any other, `not run · no DSN on this copy`. Drive the
-  owner's browser with every request carrying a `traceparent` the run chose (Playwright
-  `setExtraHTTPHeaders`, a fresh trace id): load the Now page, then go to Projects in the page. Read
-  sentry.mend.run project 3 (mend-server) back for that trace id with the read-only token in
-  `~/.local/share/sentry-mend/api-token` (never print it), spans by `span.name` and `parent_span`.
-- **See:** `mend.web.<procedure>` spans (`mend.web.sessions.inbox`, `mend.web.projects.list`, …)
-  whose parent is the request's own span id, both for the page the server rendered and for the calls
-  made in the page; under each, the web server's `http.client` span and under that the API's
-  `http.server` span named by route template; no id in any span name; no error event from service
-  `mend-web` for the run.
+- **Needs:** no session; no turn; web; `start-session.web-write`
+- **Do:** Only on a copy started with this machine's `MEND_VERIFY_SENTRY_DSN` and
+  `MEND_VERIFY_SENTRY_BROWSER_DSN` (the `telemetry · …` line of `server.status-logs` says so); on
+  any other, `not run · no DSN on this copy`. Drive the owner's browser with every request carrying
+  a `traceparent` the run chose (Playwright `setExtraHTTPHeaders`, a fresh trace id): load the Now
+  page, then go to Projects in the page. Read sentry.mend.run back with the read-only token in
+  `~/.local/share/sentry-mend/api-token` (never print it): project 3 (mend-server) for that trace
+  id, spans by `span.name` and `parent_span`; project 4 (mend-web) for the copy's environment over
+  the time `start-session.web-write` ran.
+- **See:** in project 3, `mend.web.<procedure>` spans (`mend.web.sessions.inbox`,
+  `mend.web.projects.list`, …) whose parent is the request's own span id, both for the page the
+  server rendered and for the calls made in the page; under each, the web server's `http.client`
+  span and under that the API's `http.server` span named by route template; no id in any span name;
+  no error event from service `mend-web` for the run. In project 4, for web-write's session: one
+  `mend.web.session.start` (`mend.start.outcome` made, `mend.harness` codex, its `mend.session_id`),
+  a `mend.web.message.send` per message with the `mend.turn_id` of the turn it started (none for the
+  message sent into a running turn), and one `mend.web.turn.first_visible_output` per answered turn
+  with the same `mend.turn_id`, `mend.turn.waited_from` send, lasting about as long as the answer
+  took; a send's trace holds its own `http.client` span and the web server's
+  `mend.web.sessions.sendMessage` under it, and nothing else of the page.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/server/`, `packages/telemetry/`
+- **Areas:** `apps/web/src/server/`, `apps/web/src/lib/telemetry`, `apps/web/src/lib/trpc.ts`,
+  `packages/telemetry/`
 
 ### doctor.checklist
 

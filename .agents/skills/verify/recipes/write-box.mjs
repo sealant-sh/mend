@@ -1,6 +1,6 @@
 // Writing to the agent on the box, with a real Codex turn (route PR 12, SLNT-1128): a message
 // sent from the session's composer and answered, a message sent into the running turn, and Stop
-// turn, after which the session's tab reads Idle. Run it as the verify skill's section 9 says, under
+// turn, after which the session's tab reads Replied (an idle session's word since #1903). Run it as the verify skill's section 9 says, under
 // your own hold, and stop the session it starts before release:
 //
 //   pnpm verify drive web --box --recipe write-box
@@ -115,7 +115,7 @@ export default async ({ page, web, capture, note }) => {
     `turn 3 ended replying "${reply}"; ${turns} turns in all, so the message went into turn 3 rather than a turn of its own`,
   );
 
-  // Stop turn stops the running turn, and the session reads Idle.
+  // Stop turn stops the running turn, and the session reads Replied: idle, its turn over.
   await send(
     "Run the shell command `sleep 600` and wait for it to finish, then reply with the word done.",
   );
@@ -124,7 +124,7 @@ export default async ({ page, web, capture, note }) => {
   await stopTurn().click();
   await visible(page.getByText(/^This turn was stopped at/)).waitFor({ timeout: 120_000 });
   const tabWords = (await visible(page.getByRole("tab")).getAttribute("aria-label")) ?? "";
-  if (!tabWords.includes("Idle")) throw new Error(`after Stop turn the tab reads "${tabWords}"`);
+  if (!tabWords.includes("Replied")) throw new Error(`after Stop turn the tab reads "${tabWords}"`);
   note(`Stop turn stopped turn 4; the tab reads "${tabWords}"`);
   await capture("box-turn-stopped-desktop-light");
   await page.setViewportSize(PHONE);
