@@ -2208,6 +2208,16 @@ test("upgrade retention changes only the generation and pin, never credentials o
     serverEnv: previous.serverEnv.replace("MEND_VERSION=0.1.0", "MEND_VERSION=0.2.0"),
   };
   assert.doesNotThrow(() => assertUpgradeRetention(previous, target));
+  // Setup and upgrade serialize identical server.json keys in different orders (e.g. sessionRuntime).
+  const reorderedPrevious = {
+    ...previous,
+    config: { serverVersion: "0.1.0", appPort: 1234, sessionRuntime: "docker" },
+  };
+  const reorderedTarget = {
+    ...target,
+    config: { sessionRuntime: "docker", serverVersion: "0.2.0", appPort: 1234 },
+  };
+  assert.doesNotThrow(() => assertUpgradeRetention(reorderedPrevious, reorderedTarget));
   for (const candidate of [
     { ...target, target: previous.target },
     { ...target, identity: "changed" },

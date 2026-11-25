@@ -1014,13 +1014,24 @@ export function assertImagePin(container, inspectedImage, image, version, expect
   );
 }
 
+const canonicalJson = (value) => {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value)
+      .toSorted()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
 /** Compare secret-bearing values only as booleans, never assertion diffs. */
 export function assertUpgradeRetention(previous, target) {
   assert.ok(previous.target !== target.target, "Upgrade must select a new generation");
   assert.ok(previous.identity === target.identity, "Upgrade must retain installation identity");
   assert.ok(
-    JSON.stringify({ ...previous.config, serverVersion: target.config.serverVersion }) ===
-      JSON.stringify(target.config),
+    canonicalJson({ ...previous.config, serverVersion: target.config.serverVersion }) ===
+      canonicalJson(target.config),
     "Upgrade must retain deployment configuration except for the explicit server pin",
   );
   const oldPin = `MEND_VERSION=${previous.config.serverVersion}`;
