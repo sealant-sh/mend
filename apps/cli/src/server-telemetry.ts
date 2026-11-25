@@ -51,7 +51,12 @@ const isDsn = (value: string): boolean => {
   return URL.canParse(value);
 };
 
-const DSN_RULE = "a Sentry DSN, https://<public key>@<host>/<project id>, or default";
+/**
+ * Said without a URL's shape: the CLI scrubs whatever reads as a URL's credentials from what it
+ * prints, which would leave `https://<host>/…` of an example with a key in it.
+ */
+const DSN_RULE =
+  "a Sentry DSN (the https address Sentry gives, with the project's public key and its id), or default";
 
 export const TELEMETRY_FIELDS: ReadonlyArray<Field> = [
   { key: "dsn", flag: "--sentry-dsn", variable: "MEND_SENTRY_DSN", rule: DSN_RULE, valid: isDsn },

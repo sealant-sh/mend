@@ -200,6 +200,10 @@ describe("telemetry on the Docker install", { timeout: 120_000 }, () => {
       const result = await serverCommand(["setup", "--offline", flag, value], f.runtime);
       expect(result._tag).toBe("error");
       expect(result._tag === "error" ? result.message : "").toContain(`${flag} must be `);
+      if (flag.endsWith("-dsn"))
+        expect(result._tag === "error" ? result.message : "").toContain(
+          "the project's public key and its id",
+        );
     }
     expect(f.files()[OVERLAY]).toBeUndefined();
   });
