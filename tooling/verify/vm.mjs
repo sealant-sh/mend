@@ -1135,13 +1135,28 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
     const url = urlOf(slot);
     const web = runPhase(root, slot, "web", [addressOf(slot)], dir);
     if (web.code !== 0) return fail("web", "Mend's web port forwarded", lastLine(web.out));
-    // Telemetry only when this machine names the projects (MEND_VERIFY_SENTRY_DSN and the rest).
-    const telemetry = telemetryFlags(process.env, "check-vm")
-      .map((part) => `'${part.replaceAll("'", "")}'`)
-      .join(" ");
-    const setup = ssh(`mend server setup --offline --url ${url} ${telemetry} 2>&1 | tail -5`);
+    // `pipefail`: the setup's own exit, not `tail`'s, says whether it took the address.
+    const setup = ssh(`set -o pipefail; mend server setup --offline --url ${url} 2>&1 | tail -5`);
     if (setup.code !== 0)
       return fail("url", `mend server setup --url ${url}`, lastLine(setup.stdout));
+    // Telemetry only when this machine names the projects (MEND_VERIFY_SENTRY_DSN and the rest),
+    // and only through a CLI that takes the flags: a master's CLI from before them refuses the
+    // setup. Never a reason to fail the copy.
+    const flags = telemetryFlags(process.env, "check-vm");
+    if (flags.length > 0) {
+      const quoted = flags.map((part) => `'${part.replaceAll("'", "")}'`).join(" ");
+      const turnedOn = ssh(
+        `set -o pipefail; if mend server setup --help 2>&1 | grep -q -- --sentry-dsn; then mend server setup --offline --yes ${quoted} 2>&1 | grep '^telemetry'; else echo "this copy's CLI takes no --sentry-dsn: telemetry stays off (verify box cli, then mend server setup --sentry-dsn)"; fi`,
+      );
+      steps.push(
+        step(
+          "telemetry",
+          "Telemetry to this machine's Sentry projects",
+          turnedOn.code === 0 && /^telemetry/m.test(turnedOn.stdout) ? "passed" : "skipped",
+          lastLine(turnedOn.stdout) || `exit ${turnedOn.code}`,
+        ),
+      );
+    }
     const healthy = await waitForHealth(url, 300_000);
     if (!healthy.ok) return fail("health", "Mend answers health", healthy.seen);
     let boatOn_ = null;
