@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 
+import { reportUnexpected } from "./error-reporting.js";
 import { MendApiError } from "./mend-http.js";
 
 /** What a refused sign-in offers, wherever it surfaces: the one action that helps (rule 14). */
@@ -23,6 +24,7 @@ export const showErrorToast = async (
   words: string,
   otherwise?: string,
 ): Promise<boolean> => {
+  reportUnexpected(cause);
   if (refusedSignIn(cause)) {
     signedOutShowing ??= (async () => {
       if ((await vscode.window.showErrorMessage(cause.message, CONNECT)) === CONNECT)

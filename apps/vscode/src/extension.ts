@@ -9,6 +9,7 @@ import { AUTH_PROVIDER_ID, MendAuthenticationProvider } from "./auth-provider.js
 import { MendClient } from "./client.js";
 import { ConnectionStore } from "./config.js";
 import { canonicalServerUrl } from "./credentials.js";
+import { flushErrorReports, startErrorReporting } from "./error-reporting.js";
 import { showErrorToast } from "./error-toast.js";
 import { FirstRunTree, FirstRunView, isOfferRow } from "./first-run-view.js";
 import { offerOf } from "./first-run.js";
@@ -621,6 +622,7 @@ export interface MendExtensionApi {
 }
 
 export function activate(context: vscode.ExtensionContext): MendExtensionApi {
+  startErrorReporting(context);
   const connections = new ConnectionStore(context);
   context.subscriptions.push(connections);
   const client = new MendClient(connections);
@@ -871,4 +873,6 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   };
 }
 
-export function deactivate(): void {}
+export function deactivate(): Promise<void> {
+  return flushErrorReports();
+}

@@ -550,6 +550,9 @@ importers:
 
   apps/desktop:
     devDependencies:
+      '@mend/client-errors':
+        specifier: workspace:*
+        version: link:../../packages/client-errors
       '@mend/test-ci':
         specifier: workspace:*
         version: link:../../tooling/test-ci
@@ -989,6 +992,9 @@ importers:
       '@mend/agent-conversation':
         specifier: workspace:*
         version: link:../../packages/agent-conversation
+      '@mend/client-errors':
+        specifier: workspace:*
+        version: link:../../packages/client-errors
       '@mend/domain':
         specifier: workspace:*
         version: link:../../packages/domain

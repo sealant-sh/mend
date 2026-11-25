@@ -50,6 +50,7 @@
   },
   "dependencies": {
     "@mend/agent-conversation": "workspace:*",
+    "@mend/client-errors": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/local-git": "workspace:*",
     "@mend/workspace-ssh": "workspace:*",

@@ -1379,6 +1379,7 @@ const SKIPPED_TOGETHER = new Map([
     "publish-vscode.yml github-release",
     "publish is skipped only on a pull request, where this is too",
   ],
+  ["publish-vscode.yml sentry", "publish is skipped only on a pull request, where this is too"],
   // A preview without a sealantd or sealant ref builds neither the image nor its source.
   ["preview.yml sealantd", "plan skips only on a fork"],
   ["preview.yml sealantd-image", "skipped exactly when there is no sealantd ref to preview"],
