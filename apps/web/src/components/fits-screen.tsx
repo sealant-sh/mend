@@ -4,6 +4,7 @@ import { Suspense } from "react";
 
 import type { FitsNames } from "#/lib/how-mend-fits";
 import type { FitsScreen as Screen } from "#/lib/how-mend-fits-screen";
+import { reportCaught } from "#/lib/telemetry";
 
 import { QueryError } from "./route-screens.tsx";
 import { lazyBody, ViewLoadError } from "./workspace/lazy-body.tsx";
@@ -30,7 +31,7 @@ export function FitsScreenView({
   readonly place: "step" | "dialog";
 }) {
   return (
-    <CatchBoundary getResetKey={() => screen} errorComponent={ScreenFailed}>
+    <CatchBoundary getResetKey={() => screen} errorComponent={ScreenFailed} onCatch={reportCaught}>
       <Suspense
         fallback={
           <p role="status" className="text-row text-muted-foreground">

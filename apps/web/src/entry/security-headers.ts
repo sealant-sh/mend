@@ -23,7 +23,9 @@ import {
  *   ships its WebAssembly inlined as a `data:` URL and loads it with `fetch`, which `connect-src`
  *   governs. A `data:` fetch reaches no server, so it carries nothing out; without it the terminal
  *   and `/tty-embed` load nothing (observed in Chromium; security-headers.test.ts pins it to how
- *   the installed library loads).
+ *   the installed library loads). When the browser reports errors and traces (`SENTRY_BROWSER_DSN`,
+ *   lib/telemetry-config.ts), it names the origin of that DSN too, and no other: the reports go
+ *   straight to Sentry, not through Mend's server.
  * - `frame-src`: a source with a path and no trailing slash matches only that path; the query
  *   string is not part of the match (CSP Level 3, "Does url match expression"). While Mend's app
  *   frames previews (`previewFrameSource`, docs/adr/0017, decision log 15) it also allows
@@ -39,6 +41,8 @@ export interface SecurityHeaderInput {
   readonly network: PublicNetwork;
   /** The `frame-src` source of the preview hosts; null while Mend's app frames no preview. */
   readonly previewFrames: string | null;
+  /** The origin the browser sends its error and trace reports to; absent while it sends none. */
+  readonly reportsTo?: string;
 }
 
 const webSocketOrigin = (appUrl: string): string => {
@@ -63,6 +67,7 @@ export const contentSecurityPolicy = (
   network: PublicNetwork,
   previewFrames: string | null,
   framedBy: "none" | "self",
+  reportsTo: string | null = null,
 ): string =>
   [
     "default-src 'self'",
@@ -70,7 +75,7 @@ export const contentSecurityPolicy = (
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
-    `connect-src 'self' data: ${webSocketOrigin(network.appUrl)}`,
+    `connect-src 'self' data: ${webSocketOrigin(network.appUrl)}${reportsTo === null ? "" : ` ${reportsTo}`}`,
     "worker-src 'self' blob:",
     `frame-src ${frameSources(network, previewFrames).join(" ")}`,
     "object-src 'none'",
@@ -125,6 +130,7 @@ const appHeaders = (input: SecurityHeaderInput): Readonly<Record<string, string>
     input.network,
     input.previewFrames,
     framedBySelf(input) ? "self" : "none",
+    input.reportsTo ?? null,
   ),
   "x-content-type-options": "nosniff",
   // For browsers that predate frame-ancestors. `SAMEORIGIN` checks only the top-level page in

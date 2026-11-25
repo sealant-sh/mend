@@ -9,6 +9,7 @@ import { shownStatus } from "#/lib/session-composer";
 import { sessionDetailQuery } from "#/lib/session-queries";
 import { lumpPrOf, lumpStatusOf, STATUS_WORDS } from "#/lib/session-sheet";
 import { sessionTitleOf } from "#/lib/session-title";
+import { reportCaught } from "#/lib/telemetry";
 import { isNewSessionTab, sessionOfTab, viewOfTab } from "#/lib/tiles";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
@@ -219,7 +220,7 @@ function Guarded({
   readonly children: ReactNode;
 }) {
   return (
-    <CatchBoundary getResetKey={() => tab} errorComponent={TabFailed}>
+    <CatchBoundary getResetKey={() => tab} errorComponent={TabFailed} onCatch={reportCaught}>
       <Suspense
         fallback={
           <p

@@ -1,8 +1,10 @@
 import { createRootRouteWithContext, HeadContent, Scripts } from "@tanstack/react-router";
+import { createIsomorphicFn } from "@tanstack/react-start";
 import { type ReactNode, useState } from "react";
 
 import { textSize } from "#/lib/appearance";
 import { requireSignedIn } from "#/lib/sign-in";
+import { browserTelemetryOf, pageTelemetry, telemetryScript } from "#/lib/telemetry-config";
 import { THEME_KEY } from "#/lib/theme";
 import type { RouterAppContext } from "#/router";
 import { CRITICAL_CSS_ID } from "#/server/critical-css";
@@ -17,6 +19,20 @@ const DESCRIPTION = "Projects, sessions, and the review — the agent workbench,
  * the old app's key, so a person's choice there holds here.
  */
 const THEME_SCRIPT = `(function(){try{var t=localStorage.getItem(${JSON.stringify(THEME_KEY)});if(t==="dark"||((t===null||t==="system")&&window.matchMedia("(prefers-color-scheme: dark)").matches)){document.documentElement.classList.add("dark");}}catch(e){}})();`;
+
+/**
+ * Whether this page reports to Sentry, and where (`lib/telemetry-config.ts`): from the web
+ * server's environment as it renders the page, and in the browser from what the page was served
+ * with, so the head React hydrates is the head the server sent.
+ */
+const telemetryOfPage = createIsomorphicFn()
+  .server(() => browserTelemetryOf(process.env))
+  .client(pageTelemetry);
+
+const telemetryScripts = (): Array<{ readonly children: string }> => {
+  const script = telemetryScript(telemetryOfPage());
+  return script === null ? [] : [{ children: script }];
+};
 
 export const Route = createRootRouteWithContext<RouterAppContext>()({
   // Every page needs a signed-in person, except the few a signed-out one opens (lib/sign-in.ts).
@@ -34,7 +50,7 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
       { name: "description", content: DESCRIPTION },
       { name: "robots", content: "noindex" },
     ],
-    scripts: [{ children: THEME_SCRIPT }],
+    scripts: [{ children: THEME_SCRIPT }, ...telemetryScripts()],
   }),
   // The document is the shell, so the default pending, error and not-found screens render inside
   // it even when the root route itself is what failed.
