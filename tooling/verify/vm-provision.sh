@@ -4,7 +4,7 @@
 # an operator installs Mend. Each phase is idempotent, so a build that stopped part way runs again.
 #
 #   vm-provision.sh system <node version>           Docker, git, jq, Node, the git service unit
-#   vm-provision.sh cli <mend cli version>          the global mend CLI, as the box has it
+#   vm-provision.sh cli <tarball> <version>         the global mend CLI, packed from the preview's commit
 #   vm-provision.sh server <version> <sha> <url>    preview-deploy.sh: mend server setup, Docker only
 #   vm-provision.sh web [<address>]                 the forward of Mend's loopback port to QEMU's
 #   vm-provision.sh git                             the box run's git service on mend_default's gateway
@@ -51,11 +51,16 @@ system)
   say "docker $(docker version --format '{{.Server.Version}}'), node $(node --version)"
   ;;
 cli)
-  cli_version=${1:?mend cli version}
-  if [[ $(mend --version 2>/dev/null | head -1) != "mend $cli_version" ]]; then
-    npm install --global --silent --no-audit --no-fund "@sealant/mend@$cli_version" >/dev/null
-    ln -sf "$(npm prefix --global)/bin/mend" /usr/local/bin/mend
-  fi
+  # The CLI vm.mjs packed from the preview's own commit and copied in (SLNT-1343): the master's
+  # CLI is the build of the server it installs, not whatever npm's next tag points at.
+  tarball=${1:?cli tarball}
+  cli_version=${2:?mend cli version}
+  [[ -s $tarball ]] || { say "no $tarball: vm.mjs copies it first" >&2; exit 1; }
+  npm install --global --silent --no-audit --no-fund "$tarball" >/dev/null
+  ln -sf "$(npm prefix --global)/bin/mend" /usr/local/bin/mend
+  rm -f "$tarball"
+  [[ $(mend --version 2>/dev/null | head -1) == "mend $cli_version" ]] ||
+    { say "mend --version reads \"$(mend --version 2>&1 | head -1)\", not mend $cli_version" >&2; exit 1; }
   say "$(mend --version | head -1)"
   ;;
 server)
@@ -222,13 +227,10 @@ git)
   systemctl daemon-reload
   systemctl enable --now mend-box-git >/dev/null 2>&1
   systemctl restart mend-box-git
-  # Workspaces run on networks of their own behind sealant's private-range guard (SLNT-1331), and
-  # this gateway is a private address: the server opens it to them, from Mend's next start.
-  env_file=/root/.config/mend/active/server.env
-  if [[ -f $env_file ]]; then
-    sed -i '/^MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS=/d' "$env_file"
-    printf 'MEND_OPERATOR_ALLOWED_PRIVATE_EGRESS=%s/32\n' "$gw" >>"$env_file"
-  fi
+  # Never written into server.env: every mend server command checks that file against the saved
+  # config and refuses a line it cannot render (SLNT-1343), and no setting carries the private-range
+  # guard's allowance. Workspaces need none for this service: landing pushes from Mend's container,
+  # which stays on mend_default.
   say "git service on git://$gw:9418"
   ;;
 seal)
