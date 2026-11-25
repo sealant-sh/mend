@@ -49,7 +49,9 @@ import { createFirstAccount, type FirstAccountReceipt } from "./server-account.t
 import {
   BOAT_COMPOSE_FILE,
   BOAT_GATEWAY_IMAGE_LABEL,
+  BOAT_IMAGES_COMPOSE_FILE,
   boatEnvLines,
+  boatImagesLine,
   isBoatApiKey,
   isBoatOrganization,
   isBoatOverlayOf,
@@ -58,6 +60,7 @@ import {
   parseBoatDeploymentId,
   parseBoatField,
   parseBoatOrganization,
+  renderBoatImagesOverlay,
   renderBoatOverlay,
   resolveBoat,
   resolveBoatKey,
@@ -948,6 +951,8 @@ const SETUP_FLAGS = new Set([
   "--no-boat-organization",
   "--boat-resources",
   "--no-boat-resources",
+  "--boat-image-retention",
+  "--no-boat-image-retention",
   "--no-boat",
   "--context",
   "--version",
@@ -1006,6 +1011,8 @@ const SWITCHES: ReadonlySet<string> = new Set([
   "--no-boat-organization",
   "--boat-resources",
   "--no-boat-resources",
+  "--boat-image-retention",
+  "--no-boat-image-retention",
   "--no-boat",
   "--offline",
   "--no-edge",
@@ -1313,6 +1320,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
         : KEEP_PREVIEW;
   const boatDeploymentId = flagValue("--boat-deployment-id");
   const boatResources = pair("--boat-resources", "--no-boat-resources");
+  const boatImageRetention = pair("--boat-image-retention", "--no-boat-image-retention");
   const boatApiKeyStdin = values.has("--boat-api-key-stdin");
   const noBoatApiKey = values.has("--no-boat-api-key");
   const boatOrganizationFlag = flagValue("--boat-organization");
@@ -1326,7 +1334,8 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
       noBoatApiKey ||
       boatOrganizationFlag !== undefined ||
       noBoatOrganization ||
-      boatResources !== undefined)
+      boatResources !== undefined ||
+      boatImageRetention !== undefined)
   )
     throw setupError("--no-boat contradicts the other --boat flags.");
   if (boatApiKeyStdin && noBoatApiKey)
@@ -1352,6 +1361,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
           ? undefined
           : parseBoatOrganization(boatOrganizationFlag),
       resources: boatResources,
+      imageRetention: boatImageRetention,
       off: values.has("--no-boat"),
     },
     ...(sessionRuntimeFlag === undefined
@@ -2955,6 +2965,10 @@ const validateOverlays = (
     throw setupError(
       "Server generation is corrupt: compose.boat.yaml does not match the saved Boat settings.",
     );
+  if (files.boatImages !== renderBoatImagesOverlay(config.boat))
+    throw setupError(
+      `Server generation is corrupt: ${BOAT_IMAGES_COMPOSE_FILE} does not match the saved Boat image retention.`,
+    );
   if (
     (edgeServedEndpoints(config.remoteEndpoints, config.edgeHost) === undefined) !==
     (files.remoteEndpointsCaddyfile === undefined)
@@ -3325,6 +3339,9 @@ export const readServerInstallationFacts = async (
           ...(generation.files.boat === undefined
             ? []
             : [{ name: BOAT_COMPOSE_FILE, content: generation.files.boat }]),
+          ...(generation.files.boatImages === undefined
+            ? []
+            : [{ name: BOAT_IMAGES_COMPOSE_FILE, content: generation.files.boatImages }]),
         ],
         envKeys: envKeyNames(generation.files.env),
       };
@@ -3409,6 +3426,7 @@ const generationFiles = (
       ? undefined
       : REMOTE_ENDPOINTS_CADDYFILE;
   const boat = renderBoatOverlay(config.boat);
+  const boatImages = renderBoatImagesOverlay(config.boat);
   const t3Caddyfile =
     t3GatewayPlacement(config)?.edgeHost === undefined ? undefined : T3_GATEWAY_CADDYFILE;
   return {
@@ -3421,6 +3439,7 @@ const generationFiles = (
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     ...(remoteEndpointsCaddyfile === undefined ? {} : { remoteEndpointsCaddyfile }),
     ...(boat === undefined ? {} : { boat }),
+    ...(boatImages === undefined ? {} : { boatImages }),
     ...(t3Caddyfile === undefined ? {} : { t3Caddyfile }),
     ...renderPreviewFiles(config, previewPem),
     ...(config.edgeHost === undefined
@@ -5200,6 +5219,11 @@ const setupServer = async (
     config.workspaceImages,
   ))
     runtime.writeLine(line);
+  if (
+    config.boat !== undefined &&
+    (existing?.config.boat?.imageRetention ?? true) !== (config.boat.imageRetention ?? true)
+  )
+    runtime.writeLine(boatImagesLine(config.boat));
   for (const line of workspaceMemoryChangedLines(
     existing?.config.workspaceMemory,
     config.workspaceMemory,
@@ -6257,6 +6281,7 @@ const serverStatus = async (
   runtime.writeLine(workspaceImagesLine(config.workspaceImages));
   runtime.writeLine(workspaceMemoryLine(config.workspaceMemory));
   runtime.writeLine(telemetryLine(config.telemetry));
+  if (config.boat !== undefined) runtime.writeLine(boatImagesLine(config.boat));
   const state = await composeCommand(runtime, installation, ["ps", "--all"]);
   runtime.writeLine(state.stdout.trim() || "No Compose containers found. Run mend server start.");
   const running = await composeCommand(runtime, installation, [

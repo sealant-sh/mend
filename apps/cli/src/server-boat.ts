@@ -21,6 +21,13 @@ export interface ServerBoat {
    * inbound connection. Off, only sessions in projects without resources run on Boat.
    */
   readonly resources: boolean;
+  /**
+   * `false`: sealant's worker removes no Boat image (`SEALANT_BOAT_IMAGE_GC_ENABLED`), for an install
+   * that shares its Boat deployment and its data with another, such as a throwaway copy of a
+   * server's data: what it removed, only its own database would record. Absent, sealant removes
+   * once an hour the images no session can start from any more (`compose.boat-images.yaml`).
+   */
+  readonly imageRetention?: false;
 }
 
 /**
@@ -36,6 +43,12 @@ export interface ServerBoatKey {
 
 /** The overlay that hands the Boat settings to the `mend` container. */
 export const BOAT_COMPOSE_FILE = "compose.boat.yaml";
+/**
+ * The overlay that turns sealant's Boat image retention off (`imageRetention: false`). A file of
+ * its own, as `compose.workspace-images.yaml` is: a CLI from before this setting ignores a file it
+ * does not know, so it can still read and upgrade the install (and drops the setting).
+ */
+export const BOAT_IMAGES_COMPOSE_FILE = "compose.boat-images.yaml";
 /** sealant's native build journal: it must outlive the container, so it has a volume of its own. */
 export const BOAT_STATE_VOLUME = "mend-boat-state";
 export const BOAT_STATE_DIRECTORY = "/var/lib/sealant/boat";
@@ -79,6 +92,7 @@ export const parseBoatField = (input: unknown): ServerBoat => {
     throw setupError("Server config is corrupt: boat must be an object.");
   const deploymentId: unknown = Reflect.get(input, "deploymentId");
   const resources: unknown = Reflect.get(input, "resources");
+  const imageRetention: unknown = Reflect.get(input, "imageRetention");
   if (
     deploymentId !== undefined &&
     (typeof deploymentId !== "string" || !isBoatDeploymentId(deploymentId))
@@ -86,11 +100,19 @@ export const parseBoatField = (input: unknown): ServerBoat => {
     throw setupError("Server config is corrupt: boat.deploymentId is not a Boat deployment name.");
   if (typeof resources !== "boolean")
     throw setupError("Server config is corrupt: boat.resources must be true or false.");
-  return { ...(deploymentId === undefined ? {} : { deploymentId }), resources };
+  if (imageRetention !== undefined && imageRetention !== false)
+    throw setupError("Server config is corrupt: boat.imageRetention is false or absent.");
+  return {
+    ...(deploymentId === undefined ? {} : { deploymentId }),
+    resources,
+    ...(imageRetention === false ? { imageRetention } : {}),
+  };
 };
 
 export const sameBoat = (left: ServerBoat | undefined, right: ServerBoat | undefined): boolean =>
-  left?.deploymentId === right?.deploymentId && left?.resources === right?.resources;
+  left?.deploymentId === right?.deploymentId &&
+  left?.resources === right?.resources &&
+  left?.imageRetention === right?.imageRetention;
 
 /**
  * A stable UUID for this install, derived from its identity like Garage's values: the same install
@@ -172,6 +194,26 @@ export const renderBoatOverlay = (boat: ServerBoat | undefined): string | undefi
         "",
       ].join("\n");
 
+/** `compose.boat-images.yaml`, or undefined while sealant's Boat image retention is on. */
+export const renderBoatImagesOverlay = (boat: ServerBoat | undefined): string | undefined =>
+  boat?.imageRetention !== false
+    ? undefined
+    : [
+        "# Written by mend server setup (--no-boat-image-retention): the bundled sealant worker",
+        "# removes no Boat image. mend server setup --boat-image-retention turns it back on.",
+        "services:",
+        "  mend:",
+        "    environment:",
+        '      SEALANT_BOAT_IMAGE_GC_ENABLED: "false"',
+        "",
+      ].join("\n");
+
+/** The one line `mend server status` says about it, with Boat set up. */
+export const boatImagesLine = (boat: ServerBoat): string =>
+  boat.imageRetention === false
+    ? "boat images · the worker removes none, whatever no session can start from · set on this install (--no-boat-image-retention)"
+    : "boat images · once an hour the worker removes each one no session can start from and nothing used in the last day · sealant's default, not set on this install";
+
 /**
  * The overlay setup wrote while Boat needed the server's own key: every setting required. A generation that has it is read as it is; the next one setup writes has the
  * current overlay.
@@ -217,6 +259,11 @@ export interface BoatRequest {
   readonly organization: string | null | undefined;
   /** `--boat-resources` (true), `--no-boat-resources` (false); omitted keeps the saved choice. */
   readonly resources: boolean | undefined;
+  /**
+   * `--boat-image-retention` (true), `--no-boat-image-retention` (false); omitted keeps the saved
+   * choice.
+   */
+  readonly imageRetention: boolean | undefined;
   /** `--no-boat`: forget Boat's settings and the server's key; sessions run on Docker. */
   readonly off: boolean;
 }
@@ -227,6 +274,7 @@ export const KEEP_BOAT: BoatRequest = {
   removeKey: false,
   organization: undefined,
   resources: undefined,
+  imageRetention: undefined,
   off: false,
 };
 
@@ -235,7 +283,8 @@ const namesBoat = (request: BoatRequest): boolean =>
   request.deploymentId !== undefined ||
   request.apiKeyStdin ||
   typeof request.organization === "string" ||
-  request.resources !== undefined;
+  request.resources !== undefined ||
+  request.imageRetention !== undefined;
 
 /**
  * What the saved Boat setting becomes. Boat is turned on by naming it where sessions run
@@ -250,9 +299,11 @@ export const resolveBoat = (
   if (request.off) return undefined;
   if (saved === undefined && !wanted && !namesBoat(request)) return undefined;
   const deploymentId = request.deploymentId ?? saved?.deploymentId;
+  const imageRetention = request.imageRetention ?? saved?.imageRetention ?? true;
   return {
     ...(deploymentId === undefined ? {} : { deploymentId }),
     resources: request.resources ?? saved?.resources ?? true,
+    ...(imageRetention ? {} : { imageRetention: false as const }),
   };
 };
 

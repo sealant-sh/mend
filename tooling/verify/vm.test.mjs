@@ -22,6 +22,7 @@ import {
   liveImagesOf,
   parseBoatImages,
   removeBoatImages,
+  setupBoat,
   retireImagesScript,
   funnelFromOutside,
   liveBoatVmsScript,
@@ -971,4 +972,50 @@ test("vm down keeps a Boat copy while an image it built is not confirmed removed
 
 test("verify vm down takes --leave-boat-images", () => {
   assert.equal(parseArgs(["vm", "down", "3", "--leave-boat-images"]).options.leaveBoatImages, true);
+});
+
+test("verify vm up takes --will-save", () => {
+  assert.equal(parseArgs(["vm", "up", "--boat", "--will-save"]).options.willSave, true);
+  assert.equal(parseArgs(["vm", "up", "--boat"]).options.willSave, undefined);
+});
+
+test("a Boat copy removes no Boat image unless it is the copy vm save saves (SLNT-1347)", () => {
+  const calls = [];
+  const setupWith = (answer) => (extra) => {
+    calls.push(extra);
+    return { status: 0, stdout: answer(extra) };
+  };
+  const ok = () => "Boat VMs reach this server · answered";
+
+  const off = setupBoat(setupWith(ok), false);
+  assert.equal(off.removesImages, false);
+  assert.equal(off.retention, "removes no Boat image");
+  assert.deepEqual(calls, [["--no-boat-image-retention"]]);
+
+  calls.length = 0;
+  assert.equal(setupBoat(setupWith(ok), true).removesImages, true);
+  assert.deepEqual(calls, [[]]);
+
+  // A master whose CLI predates the flag refuses it before changing anything: setup runs once more
+  // without it, and the result says the copy may remove images.
+  calls.length = 0;
+  const old = setupBoat(
+    setupWith((extra) =>
+      extra.length > 0 ? 'Unknown server setup option "--no-boat-image-retention".' : ok(),
+    ),
+    false,
+  );
+  assert.deepEqual(calls, [["--no-boat-image-retention"], []]);
+  assert.equal(old.removesImages, true);
+  assert.match(old.retention, /^REMOVES Boat images: this master's CLI has no/);
+  assert.equal(old.out.stdout, ok());
+
+  // Any other failure is setup's, returned as it is.
+  calls.length = 0;
+  const failed = setupBoat(() => {
+    calls.push("once");
+    return { status: 1, stdout: "Boat's deployment is not one setup takes" };
+  }, false);
+  assert.deepEqual(calls, ["once"]);
+  assert.equal(failed.out.status, 1);
 });

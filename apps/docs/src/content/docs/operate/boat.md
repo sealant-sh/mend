@@ -478,6 +478,13 @@ hourly pass after nothing can start from it and a day has passed since it was la
 counts from its last use, not from when it was made. It also deletes the images it built in a Boat
 account when that account's key is removed from Mend.
 
+`mend server setup --no-boat-image-retention` turns that hourly removal off, and
+`--boat-image-retention` turns it back on. Turn it off on a server that shares its Boat deployment
+and its data with another, such as a throwaway copy of a server's data: an image it removed is gone
+from Boat, but only its own database records that, so the server whose data it copied still reads
+the image as ready and quarantines it at its next check (`native-publication-missing`). Images it
+builds then stay in the Boat account until a server that removes them, or you in Boat, deletes them.
+
 ### After upgrading to sealant 0.40.0-next.880
 
 Three things change once the server runs this sealant:

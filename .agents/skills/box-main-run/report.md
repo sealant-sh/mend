@@ -64,7 +64,8 @@ Check VMs:
 **Boat image identity** (SLNT-1347), read on each copy before it went, from
 `$E/boat-identity/<lane>.log`:
 
-- A, read <UTC>: none · B, read <UTC>: none · C, read <UTC>: <n> found, or `not read: <why>`.
+- A, read <UTC>, retention on: none · B, read <UTC>, retention none: no Boat: none · C, read <UTC>,
+  retention off: <n> found, or `not read: <why>`.
 
 <every line a lane found, verbatim with docker's timestamp, in one code block per lane:>
 

@@ -1008,7 +1008,13 @@ fi`);
  * vm up: a fresh copy of the master. It takes the lowest free slot, boots an overlay of the master
  * disk, gives Mend the copy's own address with `mend server setup --url`, and waits for health.
  */
-export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = false }) => {
+export const vmUp = async ({
+  root = vmRoot(),
+  cpus = 6,
+  memory = "8G",
+  boat = false,
+  willSave = false,
+}) => {
   const p = paths(root);
   const started = Date.now();
   if (!existsSync(p.masterMeta))
@@ -1153,6 +1159,7 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
         (name, args) => runPhase(root, slot, name, args, dir),
         boatSlot,
         dir,
+        { removesImages: willSave },
       );
       if (boatOn_.error)
         return fail("boat", `Boat through slot ${boatSlot}'s own Funnel`, boatOn_.error);
@@ -1168,7 +1175,7 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
           "boat",
           `Boat through slot ${boatSlot}'s own Funnel`,
           "passed",
-          `${boatOn_.sessionUrl} and ${boatOn_.blobUrl} in ${seconds(boatAt)}s; ${boatOn_.certSeen}; VM 131's deployment; ${boatOn_.journals}; ${boatOn_.answeredAfter}`,
+          `${boatOn_.sessionUrl} and ${boatOn_.blobUrl} in ${seconds(boatAt)}s; ${boatOn_.certSeen}; VM 131's deployment; ${boatOn_.journals}; ${boatOn_.answeredAfter}; ${boatOn_.retention}`,
         ),
       );
       // The check above asked from inside the copy, over the tailnet; a Boat VM comes through Funnel.
@@ -1190,7 +1197,7 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
     );
     writeFileSync(
       join(dir, "copy.json"),
-      `${JSON.stringify({ slot, url, ssh: boxSshArgs(root, slot).join(" "), startedAt: new Date(started).toISOString(), healthySeconds: total, master, unit, boat: boatOn_ ? { slot: boatSlot, session: boatOn_.sessionUrl, blob: boatOn_.blobUrl } : null }, null, 2)}\n`,
+      `${JSON.stringify({ slot, url, ssh: boxSshArgs(root, slot).join(" "), startedAt: new Date(started).toISOString(), healthySeconds: total, master, unit, boat: boatOn_ ? { slot: boatSlot, session: boatOn_.sessionUrl, blob: boatOn_.blobUrl, removesImages: boatOn_.removesImages } : null }, null, 2)}\n`,
       { mode: 0o600 },
     );
     return {

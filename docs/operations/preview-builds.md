@@ -369,12 +369,22 @@ Limits of a check VM:
   but whose journal is missing is quarantined for good, and only an image built again (a new row)
   starts. With a name of its own, the copy's first image build failed at once
   (`native-local-io-failed`) and sealant quarantined the image, so sessions never started. Sharing
-  is safe because sealant acts only on runs in its own database: every Boat run the loaded data
-  holds under that name is settled, VM 131 never sees a copy's runs, and `vm down` stops the copy's
-  Boat sessions so no VM it launched is left. The resource gateway stays off on a copy (a Boat
-  session in a project with `@db` is refused there): its host id derives from the identity the copy
-  shares with VM 131, so a copy's gateway would take the box's place. A worktree the loaded data
-  made on Boat under that name starts on a Boat copy; on a Docker-only copy it cannot.
+  is safe for runs because sealant acts only on runs in its own database: every Boat run the loaded
+  data holds under that name is settled, VM 131 never sees a copy's runs, and `vm down` stops the
+  copy's Boat sessions so no VM it launched is left. The resource gateway stays off on a copy (a
+  Boat session in a project with `@db` is refused there): its host id derives from the identity the
+  copy shares with VM 131, so a copy's gateway would take the box's place. A worktree the loaded
+  data made on Boat under that name starts on a Boat copy; on a Docker-only copy it cannot.
+- **Only the saved copy removes Boat images** (SLNT-1347). Images are not like runs: an image a
+  copy's sealant removes is gone from Boat for every copy, and only that copy's database records it,
+  so the saved data goes on reading it `ready` and the next copy quarantines it
+  (`native-publication-missing`, `native-snapshot-identity-mismatch` before sealant
+  0.40.0-next.94x). sealant's hourly retention does exactly that once an image is a day unused and
+  the copy's own preview no longer plans it. So `vm up --boat` sets the copy up with
+  `mend server setup --no-boat-image-retention`, and only `vm up --boat --will-save` (the daily
+  run's lane A, whose `vm save` records each removal) keeps retention on. `vm down` still removes
+  the images a copy built itself (SLNT-1256), which is not retention. A master whose CLI predates
+  the flag keeps retention on, and `vm up` says so in its `boat` step.
 - **One set of agent logins, refreshed in one place.** Every copy holds the Codex and Claude logins
   of the run's data. Only sealant's keep-fresh sweeper on a server refreshes them (every other
   holder gets a copy with no usable refresh token), and a refresh spends the refresh token every

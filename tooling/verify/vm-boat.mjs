@@ -363,7 +363,43 @@ export const slotRemove = async (root, slot, { bootBare, step, copyRunning }) =>
  * the copy's Boat state volume. Why the shared name is safe, and why the resource gateway stays off:
  * docs/operations/preview-builds.md, "Check VMs".
  */
-export const boatOn = (root, sshArgs, runPhase, slot, dir) => {
+/**
+ * The setup flag that keeps a Boat copy from removing Boat images (SLNT-1347). Every copy shares one
+ * Boat deployment and starts from the same saved data, so an image one copy's hourly retention
+ * removes is gone for all of them, and only that copy's database, thrown away with it, records it:
+ * the saved data still reads it ready. Only the copy `vm save` saves (`vm up --will-save`, the daily
+ * run's lane A) keeps sealant's retention, since its save then records each removal.
+ */
+export const NO_IMAGE_RETENTION = "--no-boat-image-retention";
+
+/** What a copy's setup said when its CLI predates NO_IMAGE_RETENTION. */
+const unknownRetentionFlag = (out) =>
+  out.includes(`Unknown server setup option "${NO_IMAGE_RETENTION}"`);
+
+/**
+ * `mend server setup` with Boat on a copy, and what it decided about Boat image retention: off
+ * unless `removesImages`, and on, said so, when the copy's CLI has no NO_IMAGE_RETENTION (a master
+ * built before it): that CLI refuses the flag before it changes anything, so setup runs once more
+ * without it.
+ */
+export const setupBoat = (setupWith, removesImages) => {
+  if (removesImages)
+    return {
+      out: setupWith([]),
+      removesImages: true,
+      retention: "removes Boat images (--will-save: its save records each removal)",
+    };
+  const off = setupWith([NO_IMAGE_RETENTION]);
+  if (!unknownRetentionFlag(off.stdout ?? ""))
+    return { out: off, removesImages: false, retention: "removes no Boat image" };
+  return {
+    out: setupWith([]),
+    removesImages: true,
+    retention: `REMOVES Boat images: this master's CLI has no ${NO_IMAGE_RETENTION}, so a copy may delete what the saved data records (a master built after SLNT-1347 has it)`,
+  };
+};
+
+export const boatOn = (root, sshArgs, runPhase, slot, dir, { removesImages = false } = {}) => {
   const box = join(root, "box");
   const key = join(box, "boat.key");
   if (!existsSync(key))
@@ -408,14 +444,21 @@ export const boatOn = (root, sshArgs, runPhase, slot, dir) => {
   if (funnel.code !== 0) return { error: `the copy's Funnel: ${lastLine(funnel.out)}` };
   const sessionUrl = `https://${up.dnsName}:${FUNNEL_PORTS.session}`;
   const blobUrl = `https://${up.dnsName}:${FUNNEL_PORTS.blob}`;
-  const out = guest(
-    [
-      "mend server setup --offline --session-runtimes docker,boat --session-runtime boat",
-      `--session-endpoint-url ${sessionUrl} --blob-store-public-url ${blobUrl}`,
-      `--boat-deployment-id ${deployment} --no-boat-resources --boat-api-key-stdin 2>&1`,
-    ].join(" "),
-    readFileSync(key, "utf8").trim(),
+  const setup = setupBoat(
+    (extra) =>
+      guest(
+        [
+          "mend server setup --offline --session-runtimes docker,boat --session-runtime boat",
+          `--session-endpoint-url ${sessionUrl} --blob-store-public-url ${blobUrl}`,
+          `--boat-deployment-id ${deployment} --no-boat-resources`,
+          ...extra,
+          "--boat-api-key-stdin 2>&1",
+        ].join(" "),
+        readFileSync(key, "utf8").trim(),
+      ),
+    removesImages,
   );
+  const out = setup.out;
   writeFileSync(join(dir, "boat-setup.log"), `${out.stdout ?? ""}`, { mode: 0o600 });
   if (out.status !== 0)
     return { error: `mend server setup with Boat: ${lastLine(out.stdout ?? "")}` };
@@ -452,6 +495,8 @@ export const boatOn = (root, sshArgs, runPhase, slot, dir) => {
     dnsName: up.dnsName,
     certSeen,
     journals: `${lastLine(restored.out).replace(/^vm-provision: /, "")}${carried ? "" : " (the saved ones: the master carries none)"}`,
+    removesImages: setup.removesImages,
+    retention: setup.retention,
   };
 };
 

@@ -3434,7 +3434,12 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `telemetry · …` line (`off: this server reports its errors and traces to nobody` unless the copy
   was started with this machine's `MEND_VERIFY_SENTRY_DSN`, then
   `Mend's servers report to sentry.mend.run project 3, …, environment check-vm`; never a DSN's key),
-  and the containers up; at most 20 lines per container, exit `0`.
+  and the containers up; at most 20 lines per container, exit `0`. On a Boat copy whose CLI is from
+  after SLNT-1347,
+  `boat images · once an hour the worker removes … · sealant's default, not set on this install` on
+  lane A (the copy `vm save` saves) and
+  `boat images · the worker removes none, … · set on this install (--no-boat-image-retention)` on
+  any other Boat copy.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/` (server), `scripts/preview-deploy.sh`
