@@ -481,6 +481,34 @@ jobs:
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # The release Sentry files this build's server errors under, with the API's and the gateway's
+  # source maps (scripts/sentry-release.sh; SLNT-1355). Without SENTRY_AUTH_TOKEN it skips, and it
+  # is never in the way of the images: a failure here fails nothing else.
+  sentry-release:
+    name: Name the Sentry release
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Name the release and upload the server's source maps
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_URL: ${{ vars.SENTRY_URL }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: scripts/sentry-release.sh "$VERSION"
+
   # The box updates itself: a hosted runner holds the deploy key (in the `box-deploy` environment,
   # which only main and tags may use) and asks the VM's `deploy` user, whose forced command runs the
   # same deploy script an operator runs by hand. Only a dispatch that asked for it deploys, and only

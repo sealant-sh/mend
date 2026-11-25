@@ -8,6 +8,7 @@ import {
 import { HistoryAdmissionRefusedError } from "@mend/domain/workbench";
 import { redactDetail } from "@mend/network";
 import { withoutRequestUrl } from "@mend/network/http-observation";
+import { reportCause } from "@mend/telemetry";
 import { Cause, Config, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpRouter, HttpServerResponse } from "effect/http";
@@ -30,6 +31,10 @@ import { removalInProgressOf } from "./removal-refusal.ts";
  *   goes to the log under that reference, which is what an operator searches for, in either mode.
  *   A failed query's parameters never reach it: the patched Drizzle query error does not hold them
  *   (`patches/drizzle-orm@*.patch`). The request's URL reads as its route's template.
+ *
+ * - A defect, and a declared error answered with a 5xx, is reported to Sentry once, here, with the
+ *   request's trace (`reportCause`; nothing when the process has no DSN). Telemetry scrubs what it
+ *   sends whatever this mode says.
  *
  * `MEND_ERROR_DETAIL=verbose` turns the scrubbing off for an operator debugging a private
  * instance. It is an open item of the public exposure gate.
@@ -153,6 +158,46 @@ const kept = (response: HttpServerResponse.HttpServerResponse) => ({
   cookies: response.cookies,
 });
 
+/**
+ * A contract error a route declared, answered with a 5xx: the server failed, so Sentry hears of it.
+ * Its cause is gone by now (HttpApi encoded it), so it reports as its tag and its scrubbed message.
+ */
+/**
+ * 5xx answers that are no failure of the server's: the boundary's own (`InternalError`, reported as
+ * its defect), and a raw file still being prepared or a cache that is full, which ask the client
+ * to come back and carry nothing to fix.
+ */
+const NOT_FAILURES: ReadonlySet<string> = new Set([
+  "InternalError",
+  "RawFilePreparing",
+  "RawFileBusy",
+]);
+
+class DeclaredServerError extends Error {
+  constructor(name: string, message: string) {
+    super(message);
+    this.name = name;
+  }
+}
+
+const reportDeclared = (response: HttpServerResponse.HttpServerResponse): Effect.Effect<void> => {
+  if (response.status < 500 || response.body._tag !== "Uint8Array") return Effect.void;
+  if (!response.body.contentType.toLowerCase().includes("application/json")) return Effect.void;
+  let body: unknown;
+  try {
+    body = JSON.parse(decoder.decode(response.body.body));
+  } catch {
+    return Effect.void;
+  }
+  if (typeof body !== "object" || body === null || !("_tag" in body)) return Effect.void;
+  if (typeof body._tag !== "string" || NOT_FAILURES.has(body._tag)) return Effect.void;
+  const message = "message" in body && typeof body.message === "string" ? body.message : body._tag;
+  return reportCause(Cause.fail(new DeclaredServerError(body._tag, redactDetail(message))), {
+    operation: "http.request",
+    tags: { "http.response.status_code": response.status },
+  });
+};
+
 /** The scrubbed response, or the same one when there is nothing to scrub. */
 export const redactErrorResponse = (
   response: HttpServerResponse.HttpServerResponse,
@@ -175,6 +220,19 @@ export const redactErrorResponse = (
         yield* Effect.logError("an undeclared error response was replaced").pipe(
           Effect.annotateLogs({ reference, status: response.status, body: text.slice(0, 2000) }),
         );
+        // Without its body: it was not written for a client, and not for Sentry either.
+        yield* reportCause(
+          Cause.fail(
+            new DeclaredServerError(
+              "UndeclaredErrorResponse",
+              `an undeclared ${response.status} response`,
+            ),
+          ),
+          {
+            operation: "http.request",
+            tags: { reference, "http.response.status_code": response.status },
+          },
+        );
         return internalError(reference);
       }
       return HttpServerResponse.jsonUnsafe(redactErrorBody(parsed), kept(response));
@@ -196,6 +254,7 @@ export const errorBoundary = (
   HttpRouter.middleware(
     (handler) =>
       handler.pipe(
+        Effect.tap(reportDeclared),
         Effect.flatMap((response) =>
           detail.mode === "verbose" ? Effect.succeed(response) : redactErrorResponse(response),
         ),
@@ -226,6 +285,9 @@ export const errorBoundary = (
           return Effect.flatMap(withoutRequestUrl(Cause.pretty(cause)), (diagnostic) =>
             Effect.logError("an unhandled failure reached the error boundary").pipe(
               Effect.annotateLogs({ reference, cause: diagnostic }),
+              Effect.andThen(
+                reportCause(cause, { operation: "http.request", tags: { reference } }),
+              ),
               Effect.as(internalError(reference)),
             ),
           );

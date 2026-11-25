@@ -2282,7 +2282,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "install or change the local Mend server, guided",
     synopsis: [
       "",
-      "[--yes] [--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--undeclare <item>...] [--t3-gateway [--t3-gateway-port <n>] [--t3-gateway-origin <host> | --no-t3-gateway-origin] | --no-t3-gateway] [--preview-domain <domain> --preview-certificate <file> --preview-key <file> | --no-preview-domain] [--preview-tailnet [--preview-tailnet-ports <list>] | --no-preview-tailnet] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-mirror-max-size <size>] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--workspace-image-keep <n|default>] [--workspace-image-min-age <hours|default>] [--workspace-memory <auto|none|size|default>] [--workspace-docker-memory <auto|none|size|default>] [--docker-socket <path>] [--assets-dir <dir>] [--offline] [--allow-userns | --no-allow-userns]",
+      "[--yes] [--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--undeclare <item>...] [--t3-gateway [--t3-gateway-port <n>] [--t3-gateway-origin <host> | --no-t3-gateway-origin] | --no-t3-gateway] [--preview-domain <domain> --preview-certificate <file> --preview-key <file> | --no-preview-domain] [--preview-tailnet [--preview-tailnet-ports <list>] | --no-preview-tailnet] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-mirror-max-size <size>] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--workspace-image-keep <n|default>] [--workspace-image-min-age <hours|default>] [--workspace-memory <auto|none|size|default>] [--workspace-docker-memory <auto|none|size|default>] [--sentry-dsn <dsn|default>] [--sealant-sentry-dsn <dsn|default>] [--sentry-browser-dsn <dsn|default>] [--sentry-environment <name|default>] [--sentry-traces-sample-rate <0-1|default>] [--docker-socket <path>] [--assets-dir <dir>] [--offline] [--allow-userns | --no-allow-userns]",
     ],
     description: [
       "On a terminal with no flags, setup asks its questions in plain words, one at a time: on a fresh install with more than one Docker engine answering here (Docker Desktop beside OrbStack, colima, Rancher Desktop, a rootless Docker), which one Mend runs in, the current context in brackets; then how people reach this Mend (just this machine, your private network or Tailscale, or the public internet with HTTPS), whether VS Code Remote-SSH reaches it from other machines, the T3 Code gateway, the mirrors, and one organization or several. It looks before it asks and says what it observed: Tailscale's name and address and what Tailscale Serve forwards, where your domain resolves, and whether ports 80 and 443 are taken. It never asks for an address to bind: that follows from the answers. On an existing install it shows what is saved and lets you keep it, change one thing, or go through every question. It ends with what changes, in words, and the same command with flags; nothing applies until you say yes.",
@@ -2509,6 +2509,26 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       {
         flag: "--workspace-docker-memory <auto|none|size|default>",
         text: "the same for each workspace's Docker service. Default: auto, a quarter of this machine's memory, 1 to 8 GiB",
+      },
+      {
+        flag: "--sentry-dsn <dsn|default>",
+        text: "send Mend's server errors, traces and logs to this Sentry project. Off unless set: an install reports to nobody until its operator names a project. Kept across reruns and upgrades; applies once Mend restarts",
+      },
+      {
+        flag: "--sealant-sentry-dsn <dsn|default>",
+        text: "the same for the bundled sealant's API, worker and SSH gateway, to a project of their own",
+      },
+      {
+        flag: "--sentry-browser-dsn <dsn|default>",
+        text: "the Sentry project the web app reports to from the browser",
+      },
+      {
+        flag: "--sentry-environment <name|default>",
+        text: "the environment every report names. Default: development",
+      },
+      {
+        flag: "--sentry-traces-sample-rate <0-1|default>",
+        text: "the share of traces kept, from 0 to 1. Default: 1, every trace",
       },
       {
         flag: "--assets-dir <dir>",

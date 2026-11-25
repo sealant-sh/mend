@@ -13,6 +13,7 @@ import {
   hostUserNamespacesRefusalParts,
 } from "@mend/domain/host-user-namespaces";
 import { HistoryAdmissionRefusedError, REMOVAL_START_REFUSED } from "@mend/domain/workbench";
+import { ErrorReporter } from "@mend/telemetry";
 import { Cause, Effect, Layer, Logger, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -31,7 +32,17 @@ const USERNS_SETTING = "kernel.apparmor_restrict_unprivileged_userns = 0";
 const WORDS = "Rename the ledger helper before Friday 7c41";
 const STATEMENT = 'insert into "agent_turns" ("id", "input") values ($1, $2)';
 
-const serve = (mode: "redacted" | "verbose", logs: string[] = []) => {
+interface Reported {
+  readonly operation: string;
+  readonly name: string;
+  readonly message: string;
+}
+
+const serve = (
+  mode: "redacted" | "verbose",
+  logs: string[] = [],
+  reported: Array<Reported> = [],
+) => {
   const routes = HttpRouter.use((router) =>
     Effect.gen(function* () {
       yield* router.add("GET", "/api/declared", () =>
@@ -40,6 +51,19 @@ const serve = (mode: "redacted" | "verbose", logs: string[] = []) => {
             { _tag: "StoreFailure", message: `fatal: not a git repository: ${STORE_PATH}` },
             { status: 422 },
           ),
+        ),
+      );
+      yield* router.add("GET", "/api/declared-unavailable", () =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe(
+            { _tag: "StoreFailure", message: `fatal: unable to read ${STORE_PATH}` },
+            { status: 503 },
+          ),
+        ),
+      );
+      yield* router.add("GET", "/api/preparing", () =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe({ _tag: "RawFilePreparing" }, { status: 503 }),
         ),
       );
       yield* router.add("GET", "/api/own-words", () =>
@@ -118,6 +142,19 @@ const serve = (mode: "redacted" | "verbose", logs: string[] = []) => {
     Layer.provideMerge(
       Logger.layer([Logger.make((entry) => logs.push(Logger.formatJson.log(entry)))]),
     ),
+    Layer.provideMerge(
+      Layer.succeed(ErrorReporter, {
+        capture: (cause, report) => {
+          const [error] = Cause.prettyErrors(cause);
+          reported.push({
+            operation: report.operation,
+            name: error?.name ?? "",
+            message: error?.message ?? "",
+          });
+        },
+        flush: () => Promise.resolve(),
+      }),
+    ),
   );
   const { handler, dispose } = HttpRouter.toWebHandler(app, { disableLogger: true });
   disposers.push(dispose);
@@ -185,6 +222,40 @@ describe("the error boundary", () => {
     const text = await response.text();
     expect(text).not.toContain("/var/lib");
     expect(JSON.parse(text)).toMatchObject({ _tag: "InternalError" });
+  });
+
+  it("reports each failure of the server's once, and none of the client's", async () => {
+    const reported: Array<Reported> = [];
+    const api = serve("redacted", [], reported);
+    for (const route of [
+      "/api/defect",
+      "/api/declared-unavailable",
+      "/api/undeclared",
+      "/api/declared",
+      "/api/preparing",
+      "/api/history-fenced",
+      "/api/removal-fenced",
+      "/api/ok",
+      "/api/nowhere",
+    ])
+      await api(route);
+    expect(reported).toEqual([
+      {
+        operation: "http.request",
+        name: "Error",
+        message: `EACCES: permission denied, open '${STORE_PATH}/config'`,
+      },
+      {
+        operation: "http.request",
+        name: "StoreFailure",
+        message: "fatal: unable to read <path>/repo.git",
+      },
+      {
+        operation: "http.request",
+        name: "UndeclaredErrorResponse",
+        message: "an undeclared 500 response",
+      },
+    ]);
   });
 
   it("does not touch a successful response, or a route that does not exist", async () => {

@@ -29,6 +29,7 @@
     "@mend/slack": "workspace:*",
     "@mend/store": "workspace:*",
     "@mend/t3-contracts": "workspace:*",
+    "@mend/telemetry": "workspace:*",
     "@mend/ui-old": "workspace:*",
     "effect": "catalog:",
     "mediabunny": "catalog:",

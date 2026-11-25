@@ -3430,8 +3430,11 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 - **Do:** On the box host, `mend server status` and `mend server logs --tail 20`. Change nothing.
 - **See:** `Pinned Mend <version> at …`, the `exposure · declared …` line,
   `tenancy · declared multi` (multi tenancy is the default since #1916, and every master since 21
-  Nov declares it) and `tenancy · observed multi · multi mode gate · nothing open · …`, and the
-  containers up; at most 20 lines per container, exit `0`.
+  Nov declares it) and `tenancy · observed multi · multi mode gate · nothing open · …`, a
+  `telemetry · …` line (`off: this server reports its errors and traces to nobody` unless the copy
+  was started with this machine's `MEND_VERIFY_SENTRY_DSN`, then
+  `Mend's servers report to sentry.mend.run project 3, …, environment check-vm`; never a DSN's key),
+  and the containers up; at most 20 lines per container, exit `0`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/` (server), `scripts/preview-deploy.sh`

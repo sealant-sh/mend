@@ -254,6 +254,28 @@ describe("what a request leaves in the log and the trace", () => {
     }
   });
 
+  it("takes Sentry's sentry-trace when no W3C context came, and traceparent over it", async () => {
+    const { spans, send, dispose } = harness();
+    try {
+      await send("GET", `/future/${SENTINEL}`, {
+        headers: { "sentry-trace": `${TRACE_ID}-00f067aa0ba902b7-1` },
+      });
+      await send("GET", `/future/${SENTINEL}`, {
+        headers: {
+          traceparent: `00-${"a".repeat(32)}-${"b".repeat(16)}-01`,
+          "sentry-trace": `${TRACE_ID}-00f067aa0ba902b7-1`,
+        },
+      });
+      await send("GET", `/future/${SENTINEL}`, { headers: { "sentry-trace": "not-a-trace" } });
+      const [fromSentry, fromW3c, fresh] = serverSpans(spans);
+      expect(fromSentry?.traceId).toBe(TRACE_ID);
+      expect(fromW3c?.traceId).toBe("a".repeat(32));
+      expect(fresh?.parent).toEqual(Option.none());
+    } finally {
+      await dispose();
+    }
+  });
+
   it("parents its span on the caller's trace, and the handler's spans on it", async () => {
     const { spans, send, dispose } = harness();
     try {

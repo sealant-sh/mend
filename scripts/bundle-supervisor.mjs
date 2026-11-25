@@ -404,10 +404,40 @@ export const verifyT3GatewayRoot = async (root = T3_GATEWAY_ROOT) => {
   }
 };
 
+/** The DSN names a container is given, one per product: each reports to its own Sentry project. */
+const SENTRY_DSN_NAMES = ["SENTRY_DSN", "MEND_SENTRY_DSN", "SEALANT_SENTRY_DSN"];
+
+/**
+ * The environment a child starts with: the container's, then its own, with the one `SENTRY_DSN`
+ * its product reports to (SLNT-1355). Mend's processes take `MEND_SENTRY_DSN` (or a plain
+ * `SENTRY_DSN`, Mend being what the container runs) and sealant's take `SEALANT_SENTRY_DSN`
+ * alone, so neither reports into the other's project. Sealant's names its own release. Only the
+ * web app (`web`) is given `SENTRY_BROWSER_DSN`, which it serves to the browser. No DSN, no
+ * telemetry: nothing here is ever a default.
+ */
+export const childEnvironment = (container, product, own = {}, { web = false } = {}) => {
+  const env = { ...container, ...own };
+  for (const name of SENTRY_DSN_NAMES) delete env[name];
+  const dsn = (
+    product === "sealant"
+      ? container.SEALANT_SENTRY_DSN
+      : container.MEND_SENTRY_DSN?.trim() || container.SENTRY_DSN
+  )?.trim();
+  if (product === "sealant") delete env.SENTRY_RELEASE;
+  // The browser's DSN is the web app's to serve to the browser, and no other process's.
+  if (!web) delete env.SENTRY_BROWSER_DSN;
+  return dsn ? { ...env, SENTRY_DSN: dsn } : env;
+};
+
 const baseSpecification = (name, command, environment = {}) => ({
   name,
   command,
-  env: { ...process.env, ...environment },
+  env: childEnvironment(
+    process.env,
+    name.startsWith("sealant-") ? "sealant" : "mend",
+    environment,
+    { web: name === "mend-web" },
+  ),
 });
 
 const startBundle = async (supervisor) => {

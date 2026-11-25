@@ -760,13 +760,21 @@ test("steps are checked before anything runs: file-safe unique names, an argv, a
       { name: "01-clone", run: ["git", "clone", "x", "work"] },
       { name: "02-push", cwd: "./work/", run: ["mend", "skills", "push", "--project"] },
       { name: "03-config", cwd: ".config/mend", run: ["ls"] },
+      { name: "04-status", home: "server", run: ["mend", "server", "status"] },
     ]),
     [
-      { name: "01-clone", cwd: "", run: ["git", "clone", "x", "work"] },
-      { name: "02-push", cwd: "work", run: ["mend", "skills", "push", "--project"] },
-      { name: "03-config", cwd: ".config/mend", run: ["ls"] },
+      { name: "01-clone", cwd: "", run: ["git", "clone", "x", "work"], home: "client" },
+      {
+        name: "02-push",
+        cwd: "work",
+        run: ["mend", "skills", "push", "--project"],
+        home: "client",
+      },
+      { name: "03-config", cwd: ".config/mend", run: ["ls"], home: "client" },
+      { name: "04-status", cwd: "", run: ["mend", "server", "status"], home: "server" },
     ],
   );
+  assert.throws(() => steps([{ name: "a", home: "root", run: ["true"] }]), /client or server/);
   assert.throws(() => parseSteps("not json"), /not JSON/);
   assert.throws(() => steps([]), /non-empty/);
   assert.throws(() => steps([{ name: "../x", run: ["true"] }]), /name must match/);

@@ -334,4 +334,8 @@ mirrors:
 
 # Extra API-tier env (plain values only). Not forwarded to the web tier.
 # Configure shared browser origins through web.appUrl / web.allowedOrigins above.
+# Telemetry is off unless set here: the API reports its errors and traces to a Sentry project
+# only when given one, for example
+#   - { name: SENTRY_DSN, value: "https://<public key>@<host>/<project id>" }
+#   - { name: SENTRY_ENVIRONMENT, value: production }
 extraEnv: []

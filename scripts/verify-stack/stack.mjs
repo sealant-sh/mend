@@ -701,6 +701,7 @@ async function runSteps(state, steps) {
     const name = `${VERIFIER_PREFIX}step-${randomUUID().slice(0, 8)}`;
     const ended = await cliRun(state, args, {
       cwd: step.cwd,
+      home: step.home,
       program,
       name,
       input: "",
@@ -800,6 +801,17 @@ const DEFAULT_PORT = 3305;
 /** The inner server publishes its web port this far above the relay's. */
 const SERVER_PORT_OFFSET = 10_000;
 
+/**
+ * Where the inner server reports its errors and traces: off unless the verifier names a project,
+ * and handed to its `mend server setup` as they are.
+ */
+const TELEMETRY_FLAGS = [
+  "--sentry-dsn",
+  "--sealant-sentry-dsn",
+  "--sentry-browser-dsn",
+  "--sentry-environment",
+];
+
 function parseFlags(args) {
   const flags = {
     port: DEFAULT_PORT,
@@ -809,6 +821,8 @@ function parseFlags(args) {
     force: false,
     keep: false,
     packages: "source",
+    /** `mend server setup`'s telemetry flags, passed through as given (SLNT-1355). */
+    telemetry: [],
   };
   const sources = {};
   for (let i = 0; i < args.length; i++) {
@@ -826,6 +840,7 @@ function parseFlags(args) {
     else if (arg === "--purge") flags.purge = true;
     else if (arg === "--force") flags.force = true;
     else if (arg === "--keep") flags.keep = true;
+    else if (TELEMETRY_FLAGS.includes(arg)) flags.telemetry.push(arg, value());
     else throw new Error(`unknown option ${arg}`);
   }
   if (!Number.isInteger(flags.port) || flags.port < 1024 || flags.port + SERVER_PORT_OFFSET > 65535)
@@ -1185,6 +1200,7 @@ async function install(
         "--url",
         origins.url,
         ...origins.extra.flatMap((origin) => ["--origin", origin]),
+        ...flags.telemetry,
       ],
       { home: "server", log: join(logs, "setup.log") },
     );

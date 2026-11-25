@@ -48,6 +48,8 @@ export interface ServerFiles {
   readonly workspaceImages?: string;
   /** compose.workspace-memory.yaml: the memory limits of each session's workspace. */
   readonly workspaceMemory?: string;
+  /** compose.telemetry.yaml: where this server's errors and traces go. */
+  readonly telemetry?: string;
   /** compose.host-vm.yaml: the host VM runtime's volumes, when the config names host-vm. */
   readonly hostVm?: string;
   /** npm-mirror.conf: the npm mirror's nginx configuration, mounted read-only. */
@@ -252,6 +254,7 @@ const optionalFileKeys = [
   "mirrors",
   "workspaceImages",
   "workspaceMemory",
+  "telemetry",
   "hostVm",
   "npmMirrorConf",
   "dockerMirrorGuard",
@@ -277,6 +280,7 @@ const fileNames = {
   mirrors: "compose.mirrors.yaml",
   workspaceImages: "compose.workspace-images.yaml",
   workspaceMemory: "compose.workspace-memory.yaml",
+  telemetry: "compose.telemetry.yaml",
   hostVm: "compose.host-vm.yaml",
   npmMirrorConf: "npm-mirror.conf",
   dockerMirrorGuard: "docker-mirror-guard.sh",
@@ -313,6 +317,7 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   mirrors: 0o600,
   workspaceImages: 0o600,
   workspaceMemory: 0o600,
+  telemetry: 0o600,
   hostVm: 0o600,
   npmMirrorConf: 0o644,
   dockerMirrorGuard: 0o644,
@@ -505,6 +510,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
   const mirrors = optional("mirrors");
   const workspaceImages = optional("workspaceImages");
   const workspaceMemory = optional("workspaceMemory");
+  const telemetry = optional("telemetry");
   const hostVm = optional("hostVm");
   const npmMirrorConf = optional("npmMirrorConf");
   const dockerMirrorGuard = optional("dockerMirrorGuard");
@@ -529,6 +535,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     ...(mirrors === undefined ? {} : { mirrors }),
     ...(workspaceImages === undefined ? {} : { workspaceImages }),
     ...(workspaceMemory === undefined ? {} : { workspaceMemory }),
+    ...(telemetry === undefined ? {} : { telemetry }),
     ...(hostVm === undefined ? {} : { hostVm }),
     ...(npmMirrorConf === undefined ? {} : { npmMirrorConf }),
     ...(dockerMirrorGuard === undefined ? {} : { dockerMirrorGuard }),

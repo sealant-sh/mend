@@ -302,6 +302,7 @@ import {
   sessionRuntimeOfferOf,
   SourcePolicyLive,
 } from "@mend/store";
+import { flushTelemetry, reportCause, telemetryLayer } from "@mend/telemetry";
 import { Cause, Config, Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerResponse } from "effect/http";
 
@@ -1220,11 +1221,40 @@ const MainLive = Layer.unwrap(
 // session sockets still held, the watch runner waiting on a child that will
 // never exit. The timer is unref'd: a clean unwind exits on its own first;
 // the deadline only fires for a wedge, and the OS reclaims every fd.
+// Telemetry drains at the signal too, within the deadline: a wedged unwind never reaches its
+// finalizer, and the spans and errors that explain the wedge would go with the process.
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
     setTimeout(() => process.exit(0), 5000).unref();
+    void flushTelemetry(2000);
   });
 }
 
+/**
+ * Traces, logs and errors to Sentry when the process has a `SENTRY_DSN`, and nothing otherwise
+ * (`@mend/telemetry`; SLNT-1355). Beneath everything, so every layer builds with its tracer, and a
+ * server that fails to start reports why.
+ */
+const TelemetryLive = Layer.unwrap(
+  Effect.gen(function* () {
+    // Read as MainLive reads it: `web` is `api`, and anything else it does not know is `all`.
+    const raw = yield* Config.String("MEND_MODE").pipe(Config.withDefault("all"));
+    const mode = raw === "web" ? "api" : raw === "api" || raw === "worker" ? raw : "all";
+    const version = yield* Config.String("MEND_VERSION").pipe(Config.withDefault("dev"));
+    return telemetryLayer({
+      name: `mend-${mode}`,
+      release: version === "dev" ? undefined : `mend-server@${version}`,
+    });
+  }),
+);
+
+const ReportedMainLive = MainLive.pipe(
+  Layer.tapCause((cause) => reportCause(cause, { operation: "mend.server.start" })),
+);
+
 // Every log line goes through a console that strips URL credentials.
-NodeRuntime.runMain(Layer.launch(MainLive.pipe(Layer.provide(RedactingConsoleLive))));
+NodeRuntime.runMain(
+  Layer.launch(
+    ReportedMainLive.pipe(Layer.provide(TelemetryLive), Layer.provide(RedactingConsoleLive)),
+  ),
+);

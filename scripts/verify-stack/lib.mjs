@@ -719,9 +719,15 @@ export function parseSteps(text) {
     const where = `step ${index + 1}`;
     if (step === null || typeof step !== "object" || Array.isArray(step))
       throw new Error(`${where} is not an object`);
-    const unknown = Object.keys(step).filter((key) => !["name", "cwd", "run"].includes(key));
+    const unknown = Object.keys(step).filter(
+      (key) => !["name", "cwd", "run", "home"].includes(key),
+    );
     if (unknown.length > 0) throw new Error(`${where} has unknown keys: ${unknown.join(", ")}`);
-    const { name, cwd = "", run } = step;
+    const { name, cwd = "", run, home = "client" } = step;
+    // `server`: the inner server's own home, with the stack's Docker, where `mend server status`
+    // reads the install; `client` (the default) is the signed-in person's.
+    if (home !== "client" && home !== "server")
+      throw new Error(`${name}: home must be client or server`);
     if (!isStepName(name)) throw new Error(`${where}: name must match ${STEP_NAME}`);
     if (names.has(name)) throw new Error(`${where}: name ${name} is used twice`);
     names.add(name);
@@ -730,7 +736,7 @@ export function parseSteps(text) {
     if (typeof cwd !== "string" || cwd.startsWith("/") || cwd.split("/").includes(".."))
       throw new Error(`${name}: cwd must be a path under the inner home, with no ..`);
     const segments = cwd.split("/").filter((segment) => segment !== "" && segment !== ".");
-    return { name, cwd: segments.join("/"), run };
+    return { name, cwd: segments.join("/"), run, home };
   });
 }
 

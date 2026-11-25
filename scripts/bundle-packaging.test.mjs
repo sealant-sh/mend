@@ -802,3 +802,46 @@ test("hands the worker the host VM directories only when Mend names host-vm", as
     /SEALANT_DOCKER_WORKSPACE_EGRESS_SUBNETS is unset/,
   );
 });
+
+test("each product's processes report to their own Sentry project, and none without a DSN", async () => {
+  const { childEnvironment } = await import("./bundle-supervisor.mjs");
+  const container = {
+    PATH: "/usr/bin",
+    MEND_SENTRY_DSN: "https://m@sentry.example/3",
+    SEALANT_SENTRY_DSN: " https://s@sentry.example/2 ",
+    SENTRY_ENVIRONMENT: "box",
+    SENTRY_RELEASE: "mend-server@1.2.3",
+    SENTRY_BROWSER_DSN: "https://b@sentry.example/4",
+  };
+  const mend = childEnvironment(container, "mend", { PORT: "3101" });
+  assert.equal(mend.SENTRY_DSN, "https://m@sentry.example/3");
+  // Only the web app serves the browser its DSN.
+  assert.equal(mend.SENTRY_BROWSER_DSN, undefined);
+  const web = childEnvironment(container, "mend", {}, { web: true });
+  assert.equal(web.SENTRY_DSN, "https://m@sentry.example/3");
+  assert.equal(web.SENTRY_BROWSER_DSN, "https://b@sentry.example/4");
+  assert.equal(mend.SENTRY_ENVIRONMENT, "box");
+  assert.equal(mend.PORT, "3101");
+  assert.equal(mend.MEND_SENTRY_DSN, undefined);
+  assert.equal(mend.SEALANT_SENTRY_DSN, undefined);
+  const sealant = childEnvironment(container, "sealant");
+  assert.equal(sealant.SENTRY_DSN, "https://s@sentry.example/2");
+  assert.equal(sealant.SENTRY_ENVIRONMENT, "box");
+  assert.equal(sealant.SENTRY_RELEASE, undefined);
+  assert.equal(sealant.SENTRY_BROWSER_DSN, undefined);
+  assert.equal(sealant.MEND_SENTRY_DSN, undefined);
+  // A plain SENTRY_DSN is Mend's, the container's product: never sealant's.
+  const plain = { SENTRY_DSN: "https://m@sentry.example/3" };
+  assert.equal(childEnvironment(plain, "mend").SENTRY_DSN, "https://m@sentry.example/3");
+  assert.equal("SENTRY_DSN" in childEnvironment(plain, "sealant"), false);
+  assert.equal("SENTRY_DSN" in childEnvironment({ PATH: "/usr/bin" }, "mend"), false);
+  // Every Sealant process is started as a Sealant one.
+  const supervisor = await readFile(path.join(root, "scripts/bundle-supervisor.mjs"), "utf8");
+  const sealantNames = [...supervisor.matchAll(/baseSpecification\("([a-z-]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(sealantNames.filter((name) => !name.startsWith("mend-")).toSorted(), [
+    "sealant-api",
+    "sealant-migrate",
+    "sealant-ssh-gateway",
+    "sealant-worker",
+  ]);
+});

@@ -210,3 +210,23 @@ test("a Stop that never saves, or a secret in the evidence, is reported, not pas
   assert.equal(result.cleanup.status, "failed");
   assert.ok(result.cleanup.left.some((line) => line.includes("still saving")));
 });
+
+test("a stack reports to Sentry only when this machine names the projects", async () => {
+  const { telemetryFlags } = await import("./stack.mjs");
+  assert.deepEqual(telemetryFlags({}), []);
+  assert.deepEqual(telemetryFlags({ MEND_VERIFY_SENTRY_DSN: "  " }), []);
+  assert.deepEqual(
+    telemetryFlags({
+      MEND_VERIFY_SENTRY_DSN: "https://m@sentry.example/3",
+      MEND_VERIFY_SEALANT_SENTRY_DSN: " https://s@sentry.example/2 ",
+    }),
+    [
+      "--sentry-dsn",
+      "https://m@sentry.example/3",
+      "--sealant-sentry-dsn",
+      "https://s@sentry.example/2",
+      "--sentry-environment",
+      "verify-stack",
+    ],
+  );
+});
