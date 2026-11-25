@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Names Mend's server release in Sentry and uploads its bundles' source maps (SLNT-1355), so an
-# error from the API, the worker or the t3code gateway reads as source. The release is
+# error from the API, the worker or the t3code gateway reads as source; and the web app's browser
+# release beside it, with the browser's maps (SLNT-1356). The release is
 # mend-server@<version>, the name the server reports under (apps/api/src/main.ts): MEND_VERSION
 # is the image's version. Frames are app:///<file in dist> (@mend/telemetry), so the maps go up
 # under that prefix.
@@ -33,3 +34,15 @@ for dist in apps/api/dist apps/t3-gateway/dist; do
 done
 "${sentry_cli[@]}" releases finalize "$release"
 echo "Sentry release $release, with the API's and the gateway's source maps."
+
+# The browser's release, mend-web@<version>, the name the web app reports under
+# (apps/web/src/lib/telemetry-config.ts). Its maps are built `hidden`: the code is byte for byte the
+# image's (a hidden map adds no sourceMappingURL), and its frames are the page's own URLs,
+# https://<host>/assets/<file>, so the maps go up under `~/assets`. They are uploaded, never served.
+web_release="mend-web@$version"
+MEND_WEB_SOURCEMAPS=hidden pnpm --filter @mend/web build
+SENTRY_PROJECT=mend-web "${sentry_cli[@]}" releases new "$web_release"
+SENTRY_PROJECT=mend-web "${sentry_cli[@]}" sourcemaps upload --release "$web_release" \
+  --url-prefix '~/assets' apps/web/.output/public/assets
+SENTRY_PROJECT=mend-web "${sentry_cli[@]}" releases finalize "$web_release"
+echo "Sentry release $web_release, with the browser's source maps."

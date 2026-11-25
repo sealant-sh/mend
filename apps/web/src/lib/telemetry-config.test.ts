@@ -18,7 +18,7 @@ describe("browserTelemetryOf", () => {
     expect(browserTelemetryOf({ SENTRY_BROWSER_DSN: "https://key@sentry.example/" })).toBeNull();
   });
 
-  it("names the release the source maps are uploaded under, unless one is given", () => {
+  it("names the release the source maps are uploaded under, whatever the servers' release is", () => {
     expect(browserTelemetryOf({ SENTRY_BROWSER_DSN: DSN, MEND_VERSION: "0.40.1" })).toEqual({
       dsn: DSN,
       environment: "development",
@@ -29,11 +29,14 @@ describe("browserTelemetryOf", () => {
       browserTelemetryOf({
         SENTRY_BROWSER_DSN: DSN,
         MEND_VERSION: "0.40.1",
-        SENTRY_RELEASE: "mend-web@0.40.1+abc",
+        SENTRY_RELEASE: "mend-server@0.40.1",
         SENTRY_ENVIRONMENT: "preview",
       }),
-    ).toMatchObject({ release: "mend-web@0.40.1+abc", environment: "preview" });
+    ).toMatchObject({ release: "mend-web@0.40.1", environment: "preview" });
     expect(browserTelemetryOf({ SENTRY_BROWSER_DSN: DSN })?.release).toBeNull();
+    expect(
+      browserTelemetryOf({ SENTRY_BROWSER_DSN: DSN, MEND_VERSION: "dev" })?.release,
+    ).toBeNull();
   });
 
   it("samples at the rate given, from none to all, and every trace otherwise", () => {
