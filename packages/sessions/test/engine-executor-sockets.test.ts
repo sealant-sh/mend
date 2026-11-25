@@ -110,9 +110,11 @@ describe("an executor's sockets at launch", () => {
     expect(created[0]?.executorSockets).toEqual({ capture: true, session: true });
     // The workspace's processes reach the session channel through its socket.
     expect(created[0]?.env?.["MEND_SESSION_SOCKET"]).toBe(WORKSPACE_SESSION_SOCKET);
-    // Its plan is asked over capture.sock in plain HTTP, whatever address the channel has.
+    // Its plan is asked over capture.sock in plain HTTP, whatever address the channel has,
+    // with plaintext stated for the local socket even when remote workspaces require HTTPS.
     const source = created[0]?.source;
     expect(source?.kind === "capture" ? source.endpoint : null).toBe(EXECUTOR_SOCKET_CHANNEL_URL);
+    expect(source?.kind === "capture" ? source.transport?.plaintext : null).toBe(true);
   });
 
   it("treats a worktree with no recorded runtime as this server's Docker", async () => {
@@ -129,6 +131,9 @@ describe("an executor's sockets at launch", () => {
     expect(created[0]?.controlScope).toBe(binds[0]?.scope);
     expect(created[0]?.executorSockets).toBeUndefined();
     expect(created[0]?.env?.["MEND_SESSION_SOCKET"]).toBeUndefined();
+    const source = created[0]?.source;
+    expect(source?.kind === "capture" ? source.endpoint : null).toBe(EXECUTOR_SOCKET_CHANNEL_URL);
+    expect(source?.kind === "capture" ? source.transport?.plaintext : null).toBe(true);
   });
 
   it("names no scope where Mend serves no control root, as before", async () => {
@@ -136,6 +141,8 @@ describe("an executor's sockets at launch", () => {
     expect(binds).toEqual([]);
     expect(created[0]?.controlScope).toBeUndefined();
     expect(created[0]?.executorSockets).toBeUndefined();
+    const source = created[0]?.source;
+    expect(source?.kind === "capture" ? source.transport?.plaintext : undefined).toBeUndefined();
   });
 
   it("closes the scope's sockets when the create is refused: no executor will dial them", async () => {

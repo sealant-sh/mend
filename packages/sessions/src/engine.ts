@@ -4217,17 +4217,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       /**
        * What the daemon is told about dialling the channel and the object store (sealantd
-       * ADR-0015 "Transport"). Only what the operator stated goes over: without a statement the
-       * daemon requires verified HTTPS and refuses to boot otherwise, and Mend does not soften
-       * that on its own. `MEND_EXECUTOR_NETWORK=private` is the statement for a plain-HTTP channel.
+       * ADR-0015 "Transport"). For network channels only what the operator stated goes over:
+       * without a statement the daemon requires verified HTTPS and refuses to boot otherwise, and
+       * Mend does not soften that on its own. `MEND_EXECUTOR_NETWORK=private` is the statement for
+       * a plain-HTTP network channel. When `overSocket` is true (`capture.sock` / vsock), nothing
+       * leaves this machine's local socket and the channel URL is `EXECUTOR_SOCKET_CHANNEL_URL`
+       * (`http://mend:3106`), so `plaintext: true` is stated for that local socket even when
+       * remote workspaces on the same server require verified HTTPS (`compose.remote-endpoints.yaml`).
        */
-      const captureTransport = (): Pick<WorkspaceCaptureSource, "transport"> => {
+      const captureTransport = (overSocket = false): Pick<WorkspaceCaptureSource, "transport"> => {
         const stated = deployment.executorTransport;
-        if (stated === undefined) return {};
         const transport = {
-          ...(stated.plaintext ? { plaintext: true } : {}),
-          ...(stated.channelCaPem === undefined ? {} : { channelCaPem: stated.channelCaPem }),
-          ...(stated.objectCaPem === undefined ? {} : { objectCaPem: stated.objectCaPem }),
+          ...(overSocket || stated?.plaintext ? { plaintext: true } : {}),
+          ...(stated?.channelCaPem === undefined ? {} : { channelCaPem: stated.channelCaPem }),
+          ...(stated?.objectCaPem === undefined ? {} : { objectCaPem: stated.objectCaPem }),
         };
         return Object.keys(transport).length === 0 ? {} : { transport };
       };
@@ -4267,7 +4270,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 endpoint: endpoint.url,
                 token,
                 harnessHome: HARNESS_HOME_MOUNT_PATH,
-                ...captureTransport(),
+                ...captureTransport(overSocket),
               },
             };
           }
@@ -4278,7 +4281,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               worktreeId: session.value.worktreeId,
               token,
               harnessHome: HARNESS_HOME_MOUNT_PATH,
-              ...captureTransport(),
+              ...captureTransport(overSocket),
             },
           };
         });
