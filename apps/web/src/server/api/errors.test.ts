@@ -12,10 +12,12 @@ import {
 import { ServiceId, SessionId } from "@mend/domain";
 import { REMOVAL_START_REFUSED, REMOVED_PROJECT_WORK_REFUSED } from "@mend/domain/workbench";
 import { TRPCError } from "@trpc/server";
+import { Effect } from "effect";
+import { FetchHttpClient } from "effect/http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { API_DRIFT, ApiRefusal, toTRPCError } from "./errors.ts";
-import { run } from "./run.ts";
+import { API_DRIFT, ApiRefusal, isWebTierFailure, toTRPCError } from "./errors.ts";
+import { apiClientFor, run } from "./run.ts";
 
 /**
  * Drives run() + toTRPCError through the REAL derived client against a stub
@@ -281,4 +283,36 @@ describe("a change asked of a removed project, through the real client", () => {
       });
     });
   }
+});
+
+describe("which failures the web tier reports (SLNT-1356)", () => {
+  /** What the real derived client fails with, before any translation. */
+  const errorOf = (
+    apiUrl: string,
+    call: Parameters<typeof run>[1] = (api) => api.health.status(),
+  ) =>
+    Effect.runPromise(
+      apiClientFor(ctxFor(apiUrl)).pipe(
+        Effect.flatMap((api) => call(api)),
+        Effect.flip,
+        Effect.provide(FetchHttpClient.layer),
+      ),
+    );
+
+  it("reports what is the web tier's own: the API unreachable, contract drift, a defect", async () => {
+    expect(isWebTierFailure(await errorOf("http://127.0.0.1:1"))).toBe(true);
+    mode = "drift-404";
+    const drift = await errorOf(`http://127.0.0.1:${port}`, (api) =>
+      api.userDevices.cliAuthRequest({ params: { code: "CODE-7SEC" } }),
+    );
+    expect(isWebTierFailure(drift)).toBe(true);
+    expect(isWebTierFailure(new TypeError("Cannot read properties of undefined"))).toBe(true);
+  });
+
+  it("leaves to the API what it answered: a refusal it declares, a status it chose", async () => {
+    mode = "removed-project";
+    expect(isWebTierFailure(await errorOf(`http://127.0.0.1:${port}`))).toBe(false);
+    mode = "http-503";
+    expect(isWebTierFailure(await errorOf(`http://127.0.0.1:${port}`))).toBe(false);
+  });
 });

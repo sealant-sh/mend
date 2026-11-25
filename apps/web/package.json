@@ -22,6 +22,7 @@
     "@mend/domain": "workspace:*",
     "@mend/network": "workspace:*",
     "@mend/t3-contracts": "workspace:*",
+    "@mend/telemetry": "workspace:*",
     "@mend/ui": "workspace:*",
     "@novnc/novnc": "catalog:",
     "@pierre/diffs": "catalog:",
