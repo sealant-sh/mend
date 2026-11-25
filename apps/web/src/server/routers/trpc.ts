@@ -1,9 +1,12 @@
+import { callerSpanOf } from "@mend/network/http-observation";
 import { initTRPC } from "@trpc/server";
-import { Schema } from "effect";
+import { Clock, Effect, Exit, Schema } from "effect";
+import { Headers as HttpHeaders } from "effect/http";
 import superjson from "superjson";
 
 import { ApiRefusal } from "../api/errors.ts";
 import type { TrpcContext } from "../api/index.ts";
+import { runSync } from "../api/run.ts";
 
 /**
  * tRPC init for the web tier. superjson carries the contract's Type side to
@@ -29,7 +32,28 @@ const t = initTRPC.context<TrpcContext>().create({
 });
 
 export const router = t.router;
-export const procedure = t.procedure;
+
+/**
+ * Each procedure is a span of the web tier, `mend.web.<path>` (a procedure's path is its route
+ * template: no ids), a child of the trace the caller sent (`traceparent`, else `sentry-trace`),
+ * whether the call came over /trpc or from a page the server renders. The API calls it makes are
+ * its children (`api/run.ts`); it ends with the procedure's outcome.
+ */
+const traced = t.middleware(async ({ ctx, path, type, next }) => {
+  const parent = callerSpanOf(HttpHeaders.fromInput(ctx.headers));
+  const span = runSync(
+    Effect.makeSpan(`mend.web.${path}`, {
+      kind: "server",
+      ...(parent === undefined ? {} : { parent }),
+      attributes: { "rpc.system": "trpc", "rpc.method": path, "mend.trpc.type": type },
+    }),
+  );
+  const result = await next({ ctx: { ...ctx, procedure: { span, path } } });
+  span.end(runSync(Clock.currentTimeNanos), result.ok ? Exit.void : Exit.fail(result.error));
+  return result;
+});
+
+export const procedure = t.procedure.use(traced);
 
 /** Effect Schema speaks Standard Schema v1, which tRPC v11 accepts natively. */
 export const input = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) =>

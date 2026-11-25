@@ -173,6 +173,26 @@ export const toTRPCError = (error: unknown, apiUrl = ""): TRPCError => {
   return new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: NOT_DONE });
 };
 
+/**
+ * Whether a failure `toTRPCError` translates is the web tier's to report (SLNT-1356): the API
+ * unreachable, contract drift, or a failure nothing maps. A refusal the contract declares and a
+ * status the API answered are not: the API reports its own failures, and a refusal is an answer.
+ */
+export const isWebTierFailure = (error: unknown): boolean => {
+  if (error instanceof TRPCError) return false;
+  if (hasTag(error) && errorStatusByTag.has(error._tag)) return false;
+  if (HttpClientError.isHttpClientError(error)) {
+    const reason = error.reason._tag;
+    return (
+      reason === "TransportError" ||
+      reason === "InvalidUrlError" ||
+      reason === "EncodeError" ||
+      reason === "StatusCodeError"
+    );
+  }
+  return true;
+};
+
 /** The Mend server did not answer the web tier at all. */
 export const API_UNREACHABLE = "The Mend server is not answering. Try again in a moment.";
 /** The web tier and the server read this answer differently: two versions side by side. */
