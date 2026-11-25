@@ -90,7 +90,18 @@
 # `default` mode for a turn that is not Plan, instead of the mode a resumed conversation reported.
 # A config choice before the prompt, not the prompt's write or its answer, so no action changes.
 # Full run at ab840da8c1: every row as expected.
-sync ab840da8c17f7fc47d12270005258d36d8ec7779
+# ce2fb25248 is the SLNT-1355 branch: a turn's trace. agent-conversation.ts writes the inserting
+# span's W3C context into a queued turn's new trace_context column (insertQueuedTurn) and gained
+# traceOf, a read of it; toTurn leaves the column out of AgentTurn. protocol-host.ts runs the rest of
+# dispatchOne after claimNextTurn as dispatchClaimed, the same statements in the same order inside a
+# mend.turn.dispatch span (mend.turn.input around sendTurn); finishSend, the turn.started bind and
+# applyCompletion begin or end the turn's run span after their own writes; event projection runs
+# with tracing off. None writes a turn's status or provider turn id, nor claims, binds, completes or
+# cancels one, so no action changes. Full run at ce2fb25248: every row as expected.
+# 1727d5b9c8 is the same SLNT-1355 commit rebased on its foundation (the telemetry package and
+# the deploy env), which changed no covered file: the covered code is ce2fb25248's, which the full
+# run above checked.
+sync 1727d5b9c87a1d76117493af26758486c64d028d
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
