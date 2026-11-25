@@ -3439,6 +3439,26 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 - **Box-only:** no
 - **Areas:** `apps/cli/src/` (server), `scripts/preview-deploy.sh`
 
+### telemetry.web-trace
+
+- **Map:** no feature file yet (SLNT-1349's trace from the browser through Mend's web server to its
+  API; SLNT-1356)
+- **Needs:** no session; no turn; web; none
+- **Do:** Only on a copy started with this machine's `MEND_VERIFY_SENTRY_DSN` (the `telemetry · …`
+  line of `server.status-logs` says so); on any other, `not run · no DSN on this copy`. Drive the
+  owner's browser with every request carrying a `traceparent` the run chose (Playwright
+  `setExtraHTTPHeaders`, a fresh trace id): load the Now page, then go to Projects in the page. Read
+  sentry.mend.run project 3 (mend-server) back for that trace id with the read-only token in
+  `~/.local/share/sentry-mend/api-token` (never print it), spans by `span.name` and `parent_span`.
+- **See:** `mend.web.<procedure>` spans (`mend.web.sessions.inbox`, `mend.web.projects.list`, …)
+  whose parent is the request's own span id, both for the page the server rendered and for the calls
+  made in the page; under each, the web server's `http.client` span and under that the API's
+  `http.server` span named by route template; no id in any span name; no error event from service
+  `mend-web` for the run.
+- **Mode:** `agent`
+- **Box-only:** no
+- **Areas:** `apps/web/src/server/`, `packages/telemetry/`
+
 ### doctor.checklist
 
 - **Map:** doctor.md `doctor-checklist`, `doctor-exit-code`, `doctor-fix-commands`;
