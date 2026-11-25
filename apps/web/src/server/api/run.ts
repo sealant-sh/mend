@@ -1,5 +1,5 @@
 import { makeMendApiClient, type MendApiClient } from "@mend/api-contracts";
-import { flushTelemetry, reportCause, telemetryLayer } from "@mend/telemetry";
+import { reportCause, telemetryLayer } from "@mend/telemetry";
 import { Cause, Effect, Exit, Layer, ManagedRuntime, Option, type Tracer } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
@@ -34,8 +34,11 @@ const runtime = ManagedRuntime.make(
   ),
 );
 
-// What the exporters hold leaves before the process does (nitro's own stop takes up to 5 s).
-process.once("SIGTERM", () => void flushTelemetry(2_000));
+// On a stop, the runtime goes: the exporters send what they hold (2 s at most) and their timers
+// end, so nitro's own graceful stop can let the process exit. Left running, they would hold it
+// open after nitro closed its server.
+for (const signal of ["SIGTERM", "SIGINT"] as const)
+  process.once(signal, () => void runtime.dispose());
 
 /** Only Sentry's own `baggage` entries go on: the rest is the browser's, not the API's business. */
 const sentryBaggage = (baggage: string): string =>
