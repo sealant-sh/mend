@@ -28,6 +28,7 @@ const shards = {
     "@mend/agent-conversation",
     "@mend/agent-protocol",
     "@mend/api-contracts",
+    "@mend/client-errors",
   ],
   "clients-b": [
     "@mend/docs",

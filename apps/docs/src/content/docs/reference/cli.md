@@ -1088,6 +1088,8 @@ The CLI reads:
 | `MEND_DETACH_KEY`                | `Ctrl+]`; `none` turns the detach key off                                             |
 | `MEND_AUTO_ATTACH`               | On; `off` keeps the dashboard from attaching a session you started there once it runs |
 | `MEND_DEBUG`                     | Off; `1` prints each refused call, its status and its tag on stderr                   |
+| `MEND_SENTRY_DSN`                | Off; a Sentry DSN reports the CLI's unexpected errors there                           |
+| `MEND_SENTRY_ENVIRONMENT`        | `development`; the environment those reports name                                     |
 | `$XDG_CONFIG_HOME/mend/cli.json` | `~/.config/mend/cli.json` when XDG is unset                                           |
 
 The configuration file contains:
@@ -1101,6 +1103,14 @@ The configuration file contains:
 
 A legacy `~/.mend` directory remains authoritative when it is the only Mend configuration directory
 on the machine.
+
+No published build reports errors anywhere. `MEND_SENTRY_DSN` is for Sealant's own development
+machines. When it is set, a failure the CLI did not expect (not a server's refusal, an unreachable
+server or a mistyped command) goes there as one report, with the exception's type, its message with
+URLs, tokens and paths taken out, a stack trace of the CLI's own files, the command's name and the
+CLI's version. Arguments, environment, configuration and anything the server answered stay on the
+machine. The CLI reads `MEND_SENTRY_DSN` rather than `SENTRY_DSN`, so a `SENTRY_DSN` your shell
+holds for your own app is never used.
 
 ## Exit behavior
 

@@ -609,6 +609,14 @@ jobs:
           path: ${{ runner.temp }}/cli/*.tgz
           if-no-files-found: error
           retention-days: 90
+      # The source maps of the build just packed (apps/cli/scripts/build.mjs writes them outside the
+      # tarball), for release-cli.yml's sentry job to upload once the version is published.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mend-cli-sourcemaps
+          path: apps/cli/sourcemaps/
+          if-no-files-found: error
+          retention-days: 90
 
   # One record of what this run built: every image by its index and platform digests, and the CLI
   # tarball by file name, sha512 and integrity. Acceptance reads it from this run and nowhere else.

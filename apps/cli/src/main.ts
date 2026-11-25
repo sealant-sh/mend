@@ -120,6 +120,12 @@ import {
   type DotfilesRepositoryBody,
 } from "./dotfiles.ts";
 import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
+import {
+  FLUSH_MS,
+  isUnexpectedFailure,
+  reportCrashes,
+  startCliErrorReporter,
+} from "./error-reporting.ts";
 import { failureWords, noteRefusal } from "./failure-words.ts";
 import { aliasedVerb, flagRefusal } from "./flag-gate.ts";
 import { gitAuthorLine, parseGitAuthorArgs, type GitAuthorDto } from "./git-author.ts";
@@ -7196,9 +7202,15 @@ const finishAgentResult = (result: CommandResult<unknown>): void => {
   });
 };
 
+const errorReporter = await startCliErrorReporter();
+if (errorReporter !== null) reportCrashes(errorReporter);
 try {
   await main();
 } catch (error) {
+  if (errorReporter !== null && isUnexpectedFailure(error)) {
+    errorReporter.report(error);
+    await errorReporter.flush(FLUSH_MS);
+  }
   if (agentJsonRequested()) finishAgentResult(requestFailure(error));
   else fail(error instanceof Error ? error.message : String(error));
 }
