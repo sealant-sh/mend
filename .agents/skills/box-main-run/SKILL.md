@@ -220,9 +220,10 @@ saved login expires, with times only.
 - **One run at a time.** `mkdir $STATE/lock` is the lock; write `{ "tag", "at" }` into
   `$STATE/lock/run.json`. A lock older than **24 hours** is a dead run: remove it, say so in the
   report, and go on. A dead run's copies (its ledger's `copies`, checked as State says) are deleted
-  with `pnpm verify vm down <slot>` before this run boots its own; when its `saved` is null and it
-  had lifted the logins' claim, run `vm save <slot>` on its lane A copy first, as long as it still
-  runs: it may hold the only login that can still refresh.
+  with `pnpm verify vm down <slot>` before this run boots its own, each after its Boat identity log
+  is read into `$E/boat-identity/dead-<lane>.log` (step 5); when its `saved` is null and it had
+  lifted the logins' claim, run `vm save <slot>` on its lane A copy first, as long as it still runs:
+  it may hold the only login that can still refresh.
 - **The wait.** A run waits for room on this machine (`copies.sh`) for at most **20 hours** from
   taking the lock, so it never meets the next day's run, then gives up with one skip line (step 3).
 - **Load.** No copy boots while the 1-minute load average in `/proc/loadavg` is over **24**:
@@ -536,6 +537,23 @@ Every other failure is seen again by you before its lane's copy is deleted. A la
 second look or is one of the two kinds above: it frees room for other checks, and nothing on it is
 kept.
 
+**Read the Boat identity log before any copy goes.** When sealant refuses a saved Boat image, the
+copy's worker logs one line naming each field Boat changed (SLNT-1347):
+`Boat image identity differs: publication <id> quarantined (native-snapshot-identity-mismatch); differences [{"field":…,"recorded":…,"boat":…}]`.
+That line lives only in the copy's container log: `vm save` does not keep it and `vm down` deletes
+it. So right before every `vm down` in this skill, a dead run's copies (Limits) included, and on
+lane A before `vm save` (step 6), read it on that copy, one plain command:
+
+```sh
+.agents/skills/box-main-run/boat-identity.sh <lane> $E/boat-identity/<lane>.log
+```
+
+It prints `boat-identity · lane <lane> · read <UTC> · none`, or `found <n>` and each line with
+docker's timestamp in front. Read every lane, B too. `not read: …` means the log could not be read:
+report that, never `none`, and still delete the copy. Its values (a snapshot name, a `bx_` VM id, a
+time, Boat's snapshot id) are not secrets: the report carries every line, under its own heading
+(report.md). File nothing for them; SLNT-1347 reads them there.
+
 On a Boat lane, `vm down` first stops every live session of both accounts through the copy's own
 Mend and waits up to five minutes for Boat to confirm each VM the copy launched gone. When one is
 not confirmed, it keeps the copy, fails, and names each VM with its sessions:
@@ -605,9 +623,11 @@ the same image. Report `warm-up · second account's image built in <m> min`, `·
    has, and read again. A line reading `invalid`, or `refused` in its outcome, is the login signed
    out: report it and file Fix Now (step 7); the owner reconnects it. Not Claude's: refused since 20
    Nov and left so by the owner (SLNT-1219), it gets the report's one line and no ticket.
-4. Save lane A's data as the next master's:
+4. Read lane A's Boat identity log (step 5, "Read the Boat identity log before any copy goes"), then
+   save lane A's data as the next master's:
 
    ```sh
+   .agents/skills/box-main-run/boat-identity.sh a $E/boat-identity/a.log
    pnpm verify vm save <lane A's slot>
    ```
 
