@@ -27,7 +27,7 @@ the run was started only when the prompt that started you says it (the scheduled
 does); otherwise leave it out. A guess (on 18 Nov, "Started by hand" for a scheduled run) is not an
 observation.
 
-```markdown
+````markdown
 **Main on check VMs · <commit:12> · <UTC date>**
 
 Full CI: run <link> (dispatched by this run, `formal=full`) on <commit:12>, <conclusion>, <n> min.
@@ -59,6 +59,17 @@ Check VMs:
   it. Saved: `vm save` <UTC>, <sizes>. Next master: <version>, built <UTC>, or why not.
 - Free on lane A's `/`: <free before> → <free after>.
 
+**Boat image identity** (SLNT-1347), read on each copy before it went, from
+`$E/boat-identity/<lane>.log`:
+
+- A, read <UTC>: none · B, read <UTC>: none · C, read <UTC>: <n> found, or `not read: <why>`.
+
+<every line a lane found, verbatim with docker's timestamp, in one code block per lane:>
+
+```text
+lane C · <docker timestamp> Boat image identity differs: publication <id> quarantined (…); differences [{"field":…}]
+```
+
 | Flow           | Lane | Mode     | By        | Min | Outcome         | What was seen                                  |
 | -------------- | ---- | -------- | --------- | --- | --------------- | ---------------------------------------------- |
 | server.upgrade | A    | agent    | Opus      | 9   | seen            | finished for <version>; the box runs this head |
@@ -72,7 +83,7 @@ Check VMs:
 - Not on the box by design: flows.md, "Not on the box".
 
 <screenshots, one per web flow, the state a person saw>
-```
+````
 
 Screenshots go into the comment one at a time, in two calls with nothing between them: Linear's
 signed URL expires 60 seconds after `prepare_file_upload` answers.
