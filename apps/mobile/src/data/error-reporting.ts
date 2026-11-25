@@ -9,9 +9,10 @@ import * as Updates from "expo-updates";
  * someone builds for their own Mend never reports to us.
  *
  * What it reports is what no code caught: a JavaScript error that reaches React Native's global
- * handler and a native crash (an unhandled rejection is not: see `integrations`). Every JavaScript report is scrubbed by
- * `@mend/client-errors` before it leaves the phone; nothing about a request, a person, the screen or
- * what a session said is collected, and no session or performance data is sent.
+ * handler, and a native crash; an unhandled rejection is not (see `integrations`). Every JavaScript
+ * report is scrubbed by `@mend/client-errors` before it leaves the phone; nothing about a request, a
+ * person, the screen or what a session said is collected, and no session or performance data is
+ * sent.
  */
 const DSN = process.env["EXPO_PUBLIC_MEND_SENTRY_DSN"]?.trim() ?? "";
 const ENVIRONMENT = process.env["EXPO_PUBLIC_MEND_SENTRY_ENVIRONMENT"]?.trim() ?? "";
