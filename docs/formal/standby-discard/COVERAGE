@@ -184,7 +184,14 @@
 # standbyPlaceholderOf, executorLayoutOf, readCaptureStatusOf), into Effect.fnUntraced: each runs
 # the same statements without a span of its own. Normalised for that wrapper and whitespace, the
 # three files are main's, so no action changes. Full tlx run at 9a01be0347: every row as expected.
-sync 9a01be034798e7e2e23c373283fbb1654b18290c
+# bebfb06a70 (SLNT-1385) turns most of engine.ts's and capture-channel.ts's remaining Effect.fn("…")
+# helpers into Effect.fnUntraced, makes endServiceAttempt a plain function over the same
+# withServiceLifecycle body, and gives the restart's classifyUnclassifiedSessions pass a span of its
+# own: each runs the same statements. Normalised for those wrappers, trailing commas and
+# whitespace, capture-channel.ts is main's and engine.ts differs only there, which touches no
+# hot-pool, claim, retire, drain or discard call, so no action changes. --quick tlx run at
+# bebfb06a70: every row as expected.
+sync bebfb06a70d1f192ac93f50755e0e11e6139a0ae
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
