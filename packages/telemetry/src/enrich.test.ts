@@ -297,6 +297,13 @@ const exported = async (effect: Effect.Effect<void>): Promise<ReadonlyArray<Span
     .flatMap((body) => JSON.parse(body).resourceSpans[0].scopeSpans[0].spans);
 };
 
+/** A database query, as Effect's SQL client spans one. */
+const sqlQuery = (name: string) =>
+  Effect.withSpan(Effect.void, name, {
+    kind: "client",
+    attributes: { "db.system.name": "postgresql", "db.query.text": "select 1" },
+  });
+
 describe("the spans that reach Sentry", () => {
   it("hang a wrapper library span's child off the span above it", async () => {
     const spans = await exported(
@@ -313,13 +320,11 @@ describe("the spans that reach Sentry", () => {
   });
 
   it("leave out a query that ran under no span, and keep one that did", async () => {
-    const query = (name: string) =>
-      Effect.withSpan(Effect.void, name, {
-        kind: "client",
-        attributes: { "db.system.name": "postgresql", "db.query.text": "select 1" },
-      });
     const spans = await exported(
-      Effect.andThen(query("orphan"), query("child").pipe(Effect.withSpan("mend.test.parent"))),
+      Effect.andThen(
+        sqlQuery("orphan"),
+        sqlQuery("child").pipe(Effect.withSpan("mend.test.parent")),
+      ),
     );
     expect(
       spans.filter((span) => span.parentSpanId === undefined).map((span) => span.name),
