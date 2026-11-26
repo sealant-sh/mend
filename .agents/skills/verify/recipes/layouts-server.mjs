@@ -147,6 +147,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   const second = await page.context().browser().newContext();
   const email = `verify-layouts-${Date.now()}@example.invalid`;
   let memberId = null;
+  let memberLeft = false;
   try {
     const memberPage = await second.newPage();
     const joinHeading = memberPage.getByRole("heading", { name: /^Join / });
@@ -202,12 +203,13 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     // A join that failed after the account was made leaves no id here: find them by their email.
     memberId ??= (await roster()).find((each) => each.email === email)?.userId ?? null;
     if (memberId !== null) await owner("DELETE", `/api/organization/members/${memberId}`);
-    const left = (await roster()).some((each) => each.userId === memberId || each.email === email);
+    memberLeft = (await roster()).some((each) => each.userId === memberId || each.email === email);
     note(
-      `${left ? "not restored" : "restored"} · the member this run made · read back: the roster ${left ? "still lists" : "no longer lists"} ${email}`,
+      `${memberLeft ? "not restored" : "restored"} · the member this run made · read back: the roster ${memberLeft ? "still lists" : "no longer lists"} ${email}`,
     );
-    if (left) throw new Error(`the roster still lists ${email}`);
   }
+  // After the block, so a failed step above keeps its own error.
+  if (memberLeft) throw new Error(`the roster still lists ${email}`);
 
   // The limit: 20 per person.
   const count = (await names(owner)).length;
