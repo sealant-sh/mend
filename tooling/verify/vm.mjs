@@ -937,6 +937,14 @@ fi`);
           `mend run in ${project}: ${lastLine(warmed.stdout + warmed.stderr)}`,
         );
     }
+    const dropped = ssh(dropWorkspacesScript);
+    if (!dropped.stdout.includes("drop=done"))
+      return fail(
+        "warm",
+        "Warm the workspace images",
+        `the warm runs' workspaces: ${lastLine(dropped.stdout + dropped.stderr)}`,
+      );
+    const removed = dropped.stdout.split("\n").filter((line) => line.startsWith("removed=")).length;
     const again = ssh(restoreScript("/root/main-run/world.sql"));
     if (!again.stdout.includes("restore=done"))
       return fail("warm", "Warm the workspace images", `reload: ${lastLine(again.stdout)}`);
@@ -958,7 +966,7 @@ fi`);
         "warm",
         "Warm the workspace images",
         "passed",
-        `${WARM_PROJECTS.join(", ")}: ${images} workspace image tags in ${seconds(warmAt)}s; data loaded again`,
+        `${WARM_PROJECTS.join(", ")}: ${images} workspace image tags in ${seconds(warmAt)}s; the runs' ${removed} workspace containers and networks removed; data loaded again`,
       ),
     );
   } else {
@@ -975,6 +983,26 @@ fi`);
   // 7. Seal: Mend stopped, so each copy starts it once with its own address.
   const seal = phase("seal", []);
   if (seal.code !== 0) return fail("seal", "Seal the master", lastLine(seal.out));
+  // With Mend stopped, nothing sealant made may be left: the loaded data knows none of it, so a
+  // copy's first session would be handed the same egress subnet and refused it (SLNT-1384).
+  const read = ssh(leftWorkspacesScript);
+  const left = leftWorkspaces(read.stdout);
+  if (!read.stdout.includes("read=done") || left.length > 0)
+    return fail(
+      "clean",
+      "No workspace container or network in the master",
+      left.length > 0
+        ? `left in the master's Docker, which the loaded data does not know: ${left.join(", ")}`
+        : `Docker could not be read: ${lastLine(read.stdout + read.stderr)}`,
+    );
+  steps.push(
+    step(
+      "clean",
+      "No workspace container or network in the master",
+      "passed",
+      "Docker holds no sealant- container or network",
+    ),
+  );
   ssh("poweroff");
   for (let i = 0; i < 120 && qemuPid(p.build) !== null; i++) await sleep(500);
   if (qemuPid(p.build) !== null) await stopQemu(p.build);
@@ -1364,6 +1392,47 @@ export const vmDown = async ({
   if (steps.length === 0) steps.push(step("down", "Remove copies", "passed", "no copies"));
   return { steps, next };
 };
+
+/**
+ * Removes what the build's warm runs left in Docker, with Mend stopped so sealant changes nothing
+ * meanwhile (SLNT-1384). `mend run -- true` returns once its command exits; sealant removes the
+ * workspace's container, its Docker service and its networks some seconds later, and the reload
+ * that follows stops Mend first, so the last run's stay. The loaded data knows none of them, so
+ * sealant hands that egress network's subnet out again and Docker refuses it. The workspace images
+ * stay. Prints `removed=<kind> <name>`, then `drop=done`.
+ */
+export const dropWorkspacesScript = `# drop-workspaces
+set -uo pipefail
+docker stop --time 60 mend-mend-1 >/dev/null 2>&1 || { echo "drop=could not stop mend-mend-1"; exit 1; }
+containers=$(docker ps -a --format '{{.Names}}') || { echo "drop=docker ps failed"; exit 1; }
+for c in $(printf '%s\\n' "$containers" | grep '^sealant-'); do
+  docker rm -f -v "$c" >/dev/null || { echo "drop=could not remove container $c"; exit 1; }
+  echo "removed=container $c"
+done
+networks=$(docker network ls --format '{{.Name}}') || { echo "drop=docker network ls failed"; exit 1; }
+for n in $(printf '%s\\n' "$networks" | grep '^sealant-'); do
+  docker network rm "$n" >/dev/null || { echo "drop=could not remove network $n"; exit 1; }
+  echo "removed=network $n"
+done
+echo "drop=done"
+`;
+
+/** Names each container and network sealant made that Docker still holds, then `read=done`. */
+export const leftWorkspacesScript = `# left-workspaces
+set -uo pipefail
+containers=$(docker ps -a --format '{{.Names}}') || { echo "read=docker ps failed"; exit 1; }
+networks=$(docker network ls --format '{{.Name}}') || { echo "read=docker network ls failed"; exit 1; }
+printf '%s\\n' "$containers" | grep '^sealant-' | sed 's/^/left=container /'
+printf '%s\\n' "$networks" | grep '^sealant-' | sed 's/^/left=network /'
+echo "read=done"
+`;
+
+/** What `leftWorkspacesScript` named: `container <name>` or `network <name>`. */
+export const leftWorkspaces = (stdout) =>
+  stdout
+    .split("\n")
+    .filter((line) => line.startsWith("left="))
+    .map((line) => line.slice("left=".length));
 
 /**
  * A refresh claim no worker ever reaches: sealant's keep-fresh sweepers take a login only when its

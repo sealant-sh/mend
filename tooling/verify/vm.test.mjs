@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -35,8 +35,11 @@ import {
 import {
   addressOf,
   boxSshArgs,
+  dropWorkspacesScript,
   holdLoginsScript,
   hostOf,
+  leftWorkspaces,
+  leftWorkspacesScript,
   LOGIN_CLAIM,
   masterHostKey,
   packCli,
@@ -1022,4 +1025,100 @@ test("a Boat copy removes no Boat image unless it is the copy vm save saves (SLN
   }, false);
   assert.deepEqual(calls, ["once"]);
   assert.equal(failed.out.status, 1);
+});
+
+/** Runs a VM script against a fake docker holding `containers` and `networks`; returns its output and docker's calls. */
+const withFakeDocker = (script, { containers, networks, failRead = false }) => {
+  const dir = scratch();
+  writeFileSync(join(dir, "containers"), containers.map((name) => `${name}\n`).join(""));
+  writeFileSync(join(dir, "networks"), networks.map((name) => `${name}\n`).join(""));
+  writeFileSync(
+    join(dir, "docker"),
+    `#!/usr/bin/env bash
+echo "$*" >> "$STATE/calls"
+drop() { grep -vxF "$2" "$STATE/$1" > "$STATE/$1.next"; mv "$STATE/$1.next" "$STATE/$1"; }
+case "$1 $2" in
+  "ps -a") [ -e "$STATE/fail" ] && exit 1; cat "$STATE/containers" ;;
+  "network ls") cat "$STATE/networks" ;;
+  "rm -f") drop containers "$4" ;;
+  "network rm") drop networks "$3" ;;
+  stop*) ;;
+  *) exit 2 ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  if (failRead) writeFileSync(join(dir, "fail"), "");
+  const run = spawnSync("bash", ["-s"], {
+    input: script,
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, STATE: dir },
+    encoding: "utf8",
+  });
+  const calls = existsSync(join(dir, "calls"))
+    ? readFileSync(join(dir, "calls"), "utf8").trim().split("\n")
+    : [];
+  const left = {
+    containers: readFileSync(join(dir, "containers"), "utf8").split("\n").filter(Boolean),
+    networks: readFileSync(join(dir, "networks"), "utf8").split("\n").filter(Boolean),
+  };
+  rmSync(dir, { recursive: true, force: true });
+  return { stdout: run.stdout, calls, left };
+};
+
+const WARMED = "sealant-12de32df-14c4-4d45-ae3f-c3962941dfd8";
+
+test("the build removes what the warm runs left in Docker, Mend stopped first, and keeps Mend's own (SLNT-1384)", () => {
+  const dropped = withFakeDocker(dropWorkspacesScript, {
+    containers: ["mend-mend-1", "mend-postgres-1", WARMED, `${WARMED}-docker`],
+    networks: ["bridge", "mend_default", `${WARMED}-egress`, `${WARMED}-network`],
+  });
+  assert.equal(dropped.calls[0], "stop --time 60 mend-mend-1");
+  assert.ok(dropped.calls.includes(`rm -f -v ${WARMED}`));
+  assert.deepEqual(dropped.left, {
+    containers: ["mend-mend-1", "mend-postgres-1"],
+    networks: ["bridge", "mend_default"],
+  });
+  assert.deepEqual(dropped.stdout.trim().split("\n"), [
+    `removed=container ${WARMED}`,
+    `removed=container ${WARMED}-docker`,
+    `removed=network ${WARMED}-egress`,
+    `removed=network ${WARMED}-network`,
+    "drop=done",
+  ]);
+
+  // Docker that cannot be read is not read as clean.
+  const unread = withFakeDocker(dropWorkspacesScript, {
+    containers: [WARMED],
+    networks: [],
+    failRead: true,
+  });
+  assert.doesNotMatch(unread.stdout, /drop=done/);
+  assert.match(unread.stdout, /drop=docker ps failed/);
+});
+
+test("the sealed master is read for anything sealant made, and Docker that cannot be read is not clean", () => {
+  const left = withFakeDocker(leftWorkspacesScript, {
+    containers: ["mend-mend-1", WARMED],
+    networks: ["mend_default", `${WARMED}-egress`],
+  });
+  assert.match(left.stdout, /read=done/);
+  assert.deepEqual(leftWorkspaces(left.stdout), [
+    `container ${WARMED}`,
+    `network ${WARMED}-egress`,
+  ]);
+  assert.ok(left.calls.every((call) => !/^(rm|stop|network rm)/.test(call)));
+
+  const clean = withFakeDocker(leftWorkspacesScript, {
+    containers: ["mend-mend-1"],
+    networks: ["bridge", "mend_default"],
+  });
+  assert.match(clean.stdout, /read=done/);
+  assert.deepEqual(leftWorkspaces(clean.stdout), []);
+
+  const unread = withFakeDocker(leftWorkspacesScript, {
+    containers: [],
+    networks: [],
+    failRead: true,
+  });
+  assert.doesNotMatch(unread.stdout, /read=done/);
 });
