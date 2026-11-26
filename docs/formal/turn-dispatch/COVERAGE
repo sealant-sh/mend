@@ -101,7 +101,11 @@
 # 3cc8c3bfd3 is that commit on main after #1978 (the telemetry package and the deploy env)
 # squash-merged beneath it, which changed no covered file: the covered code is ce2fb25248's, which the full run
 # above checked.
-sync 3cc8c3bfd30aaa1d94059597454766bdad126195
+# 9a01be0347 (SLNT-1375) turns agent-conversation.ts's Effect.fn("…") functions into
+# Effect.fnUntraced: each runs the same statements without a span of its own. Normalised for that
+# wrapper and whitespace, the file is main's, so no action changes. Full tlx run at 9a01be0347:
+# every row as expected.
+sync 9a01be034798e7e2e23c373283fbb1654b18290c
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
