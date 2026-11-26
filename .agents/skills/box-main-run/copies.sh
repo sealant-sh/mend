@@ -14,8 +14,17 @@
 # boot only while there is room for them; a lane with no room by the time lane A is up is left out,
 # and its groups run on lane A (SKILL.md, Lanes).
 #
+# Every copy reports to this machine's Sentry projects when ~/.local/share/sentry-mend/verify.env
+# names them (SLNT-1383): `vm up` hands MEND_VERIFY_SENTRY_DSN, MEND_VERIFY_SEALANT_SENTRY_DSN and
+# MEND_VERIFY_SENTRY_BROWSER_DSN to the copy's `mend server setup` under the environment `check-vm`.
+# Another agent wrote that file, so it is read as data, never run: only those three names, each
+# value taken only when it has a DSN's shape. A missing file, or one without them, leaves telemetry
+# off and the copies boot as before. No value is printed: the lane's line says only whether `vm up`'s
+# telemetry step passed. Its setting lives in the copy's server.env, which `vm save` does not keep.
+#
 # For each lane it boots, it writes ~/.local/state/mend-main-run/lanes/<lane>/copy.json (vm up's
-# copy: slot, url, ssh, startedAt, boat) and prints `lane <lane> · copy <slot> · <url> · boat|no Boat`.
+# copy: slot, url, ssh, startedAt, boat) and prints
+# `lane <lane> · copy <slot> · <url> · boat|no Boat · telemetry <passed|skipped|off>`.
 # It ends with one line:
 #
 #   copies a=<slot> [b=<slot>] [c=<slot>]   exit 0: lane A is up, with whichever others had room
@@ -33,6 +42,19 @@ boat=${2:?usage: copies.sh <deadline, epoch seconds> <Boat copies>}
 MAX_COPIES=5
 LANES=$HOME/.local/state/mend-main-run/lanes
 mkdir -p "$LANES"
+
+# The DSNs, as NAME=value words for `env`, from the file's `[export ]NAME=value` lines.
+TELEMETRY_FILE=${MAIN_RUN_TELEMETRY_FILE:-$HOME/.local/share/sentry-mend/verify.env}
+telemetry=()
+if [[ -f $TELEMETRY_FILE && -r $TELEMETRY_FILE ]]; then
+  for var in MEND_VERIFY_SENTRY_DSN MEND_VERIFY_SEALANT_SENTRY_DSN MEND_VERIFY_SENTRY_BROWSER_DSN; do
+    value=$(sed -n -E "s/^[[:space:]]*(export[[:space:]]+)?${var}=//p" "$TELEMETRY_FILE" | tail -n 1)
+    value=${value%$'\r'}
+    if [[ $value =~ ^\"(.*)\"$ || $value =~ ^\'(.*)\'$ ]]; then value=${BASH_REMATCH[1]}; fi
+    [[ $value =~ ^https://[A-Za-z0-9]+@[A-Za-z0-9.-]+(:[0-9]+)?/[0-9]+$ ]] && telemetry+=("$var=$value")
+  done
+fi
+unset value
 
 stop=$(( $(date +%s) + 110 * 60 ))
 (( deadline < stop )) && stop=$deadline
@@ -62,11 +84,11 @@ up() {
   # removes none (SLNT-1347).
   ((with)) && [[ $lane == a ]] && flags+=(--will-save)
   at=$(date -u +%FT%TZ)
-  out=$(pnpm -s verify vm up "${flags[@]}" 2>/dev/null)
+  out=$(env "${telemetry[@]}" pnpm -s verify vm up "${flags[@]}" 2>/dev/null)
   if jq -e '.status == "passed" and .copy.slot != null' <<<"$out" >/dev/null 2>&1; then
     mkdir -p "$LANES/$lane"
     jq --argjson boat "$with" --arg at "$at" '.copy + { startedAt: $at, boat: ($boat == 1) }' <<<"$out" >"$LANES/$lane/copy.json"
-    echo "lane $lane · copy $(jq -r .copy.slot <<<"$out") · $(jq -r .copy.url <<<"$out") · $( ((with)) && echo boat || echo 'no Boat')"
+    echo "lane $lane · copy $(jq -r .copy.slot <<<"$out") · $(jq -r .copy.url <<<"$out") · $( ((with)) && echo boat || echo 'no Boat') · telemetry $(jq -r '[.steps[]? | select(.id == "telemetry") | .status][0] // "off"' <<<"$out")"
     return 0
   fi
   if ((with)) && jq -e '.steps[] | select(.id == "boat" and .status == "blocked_by_prerequisite")' <<<"$out" >/dev/null 2>&1; then

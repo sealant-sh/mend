@@ -1,12 +1,22 @@
 // local-outer.sh's budgets: the local outer's server gets budgets sized for parallel verifiers,
-// through its own Compose files, and the product's defaults stay. A fake `docker` stands in for the
-// outer container; no daemon, no network beyond loopback.
+// through its own Compose files, and the product's defaults stay; its seeding and images; and
+// `serve`, from any checkout on this machine, refreshing the project it already serves. A fake
+// `docker` stands in for the outer container; no daemon, no network beyond loopback.
 //
 //   node --test .agents/skills/verify/scripts/local-outer.test.mjs
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -552,4 +562,128 @@ test("images names the image each container ran: the outer, and every container 
       ],
     ],
   );
+});
+
+/**
+ * `serve` against a fake outer: `docker` answers every call (the git fixture already runs), the
+ * real CLI behind the guard is a script that keeps its arguments and answers `projects --json` with
+ * FAKE_PROJECTS, as the CLI prints it (compact). Each checkout is a git repository of its own
+ * holding a copy of this script and its guard, so two checkouts share only the served repository.
+ */
+const serving = async (body) => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "verify-local-outer-serve-")));
+  const bin = join(dir, "bin");
+  const work = join(dir, "work");
+  const mendLog = join(dir, "mend.log");
+  const config = join(dir, "config");
+  mkdirSync(bin);
+  mkdirSync(join(config, "mend"), { recursive: true });
+  writeFileSync(join(bin, "docker"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  writeFileSync(
+    join(dir, "real-mend"),
+    '#!/bin/sh\necho "$*" >> "$FAKE_MEND_LOG"\n[ "$1" = projects ] && printf \'%s\\n\' "$FAKE_PROJECTS"\nexit 0\n',
+    { mode: 0o755 },
+  );
+  writeFileSync(mendLog, "");
+  const port = 23999;
+  writeFileSync(
+    join(config, "mend", "cli.json"),
+    JSON.stringify({ url: `http://127.0.0.1:${port}` }),
+  );
+  // No GIT_* of a caller's (a hook's, a rebase's) reaches the checkouts.
+  const clean = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
+  );
+  const identity = {
+    GIT_AUTHOR_NAME: "Verify",
+    GIT_AUTHOR_EMAIL: "verify@example.invalid",
+    GIT_COMMITTER_NAME: "Verify",
+    GIT_COMMITTER_EMAIL: "verify@example.invalid",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+  };
+  const git = (repo, ...args) => {
+    const run = spawnSync("git", ["-C", repo, ...args], {
+      env: { ...clean, ...identity },
+      encoding: "utf8",
+    });
+    assert.equal(run.status, 0, run.stderr);
+    return run.stdout.trim();
+  };
+  const checkout = (name) => {
+    const repo = join(dir, name);
+    const into = join(repo, ".agents/skills/verify/scripts");
+    mkdirSync(join(into, "guard"), { recursive: true });
+    for (const file of ["local-outer.sh", "guard/mend", "guard/policy.mjs"])
+      copyFileSync(join(scripts, file), join(into, file));
+    chmodSync(join(into, "guard/mend"), 0o755);
+    writeFileSync(join(repo, "README.md"), `${name}\n`);
+    git(repo, "init", "-q");
+    git(repo, "add", ".");
+    git(repo, "commit", "-q", "-m", name);
+    return repo;
+  };
+  const serve = (repo, projects) =>
+    new Promise((done) => {
+      const child = spawn(
+        "sh",
+        [join(repo, ".agents/skills/verify/scripts/local-outer.sh"), "serve", "HEAD"],
+        {
+          env: {
+            ...clean,
+            ...identity,
+            PATH: `${bin}:${process.env.PATH}`,
+            MEND_VERIFY_OUTER_NAME: "st-verify-outer-test",
+            MEND_VERIFY_OUTER_PORT: String(port),
+            MEND_VERIFY_OUTER_CONFIG: config,
+            MEND_VERIFY_OUTER_WORK: work,
+            MEND_VERIFY_REAL_MEND: join(dir, "real-mend"),
+            FAKE_MEND_LOG: mendLog,
+            FAKE_PROJECTS: JSON.stringify(projects),
+          },
+        },
+      );
+      let out = "";
+      child.stdout.on("data", (data) => (out += data));
+      child.stderr.on("data", (data) => (out += data));
+      child.on("exit", (status) => done({ status, out }));
+    });
+  const mendCalls = () => readFileSync(mendLog, "utf8").split("\n").filter(Boolean);
+  try {
+    await body({ checkout, serve, git, mendCalls, served: join(work, "repo.git") });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+test("serve from a second checkout carries on the served history another checkout made", async () => {
+  await serving(async ({ checkout, serve, git, served }) => {
+    const first = await serve(checkout("first"), []);
+    assert.equal(first.status, 0, first.out);
+    const firstServed = git(served, "rev-parse", "refs/heads/main");
+    // The second checkout has never seen the first's serve commit: only the served repo holds it.
+    const second = await serve(checkout("second"), [{ id: "p1", name: "mend" }]);
+    assert.equal(second.status, 0, second.out);
+    assert.doesNotMatch(second.out, /not a valid object/);
+    assert.equal(git(served, "rev-parse", "refs/heads/main^"), firstServed);
+    assert.equal(git(served, "rev-list", "--count", "refs/heads/main"), "2");
+  });
+});
+
+test("serve refreshes the project mend the CLI lists in compact JSON, and adopts it only when absent", async () => {
+  await serving(async ({ checkout, serve, mendCalls }) => {
+    const repo = checkout("only");
+    const absent = await serve(repo, [{ id: "p0", name: "mend-docs" }]);
+    assert.equal(absent.status, 0, absent.out);
+    assert.match(
+      mendCalls().at(-1),
+      /^adopt http:\/\/outer-fixture:9080\/repo\.git --name mend --shared$/,
+    );
+    const listed = await serve(repo, [
+      { id: "p1", name: "mend", originUrl: "http://outer-fixture:9080/repo.git" },
+    ]);
+    assert.equal(listed.status, 0, listed.out);
+    assert.equal(mendCalls().at(-1), "refresh --project mend");
+    assert.equal(mendCalls().filter((call) => call.startsWith("adopt")).length, 1);
+  });
 });

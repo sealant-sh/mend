@@ -8,7 +8,9 @@
 //
 // Needs a multi-tenant server whose signed-in account holds the operator role (on a check VM:
 // `mend server setup --offline --tenancy multi`, as the checker). It creates one organization,
-// named for the time it ran, and leaves it there.
+// named for the time it ran, and leaves it there. The create moves this person into it, and the
+// server keeps that for their next sign-in, so the recipe ends by switching back to the
+// organization it started in, even when a step after the create failed, and reads that back.
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 const visible = (locator) => locator.filter({ visible: true });
@@ -62,6 +64,31 @@ export default async ({ page, web, capture, note }) => {
     return view;
   };
 
+  /** Back in the organization the recipe started in, by its switcher, then the server's answer. */
+  const switchBack = async (home) => {
+    await page.keyboard.press("Escape");
+    await page.setViewportSize(DESKTOP);
+    await open("/");
+    if ((await current()).organization.name !== home) {
+      await switcher().click();
+      const entry = new RegExp(`^${home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\w)`);
+      await visible(
+        page
+          .getByRole("menuitem", { name: entry })
+          .or(page.getByRole("menuitemradio", { name: entry })),
+      )
+        .first()
+        .click();
+      await page
+        .getByRole("button", { name: `${home}, switch organization` })
+        .first()
+        .waitFor({ timeout: 30_000 });
+    }
+    const back = (await current()).organization.name;
+    if (back !== home) throw new Error(`the switch back left this sign-in in ${back}`);
+    note(`restored · this sign-in's organization · read back: ${back}`);
+  };
+
   await page.setViewportSize(DESKTOP);
   await page.goto(`${web}/no-such-page`);
   await page.evaluate(() => {
@@ -88,54 +115,61 @@ export default async ({ page, web, capture, note }) => {
   note(`org-create: the operator's switcher reads ${(await menuNames()).join(" | ")}`);
   await both("operator-switcher-desktop");
   await menuItem("Create organization…").click();
-  const dialog = visible(page.getByRole("dialog", { name: "Create organization" }));
-  await dialog.waitFor();
-  const name = `Operator check ${new Date().toISOString().slice(11, 19).replaceAll(":", "")}`;
-  await dialog.getByRole("textbox", { name: "Name" }).fill(name);
-  await capture("operator-create-typed-light");
-  await dialog.getByRole("button", { name: "Create organization" }).click();
-  await page
-    .getByRole("button", { name: `${name}, switch organization` })
-    .first()
-    .waitFor({ timeout: 30_000 });
-  await hydrated();
-  await settled();
-  const after = await current();
-  note(
-    `org-create: created "${after.organization.name}": role ${after.role}, ${after.memberCount} member(s); this sign-in moved to it`,
-  );
-  if (after.organization.name !== name || after.role !== "owner")
-    throw new Error(
-      `after the create the sign-in is in ${after.organization.name} as ${after.role}`,
+  // From here the sign-in may be in the new organization: it goes back whatever happens.
+  try {
+    const dialog = visible(page.getByRole("dialog", { name: "Create organization" }));
+    await dialog.waitFor();
+    const name = `Operator check ${new Date().toISOString().slice(11, 19).replaceAll(":", "")}`;
+    await dialog.getByRole("textbox", { name: "Name" }).fill(name);
+    await capture("operator-create-typed-light");
+    await dialog.getByRole("button", { name: "Create organization" }).click();
+    await page
+      .getByRole("button", { name: `${name}, switch organization` })
+      .first()
+      .waitFor({ timeout: 30_000 });
+    await hydrated();
+    await settled();
+    const after = await current();
+    note(
+      `org-create: created "${after.organization.name}": role ${after.role}, ${after.memberCount} member(s); this sign-in moved to it`,
     );
-  await both("operator-created-home-desktop");
+    if (after.organization.name !== name || after.role !== "owner")
+      throw new Error(
+        `after the create the sign-in is in ${after.organization.name} as ${after.role}`,
+      );
+    await both("operator-created-home-desktop");
 
-  // --- Settings → Server names who may create, and the source items as one business's ------
-  await open("/settings/server");
-  const who = visible(
-    page.getByText("Only an operator creates organizations, and owns each one they create."),
-  );
-  await who.first().waitFor({ timeout: 30_000 });
-  await who.first().scrollIntoViewIfNeeded();
-  note('Settings → Server: "Who may create one" reads Only operators');
-  // The multi mode gate's passing items fold behind one line, once the gate has been read.
-  const closed = visible(page.getByText(/^All \d+ things Mend needs to run several organizations/));
-  await closed.first().waitFor({ timeout: 30_000 });
-  await closed.first().click();
-  const source = visible(page.getByText("Mend's git may reach private networks"));
-  await source.first().waitFor();
-  await source.first().scrollIntoViewIfNeeded();
-  note(
-    `Settings → Server: ${await closed.first().textContent()} The source item reads "Mend's git may reach private networks"`,
-  );
-  await both("server-settings-organizations-desktop");
+    // --- Settings → Server names who may create, and the source items as one business's ------
+    await open("/settings/server");
+    const who = visible(
+      page.getByText("Only an operator creates organizations, and owns each one they create."),
+    );
+    await who.first().waitFor({ timeout: 30_000 });
+    await who.first().scrollIntoViewIfNeeded();
+    note('Settings → Server: "Who may create one" reads Only operators');
+    // The multi mode gate's passing items fold behind one line, once the gate has been read.
+    const closed = visible(
+      page.getByText(/^All \d+ things Mend needs to run several organizations/),
+    );
+    await closed.first().waitFor({ timeout: 30_000 });
+    await closed.first().click();
+    const source = visible(page.getByText("Mend's git may reach private networks"));
+    await source.first().waitFor();
+    await source.first().scrollIntoViewIfNeeded();
+    note(
+      `Settings → Server: ${await closed.first().textContent()} The source item reads "Mend's git may reach private networks"`,
+    );
+    await both("server-settings-organizations-desktop");
 
-  // --- The phone: the same switcher, as a sheet from the Settings tab ----------------------
-  await page.setViewportSize(PHONE);
-  await open("/settings");
-  await switcher().click();
-  await visible(page.getByRole("menuitem", { name: "Create organization…" })).waitFor();
-  note("org-create: the phone sheet offers Create organization… to the operator");
-  await both("operator-switcher-phone");
-  await page.keyboard.press("Escape");
+    // --- The phone: the same switcher, as a sheet from the Settings tab ----------------------
+    await page.setViewportSize(PHONE);
+    await open("/settings");
+    await switcher().click();
+    await visible(page.getByRole("menuitem", { name: "Create organization…" })).waitFor();
+    note("org-create: the phone sheet offers Create organization… to the operator");
+    await both("operator-switcher-phone");
+    await page.keyboard.press("Escape");
+  } finally {
+    await switchBack(before.organization.name);
+  }
 };

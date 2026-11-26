@@ -322,7 +322,12 @@ Its last line says what happened:
   line reads `no Boat`, after 60 minutes of another check holding it) makes every Boat flow lane A
   would run `not run · no Boat copy`. Lane C does not wait for Boat: when every slot is held as it
   boots, it prints `lane c · no Boat slot free · …` and boots without Boat, and the Boat flows of
-  groups 9 and 10 run on lane A (Lanes, "Lane C without Boat").
+  groups 9 and 10 run on lane A (Lanes, "Lane C without Boat"). Each lane's line ends
+  `telemetry passed|skipped|off`: `copies.sh` hands every copy this machine's Sentry DSNs when
+  `~/.local/share/sentry-mend/verify.env` names them (SLNT-1383), reading only their three names
+  from it, never running it. `off` (no file, or none of the names) or `skipped` (the copy's CLI
+  refused them) makes `telemetry.web-trace` `not run · no DSN on this copy`; the copies run on
+  either way. Never print a DSN, nor anything from that file, in the report, the evidence or a log.
 - `failed <lane> <what failed>`: `vm up` failed for a reason other than room. Run it once more; a
   second failure is a Fix Now ticket (step 7), and the run ends after step 8 without moving
   `lastCommit`.
@@ -459,7 +464,15 @@ driver's `steps.log` and its screenshots show every part of the flow's See line.
 `restored · … · read back:` line too: a `not restored` line, or a restore the Do line names with no
 read-back, is yours to put right before the next flow of that lane that touches the same thing, and
 goes in the report. Read them for every flow; open screenshots where the See line names a screen. A
-flow the subagent marked `failed`, or whose evidence falls short, you see again yourself, on the
+`scripted` flow is `seen` by Sol only when its `steps.log` holds one run of its recipe, ending
+`recipe ended` with no `FAILED ·` line, and its `result.txt` names no step the subagent took on the
+copy in the recipe's place (a session it stopped, a worktree it removed, a module of its own that
+carried on). Anything else is a failed flow to see again, whatever its first line says (sol-task.md,
+"A scripted flow is seen through its recipe"). When your second look sees it only with a corrected
+copy of the recipe, its row in the report names the recipe's fault and the ticket for it, never
+"every part of the See line": on 24 and 25 Nov a subagent's hand stop let `worktrees.mjs` finish,
+and the row read "every part of the See line" for two nights while the recipe stopped the wrong id.
+A flow the subagent marked `failed`, or whose evidence falls short, you see again yourself, on the
 same lane, before reporting it as failed or filing a ticket. Re-see only those flows, however many
 there are in the group: a flow whose own evidence shows every part of its See line stays `seen` by
 Sol, even beside a failed neighbour, a slip elsewhere in the group, or a damaged `timeline.txt`

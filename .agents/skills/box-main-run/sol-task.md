@@ -88,6 +88,16 @@ not, after you reached the step where it should show. Mark it `not run · <why>`
 not start. Add no check of your own to a flow, and do not try another way to make a part of the See
 line appear.
 
+**A scripted flow is seen through its recipe, run as written.** When a flow's Mode is `scripted`, it
+is `seen` only when its recipe ran once to its end (`recipe ended` in `steps.log`, the driver's exit
+code 0) with no `FAILED ·` line, and you did nothing on your copy while it ran. When the recipe
+stops early, the flow is `failed`, its `result.txt` names the `FAILED ·` line as
+`differs · the recipe stopped: <that line>`, and you carry on with the next flow. Never finish its
+steps yourself, run a module of your own that carries on where it stopped, or act on what it works
+on (stop a session, remove a worktree) while it runs: on 24 and 25 Nov a subagent stopped the shell
+the recipe had failed to stop, the recipe then took the worktree, and the flow read `seen` while the
+recipe stayed broken for two nights. The agent that started you sees every failed flow again.
+
 **Wait for what you read.** A page fills some of its parts in after it renders (on 17 Nov the
 account popover drew its machine and exposure lines a moment after it opened). Before you capture a
 state or call a part of the See line missing, wait for that part to appear, up to 20 seconds.

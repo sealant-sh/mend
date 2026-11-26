@@ -398,6 +398,11 @@ serve)
   mkdir -p "$work"
   [ -d "$work/repo.git" ] || git init -q --bare "$work/repo.git"
   parent=$(git -C "$work/repo.git" rev-parse -q --verify refs/heads/main || true)
+  # The served history is this machine's, not this checkout's: another checkout may have served
+  # last, and its commit is then only in the served repository (SLNT-1379).
+  if [ -n "$parent" ] && ! git -C "$checkout" cat-file -e "$parent^{commit}" 2> /dev/null; then
+    git -C "$checkout" fetch -q --no-tags "$work/repo.git" refs/heads/main
+  fi
   commit=$(GIT_AUTHOR_NAME=Mend GIT_AUTHOR_EMAIL=verify@st-verify-outer.invalid \
     GIT_COMMITTER_NAME=Mend GIT_COMMITTER_EMAIL=verify@st-verify-outer.invalid \
     git -C "$checkout" commit-tree "$tree" ${parent:+-p "$parent"} -m "verify: $(git -C "$checkout" rev-parse --short "$ref")")
@@ -438,7 +443,8 @@ serve)
   # Its own `mend` calls pass the skill's guard too: this outer server and no other.
   export MEND_VERIFY_OUTER_URL=http://127.0.0.1:$port
   export PATH="$here/guard:$PATH"
-  if mend projects --json | grep -q '"name": "mend"'; then
+  # The CLI prints compact JSON: match the name as data, not as text spaced one way.
+  if mend projects --json | jq -e 'any(.. | objects; .name? == "mend")' > /dev/null; then
     mend refresh --project mend > /dev/null
   else
     mend adopt http://outer-fixture:9080/repo.git --name mend --shared > /dev/null

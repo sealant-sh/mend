@@ -185,11 +185,12 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
     `organization.new-web-create-leave`, `organization.new-web-general`,
     `organization.new-web-members`, then `organization.new-web-operator-create`. `general` and
     `members` add a person and remove them. `operator-create` makes an organization that no command
-    removes and moves the owner's browser into it, so it comes last: a flow after it reads the new
-    organization's pages, not Default's (`general` timed out that way in a trial on 23 Nov). Nothing
-    after the group on the lane counts members or organizations. Never on lane A, whose data is
-    saved: with lane C left out they run on lane B, before its two `mend login` flows, and the
-    owner's browser is switched back to Default (the organization switcher) before the next flow.
+    removes, so it comes last. The create moves the owner's sign-in into the new organization, and
+    its recipe switches back to the one it started in, reading that back (a flow after it would
+    otherwise read the new organization's pages, not Default's: `general` timed out that way in a
+    trial on 23 Nov, and Default's sessions read Not found on 26 Nov). Nothing after the group on
+    the lane counts members or organizations. Never on lane A, whose data is saved: with lane C left
+    out they run on lane B, before its two `mend login` flows.
 
 ## The core loop
 
@@ -775,7 +776,8 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   both sessions kept in one tile under Change over terminal and the Terminal tab kept under ⌥2, the
   saved toast and the menu again with the saved layout at ⌥5, the name-taken sentence in the dialog,
   the same three tiles in `layouts-two` while `layouts-one` keeps its own, the layout in the second
-  browser, and no layout button under 1024px. Each recipe leaves nothing it saved.
+  browser, and no layout button under 1024px. Each recipe leaves nothing it saved, and
+  `layouts-server` reads `restored · the member this run made`.
 - **Mode:** `scripted` (recipes/layouts.mjs, recipes/layouts-server.mjs)
 - **Box-only:** no
 - **Areas:** `apps/web/src/lib/layouts.ts`, `apps/web/src/components/workspace/layout-menu.tsx`,
@@ -3090,7 +3092,8 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   the switcher reads `… | Create organization…`; `role owner, 1 member(s)` for the new organization;
   `Only an operator creates organizations, and owns each one they create.`;
   `Mend's git may reach private networks`. The second account's create answers
-  `On this Mend, only an operator creates organizations (MEND_ORGANIZATION_CREATION=operator). Ask one for an organization.`
+  `On this Mend, only an operator creates organizations (MEND_ORGANIZATION_CREATION=operator). Ask one for an organization.`;
+  the recipe's `restored · this sign-in's organization · read back: Default`.
 - **Mode:** `scripted` (recipes/org-create-operator.mjs)
 - **Box-only:** no
 - **Areas:** `apps/api/src/tenancy.ts`, `apps/api/src/routes/organization.ts`,

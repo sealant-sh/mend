@@ -157,10 +157,18 @@ export default async ({ page, web, capture, note, account }) => {
     await page.waitForURL((url) => url.pathname === now);
     note(`${old} → ${path()}`);
   }
-  // A page not built yet: not found, inside Settings, with its entry highlighted.
+  // The last old address lands on Integrations, which is built: its own page, inside Settings.
   await hydrated();
+  await heading("Integrations");
+  await settingsNav.waitFor();
+  note("/settings/organization/integrations draws Integrations inside Settings");
+  // An address no page owns: not found, inside Settings.
+  await open("/settings/no-such-page");
   await heading("Page not found");
   await settingsNav.waitFor();
+  if (path() !== "/settings/no-such-page")
+    throw new Error(`/settings/no-such-page went to ${path()}`);
+  note("/settings/no-such-page: Page not found, inside Settings");
   await shot("later-page-desktop-light");
   await page.goto(`${web}/settings#devices`);
   await page.waitForURL((url) => url.pathname === "/settings/devices");
@@ -430,10 +438,10 @@ export default async ({ page, web, capture, note, account }) => {
   if (seen.includes("Audit log")) throw new Error("an operator who isn't an owner sees Audit log");
   note(`an operator who is a member: ${seen.join(" | ")}`);
   await navigate("/settings/server");
-  await heading("Page not found");
+  await heading("Server");
   if (path() !== "/settings/server")
     throw new Error(`an operator's /settings/server went to ${path()}`);
-  note("an operator opens /settings/server (not built yet: not found inside Settings)");
+  note("an operator opens /settings/server: the Server page, inside Settings");
   as.role = null;
   await page.unroute("**/trpc/**");
 
