@@ -478,7 +478,7 @@ const notSwept = (dir: string) => (error: unknown) =>
  * Removes quarantines older than an hour. One gone since the listing is done; one this process
  * cannot remove is skipped with a warning, and the next sweep weighs it again.
  */
-export const sweepHandoffQuarantines = Effect.fn("sweepHandoffQuarantines")(function* (
+export const sweepHandoffQuarantines = Effect.fn("mend.store.sweep_handoff_quarantines")(function* (
   quarantineRoot: string,
   now: number,
 ) {

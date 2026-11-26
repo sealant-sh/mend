@@ -95,10 +95,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
     const db = yield* MendDB;
     const sql = yield* PgClient.PgClient;
 
-    const notify = Effect.fn("ReviewCommentsRepo.notify")(function* (
-      id: ReviewCommentId,
-      changeId: ChangeId,
-    ) {
+    const notify = Effect.fnUntraced(function* (id: ReviewCommentId, changeId: ChangeId) {
       const [row] = yield* db
         .select({ projectId: worktreeChanges.projectId, worktreeId: worktreeChanges.worktreeId })
         .from(worktreeChanges)
@@ -114,7 +111,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
       });
     });
 
-    const create = Effect.fn("ReviewCommentsRepo.create")(function* (comment: NewReviewComment) {
+    const create = Effect.fnUntraced(function* (comment: NewReviewComment) {
       // Sequences ride JSONB as decimal strings — the RecordLink codec's wire shape.
       const evidence = yield* encodeEvidence(comment.evidence ?? []).pipe(Effect.orDie);
       const anchor =
@@ -146,7 +143,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
       return created;
     });
 
-    const byId = Effect.fn("ReviewCommentsRepo.byId")(function* (id: ReviewCommentId) {
+    const byId = Effect.fnUntraced(function* (id: ReviewCommentId) {
       const [row] = yield* db
         .select()
         .from(reviewComments)
@@ -157,9 +154,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
       return yield* decodeRow(row);
     });
 
-    const listForChange = Effect.fn("ReviewCommentsRepo.listForChange")(function* (
-      changeId: ChangeId,
-    ) {
+    const listForChange = Effect.fnUntraced(function* (changeId: ChangeId) {
       const rows = yield* db
         .select()
         .from(reviewComments)
@@ -175,7 +170,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
         Effect.orDie,
       );
 
-    const listReplies = Effect.fn("ReviewCommentsRepo.listReplies")(function* (changeId: ChangeId) {
+    const listReplies = Effect.fnUntraced(function* (changeId: ChangeId) {
       const rows = yield* db
         .select()
         .from(reviewComments)
@@ -185,7 +180,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
       return yield* Effect.forEach(rows, decodeReplyRow);
     });
 
-    const createReply = Effect.fn("ReviewCommentsRepo.createReply")(function* (
+    const createReply = Effect.fnUntraced(function* (
       parent: ReviewComment,
       reply: { readonly authorName: string; readonly body: string },
     ) {
@@ -215,10 +210,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
       return created;
     });
 
-    const setState = Effect.fn("ReviewCommentsRepo.setState")(function* (
-      id: ReviewCommentId,
-      state: CommentState,
-    ) {
+    const setState = Effect.fnUntraced(function* (id: ReviewCommentId, state: CommentState) {
       const [row] = yield* db
         .update(reviewComments)
         .set({ state, updatedAt: yield* DateTime.nowAsDate })
@@ -228,10 +220,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
       if (row !== undefined) yield* notify(id, row.changeId);
     });
 
-    const markSent = Effect.fn("ReviewCommentsRepo.markSent")(function* (
-      id: ReviewCommentId,
-      sessionId: SessionId,
-    ) {
+    const markSent = Effect.fnUntraced(function* (id: ReviewCommentId, sessionId: SessionId) {
       yield* db
         .update(reviewComments)
         .set({ sentToSessionId: sessionId, updatedAt: yield* DateTime.nowAsDate })
@@ -239,7 +228,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const markSelectedSent = Effect.fn("ReviewCommentsRepo.markSelectedSent")(function* (
+    const markSelectedSent = Effect.fnUntraced(function* (
       ids: ReadonlyArray<ReviewCommentId>,
       sessionId: SessionId,
     ) {

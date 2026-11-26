@@ -77,7 +77,7 @@ export const AccessKeysRepoLive: Layer.Layer<AccessKeysRepo, never, MendDB | PgC
       const changed = (userId: string) =>
         notifyEvent(sql, { type: "user", userId, facet: "devices" });
 
-      const create = Effect.fn("AccessKeysRepo.create")(function* (input: {
+      const create = Effect.fnUntraced(function* (input: {
         readonly userId: string;
         readonly organizationId: OrganizationId;
         readonly name: string;
@@ -104,7 +104,7 @@ export const AccessKeysRepoLive: Layer.Layer<AccessKeysRepo, never, MendDB | PgC
         return decodeKey(row);
       });
 
-      const list = Effect.fn("AccessKeysRepo.list")(function* (userId: string) {
+      const list = Effect.fnUntraced(function* (userId: string) {
         const rows = yield* db
           .select(selectedKey)
           .from(deviceTokens)
@@ -120,7 +120,7 @@ export const AccessKeysRepoLive: Layer.Layer<AccessKeysRepo, never, MendDB | PgC
         return rows.map((row) => decodeKey(row));
       });
 
-      const revoke = Effect.fn("AccessKeysRepo.revoke")(function* (userId: string, id: string) {
+      const revoke = Effect.fnUntraced(function* (userId: string, id: string) {
         const [row] = yield* db
           .update(deviceTokens)
           .set({ revokedAt: yield* DateTime.nowAsDate })

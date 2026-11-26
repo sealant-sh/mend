@@ -83,7 +83,7 @@ type Tx = Pick<MendDatabase, "select" | "insert" | "execute">;
 
 const NEVER_RAN: Array<AgentTurnStatus> = ["queued", "cancelled"];
 
-const ensurePageItem = Effect.fn("SessionPagesRepo.ensurePageItem")(function* (
+const ensurePageItem = Effect.fnUntraced(function* (
   tx: Tx,
   page: SessionPage,
   madeBy: SessionProcessId | null,
@@ -135,9 +135,7 @@ export const SessionPagesRepoLive: Layer.Layer<
           Effect.map((rows) => rows[0] ?? null),
         );
 
-    const notifyPagePublished = Effect.fn("SessionPagesRepo.notifyPagePublished")(function* (
-      sessionId: SessionId,
-    ) {
+    const notifyPagePublished = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [session] = yield* db
         .select({ projectId: agentSessions.projectId })
         .from(agentSessions)
@@ -148,10 +146,7 @@ export const SessionPagesRepoLive: Layer.Layer<
       yield* notifyEvent(pg, { type: "session", sessionId, projectId: session.projectId });
     });
 
-    const publish = Effect.fn("SessionPagesRepo.publish")(function* ({
-      agentProcessId,
-      ...page
-    }: NewSessionPage) {
+    const publish = Effect.fnUntraced(function* ({ agentProcessId, ...page }: NewSessionPage) {
       const sha256 = digestOf(page.html);
       const written = yield* db
         .transaction((tx) =>
@@ -205,7 +200,7 @@ export const SessionPagesRepoLive: Layer.Layer<
       return first;
     });
 
-    const byId = Effect.fn("SessionPagesRepo.byId")(function* (id: PageId) {
+    const byId = Effect.fnUntraced(function* (id: PageId) {
       const [row] = yield* db
         .select()
         .from(sessionPages)
@@ -215,7 +210,7 @@ export const SessionPagesRepoLive: Layer.Layer<
       return row ?? null;
     });
 
-    const refById = Effect.fn("SessionPagesRepo.refById")(function* (id: PageId) {
+    const refById = Effect.fnUntraced(function* (id: PageId) {
       const [row] = yield* db
         .select(PAGE_REF_COLUMNS)
         .from(sessionPages)
@@ -225,9 +220,7 @@ export const SessionPagesRepoLive: Layer.Layer<
       return row === undefined ? null : pageRefOf(row);
     });
 
-    const listForSession = Effect.fn("SessionPagesRepo.listForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const listForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* db
         .select(PAGE_REF_COLUMNS)
         .from(sessionPages)

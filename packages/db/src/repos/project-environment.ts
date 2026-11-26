@@ -255,7 +255,7 @@ export const ProjectEnvironmentRepoLive: Layer.Layer<
     const db = yield* MendDB;
     const sqlClient = yield* PgClient.PgClient;
 
-    const snapshot = Effect.fn("ProjectEnvironmentRepo.snapshot")(function* (projectId: ProjectId) {
+    const snapshot = Effect.fnUntraced(function* (projectId: ProjectId) {
       // One statement — a LEFT JOIN sees the aggregate revision and its rows at the same MVCC
       // instant, so a concurrent mutation lands wholly before or wholly after this read.
       const rows = yield* db
@@ -280,7 +280,7 @@ export const ProjectEnvironmentRepoLive: Layer.Layer<
       return new ProjectEnvironmentSnapshot({ revision: first.environmentRevision, variables });
     });
 
-    const create = Effect.fn("ProjectEnvironmentRepo.create")(function* (
+    const create = Effect.fnUntraced(function* (
       projectId: ProjectId,
       input: ProjectEnvironmentVariableInput,
     ) {
@@ -314,7 +314,7 @@ export const ProjectEnvironmentRepoLive: Layer.Layer<
       return result;
     });
 
-    const update = Effect.fn("ProjectEnvironmentRepo.update")(function* (
+    const update = Effect.fnUntraced(function* (
       projectId: ProjectId,
       variableId: ProjectEnvironmentVariableId,
       input: ProjectEnvironmentVariableInput & { readonly expectedRevision: number },
@@ -362,7 +362,7 @@ export const ProjectEnvironmentRepoLive: Layer.Layer<
       return result;
     });
 
-    const remove = Effect.fn("ProjectEnvironmentRepo.remove")(function* (
+    const remove = Effect.fnUntraced(function* (
       projectId: ProjectId,
       variableId: ProjectEnvironmentVariableId,
       expectedRevision: number,
@@ -399,7 +399,7 @@ export const ProjectEnvironmentRepoLive: Layer.Layer<
       return result;
     });
 
-    const upsertByName = Effect.fn("ProjectEnvironmentRepo.upsertByName")(function* (
+    const upsertByName = Effect.fnUntraced(function* (
       projectId: ProjectId,
       input: ProjectEnvironmentVariableInput,
     ) {

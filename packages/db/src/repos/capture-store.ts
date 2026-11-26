@@ -664,7 +664,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
     const db = yield* MendDB;
     const sql = yield* PgClient.PgClient;
 
-    const init = Effect.fn("CaptureStoreRepo.init")(function* (worktreeId: WorktreeId) {
+    const init = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       yield* sql`
         INSERT INTO worktree_leases (worktree_id) VALUES (${worktreeId})
         ON CONFLICT (worktree_id) DO NOTHING`.pipe(Effect.orDie);
@@ -673,7 +673,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         ON CONFLICT (worktree_id) DO NOTHING`.pipe(Effect.orDie);
     });
 
-    const claim = Effect.fn("CaptureStoreRepo.claim")(function* (
+    const claim = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       executorId: string,
       ttlSeconds: number = LEASE_TTL_SECONDS,
@@ -749,7 +749,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         )
         .pipe(Effect.orDie);
 
-    const heartbeat = Effect.fn("CaptureStoreRepo.heartbeat")(function* (
+    const heartbeat = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       epoch: number,
       ttlSeconds: number = LEASE_TTL_SECONDS,
@@ -766,7 +766,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return rows.length > 0;
     });
 
-    const register = Effect.fn("CaptureStoreRepo.register")(function* (capture: RegisterCapture) {
+    const register = Effect.fnUntraced(function* (capture: RegisterCapture) {
       // The CAS joins the live lease row; the captures row exists only if the CAS matched.
       // `head_capture IS NOT DISTINCT FROM $parent` is the wrong-parent check (NULL for n = 0).
       // Every chain whose objects the capture names must still hold the guard the register read
@@ -916,10 +916,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       });
     });
 
-    const release = Effect.fn("CaptureStoreRepo.release")(function* (
-      worktreeId: WorktreeId,
-      epoch: number,
-    ) {
+    const release = Effect.fnUntraced(function* (worktreeId: WorktreeId, epoch: number) {
       const rows = yield* sql<{ readonly worktreeId: string }>`
         UPDATE worktree_leases
            SET expires_at = now(), executor_id = NULL, launch_id = NULL
@@ -928,7 +925,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return rows.length > 0;
     });
 
-    const acceptSummary = Effect.fn("CaptureStoreRepo.acceptSummary")(function* (
+    const acceptSummary = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       captureId: string,
       key: string,
@@ -944,35 +941,36 @@ export const CaptureStoreRepoLive: Layer.Layer<
       if (rows.length === 0) return yield* new SummaryRejectedError({ worktreeId, captureId });
     });
 
-    const publishObservedSummary = Effect.fn("CaptureStoreRepo.publishObservedSummary")(
-      (input: Parameters<CaptureStoreRepo["Service"]["publishObservedSummary"]>[0]) =>
-        Effect.gen(function* () {
-          if (Option.isSome(yield* Effect.serviceOption(sql.transactionService))) {
-            return yield* Effect.die("summary publication requires its own transaction");
-          }
-          return yield* sql.withTransaction(
-            Effect.gen(function* () {
-              // Subsequent statements must see changes committed while a row lock was waiting.
-              yield* sql`SET TRANSACTION ISOLATION LEVEL READ COMMITTED`;
-              // A removed project's summary waits for its Restore: its row is held so a removal
-              // waits for this publication or refuses it.
-              const [parent] = yield* sql<{ readonly removed: boolean }>`
+    const publishObservedSummary = (
+      input: Parameters<CaptureStoreRepo["Service"]["publishObservedSummary"]>[0],
+    ) =>
+      Effect.gen(function* () {
+        if (Option.isSome(yield* Effect.serviceOption(sql.transactionService))) {
+          return yield* Effect.die("summary publication requires its own transaction");
+        }
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            // Subsequent statements must see changes committed while a row lock was waiting.
+            yield* sql`SET TRANSACTION ISOLATION LEVEL READ COMMITTED`;
+            // A removed project's summary waits for its Restore: its row is held so a removal
+            // waits for this publication or refuses it.
+            const [parent] = yield* sql<{ readonly removed: boolean }>`
                 SELECT p.removed_at IS NOT NULL AS removed
                   FROM projects p JOIN worktrees w ON w.project_id = p.id
                  WHERE w.id = ${input.worktreeId} FOR SHARE OF p`;
-              if (parent?.removed !== false) return false;
-              // Parent first, without blocking the FK key-share locks register/accept need. Then
-              // chain before capture, matching register and preventing a head change at publication.
-              const lockedWorktrees =
-                yield* sql`SELECT 1 FROM worktrees WHERE id = ${input.worktreeId} FOR NO KEY UPDATE`;
-              if (lockedWorktrees.length === 0) return false;
-              const chains =
-                yield* sql`SELECT 1 FROM worktree_chain WHERE worktree_id = ${input.worktreeId} FOR UPDATE`;
-              if (chains.length === 0) return false;
-              const lockedCaptures = yield* sql`SELECT 1 FROM captures WHERE id = ${input.captureId}
+            if (parent?.removed !== false) return false;
+            // Parent first, without blocking the FK key-share locks register/accept need. Then
+            // chain before capture, matching register and preventing a head change at publication.
+            const lockedWorktrees =
+              yield* sql`SELECT 1 FROM worktrees WHERE id = ${input.worktreeId} FOR NO KEY UPDATE`;
+            if (lockedWorktrees.length === 0) return false;
+            const chains =
+              yield* sql`SELECT 1 FROM worktree_chain WHERE worktree_id = ${input.worktreeId} FOR UPDATE`;
+            if (chains.length === 0) return false;
+            const lockedCaptures = yield* sql`SELECT 1 FROM captures WHERE id = ${input.captureId}
             AND worktree_id = ${input.worktreeId} FOR SHARE`;
-              if (lockedCaptures.length === 0) return false;
-              const rows = yield* sql<{ readonly captureId: string }>`
+            if (lockedCaptures.length === 0) return false;
+            const rows = yield* sql<{ readonly captureId: string }>`
             UPDATE capture_summaries s SET key = ${input.key}, state = 'observed', updated_at = now()
               FROM worktree_chain ch, captures c, worktrees w
              WHERE s.capture_id = ${input.captureId} AND s.worktree_id = ${input.worktreeId}
@@ -982,16 +980,12 @@ export const CaptureStoreRepoLive: Layer.Layer<
                AND c.worktree_id = s.worktree_id AND c.git_fsck <> 'failed'
                AND w.id = s.worktree_id AND w.base_sha = ${input.baseSha}
              RETURNING s.capture_id`;
-              return rows.length > 0;
-            }),
-          );
-        }).pipe(Effect.orDie),
-    );
+            return rows.length > 0;
+          }),
+        );
+      }).pipe(Effect.orDie);
 
-    const setGitFsck = Effect.fn("CaptureStoreRepo.setGitFsck")(function* (
-      captureId: string,
-      outcome: CaptureGitFsck,
-    ) {
+    const setGitFsck = Effect.fnUntraced(function* (captureId: string, outcome: CaptureGitFsck) {
       const rows = yield* sql<{ readonly id: string }>`
         UPDATE captures SET git_fsck = ${outcome}
          WHERE id = ${captureId}
@@ -1002,7 +996,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
     // Raw `sql` reads name their result keys in camelCase: the client transforms every result name
     // with snakeToCamel (`client.ts`), so `executor_id` arrives as `executorId` — a snake_case key
     // here reads `undefined` and silently turns a held lease into a free one (observed in the e2e).
-    const leaseOf = Effect.fn("CaptureStoreRepo.leaseOf")(function* (worktreeId: WorktreeId) {
+    const leaseOf = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const [row] = yield* sql<{
         readonly worktreeId: WorktreeId;
         readonly executorId: string | null;
@@ -1026,7 +1020,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
           };
     });
 
-    const headOf = Effect.fn("CaptureStoreRepo.headOf")(function* (worktreeId: WorktreeId) {
+    const headOf = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const [chain] = yield* sql<{
         readonly worktreeId: WorktreeId;
         readonly headCapture: string | null;
@@ -1046,7 +1040,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       };
     });
 
-    const sealedCompletion = Effect.fn("CaptureStoreRepo.sealedCompletion")(function* (
+    const sealedCompletion = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       executorId: string,
       epoch?: number,
@@ -1127,7 +1121,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         return row?.expiresAt ?? null;
       });
 
-    const recordSeal = Effect.fn("CaptureStoreRepo.recordSeal")(function* (input: {
+    const recordSeal = Effect.fnUntraced(function* (input: {
       readonly worktreeId: WorktreeId;
       readonly epoch: number;
       readonly captureId: string;
@@ -1212,7 +1206,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         return parent?.removed !== true;
       });
 
-    const recordUploadWindow = Effect.fn("CaptureStoreRepo.recordUploadWindow")(function* (
+    const recordUploadWindow = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       until: Date,
       lease?: { readonly epoch: number; readonly holder: LeaseHolder },
@@ -1232,7 +1226,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const recordPutAuthority = Effect.fn("CaptureStoreRepo.recordPutAuthority")(function* (
+    const recordPutAuthority = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       epoch: number,
       expiresAt: Date,
@@ -1272,17 +1266,14 @@ export const CaptureStoreRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const putAuthorityUntil = Effect.fn("CaptureStoreRepo.putAuthorityUntil")(function* (
-      worktreeId: WorktreeId,
-      epoch: number,
-    ) {
+    const putAuthorityUntil = Effect.fnUntraced(function* (worktreeId: WorktreeId, epoch: number) {
       const [row] = yield* sql<{ readonly expiresAt: Date | null }>`
         SELECT expires_at FROM capture_put_authority
          WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}`.pipe(Effect.orDie);
       return row?.expiresAt ?? null;
     });
 
-    const putAuthorityUntilFor = Effect.fn("CaptureStoreRepo.putAuthorityUntilFor")(function* (
+    const putAuthorityUntilFor = Effect.fnUntraced(function* (
       worktreeIds: ReadonlyArray<WorktreeId>,
     ) {
       if (worktreeIds.length === 0) return null;
@@ -1295,7 +1286,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return row?.expiresAt ?? null;
     });
 
-    const putAuthorityUntilOver = Effect.fn("CaptureStoreRepo.putAuthorityUntilOver")(function* (
+    const putAuthorityUntilOver = Effect.fnUntraced(function* (
       scopes: ReadonlyArray<CaptureScopeRef>,
     ) {
       if (scopes.length === 0) return null;
@@ -1308,7 +1299,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return row?.expiresAt ?? null;
     });
 
-    const sealAuthorityOver = Effect.fn("CaptureStoreRepo.sealAuthorityOver")(function* (
+    const sealAuthorityOver = Effect.fnUntraced(function* (
       scopes: ReadonlyArray<CaptureScopeRef>,
       at: Date,
     ) {
@@ -1337,7 +1328,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       };
     });
 
-    const noteLaunchAnswers = Effect.fn("CaptureStoreRepo.noteLaunchAnswers")(function* (
+    const noteLaunchAnswers = Effect.fnUntraced(function* (
       launchId: string,
       answers: ReadonlyArray<string>,
     ) {
@@ -1352,7 +1343,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
          WHERE noted_at < now() - interval '60 days'`.pipe(Effect.orDie);
     });
 
-    const launchAnswers = Effect.fn("CaptureStoreRepo.launchAnswers")(function* (launchId: string) {
+    const launchAnswers = Effect.fnUntraced(function* (launchId: string) {
       const [row] = yield* sql<{ readonly answers: unknown }>`
         SELECT answers FROM capture_launch_answers WHERE launch_id = ${launchId}`.pipe(
         Effect.orDie,
@@ -1364,7 +1355,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         : [];
     });
 
-    const reserveBoundIndex = Effect.fn("CaptureStoreRepo.reserveBoundIndex")(function* (
+    const reserveBoundIndex = Effect.fnUntraced(function* (
       key: string,
       sha256: string,
       now: Date,
@@ -1411,7 +1402,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const extendBoundIndex = Effect.fn("CaptureStoreRepo.extendBoundIndex")(function* (
+    const extendBoundIndex = Effect.fnUntraced(function* (
       key: string,
       sha256: string,
       at: Date,
@@ -1424,10 +1415,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return rows.length > 0;
     });
 
-    const boundIndexesAmong = Effect.fn("CaptureStoreRepo.boundIndexesAmong")(function* (
-      keys: ReadonlyArray<string>,
-      at: Date,
-    ) {
+    const boundIndexesAmong = Effect.fnUntraced(function* (keys: ReadonlyArray<string>, at: Date) {
       if (keys.length === 0) return [];
       return yield* sql<{ readonly key: string; readonly sha256: string; readonly until: Date }>`
         SELECT key, sha256, until FROM capture_bound_indexes
@@ -1437,7 +1425,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       );
     });
 
-    const markSealReverified = Effect.fn("CaptureStoreRepo.markSealReverified")(function* (
+    const markSealReverified = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       epoch: number,
       captureId: string,
@@ -1474,7 +1462,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return marked;
     });
 
-    const voidSeal = Effect.fn("CaptureStoreRepo.voidSeal")(function* (
+    const voidSeal = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       epoch: number,
       captureId: string,
@@ -1486,7 +1474,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
            AND capture_id = ${captureId}`.pipe(Effect.orDie);
     });
 
-    const listChain = Effect.fn("CaptureStoreRepo.listChain")(function* (worktreeId: WorktreeId) {
+    const listChain = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       return yield* db
         .select()
         .from(captures)
@@ -1495,7 +1483,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const captureById = Effect.fn("CaptureStoreRepo.captureById")(function* (captureId: string) {
+    const captureById = Effect.fnUntraced(function* (captureId: string) {
       const [row] = yield* db
         .select()
         .from(captures)
@@ -1505,9 +1493,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return row ?? null;
     });
 
-    const recordPacks = Effect.fn("CaptureStoreRepo.recordPacks")(function* (
-      records: ReadonlyArray<PackRecord>,
-    ) {
+    const recordPacks = Effect.fnUntraced(function* (records: ReadonlyArray<PackRecord>) {
       // One row per digest: an upsert may not touch the same row twice in one statement.
       const byDigest = new Map<string, PackRecord>();
       for (const record of records) {
@@ -1543,7 +1529,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const summaryOf = Effect.fn("CaptureStoreRepo.summaryOf")(function* (captureId: string) {
+    const summaryOf = Effect.fnUntraced(function* (captureId: string) {
       const [row] = yield* db
         .select()
         .from(captureSummaries)
@@ -1553,7 +1539,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return row ?? null;
     });
 
-    const listChains = Effect.fn("CaptureStoreRepo.listChains")(function* () {
+    const listChains = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select({
           worktreeId: worktreeChain.worktreeId,
@@ -1575,7 +1561,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       }));
     });
 
-    const referenceState = Effect.fn("CaptureStoreRepo.referenceState")(function* (
+    const referenceState = Effect.fnUntraced(function* (
       worktreeIds: ReadonlyArray<WorktreeId>,
       keys: ReadonlyArray<string>,
     ) {
@@ -1657,7 +1643,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         return rows.length > 0;
       });
 
-    const condemn = Effect.fn("CaptureStoreRepo.condemn")(function* (
+    const condemn = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       guard: number,
       keys: ReadonlyArray<string>,
@@ -1682,20 +1668,19 @@ export const CaptureStoreRepoLive: Layer.Layer<
       );
     });
 
-    const referencedElsewhere = Effect.fn("CaptureStoreRepo.referencedElsewhere")(
-      function* (input: {
-        readonly projectId: ProjectId;
-        readonly own: ReadonlyArray<WorktreeId>;
-        readonly keys: ReadonlyArray<string>;
-      }) {
-        if (input.keys.length === 0) return new Set<string>();
-        // `_` in an id widens a pattern: more names read, never fewer.
-        const patterns = [
-          `projects/${input.projectId}/%`,
-          ...input.own.flatMap((id) => [`captures/${id}/%`, `changes/${id}/%`]),
-        ];
-        const own = [...input.own];
-        const rows = yield* sql<{ readonly key: string }>`
+    const referencedElsewhere = Effect.fnUntraced(function* (input: {
+      readonly projectId: ProjectId;
+      readonly own: ReadonlyArray<WorktreeId>;
+      readonly keys: ReadonlyArray<string>;
+    }) {
+      if (input.keys.length === 0) return new Set<string>();
+      // `_` in an id widens a pattern: more names read, never fewer.
+      const patterns = [
+        `projects/${input.projectId}/%`,
+        ...input.own.flatMap((id) => [`captures/${id}/%`, `changes/${id}/%`]),
+      ];
+      const own = [...input.own];
+      const rows = yield* sql<{ readonly key: string }>`
         WITH names AS (
           SELECT s #>> '{}' AS name
             FROM captures c,
@@ -1711,13 +1696,12 @@ export const CaptureStoreRepoLive: Layer.Layer<
             OR (key LIKE '%.idx' AND n.name = left(key, -4))
             OR (strpos(key, '/trees/') > 0
                 AND starts_with(n.name, left(key, strpos(key, '/trees/') + 6))))`.pipe(
-          Effect.orDie,
-        );
-        return new Set(rows.map((row) => row.key));
-      },
-    );
+        Effect.orDie,
+      );
+      return new Set(rows.map((row) => row.key));
+    });
 
-    const condemnForPurge = Effect.fn("CaptureStoreRepo.condemnForPurge")(function* (input: {
+    const condemnForPurge = Effect.fnUntraced(function* (input: {
       readonly worktreeId: WorktreeId;
       readonly guard: number;
       readonly keys: ReadonlyArray<string>;
@@ -1746,10 +1730,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const renewDeletion = Effect.fn("CaptureStoreRepo.renewDeletion")(function* (
-      token: string,
-      ttlSeconds: number,
-    ) {
+    const renewDeletion = Effect.fnUntraced(function* (token: string, ttlSeconds: number) {
       const rows = yield* sql<{ readonly key: string }>`
         UPDATE capture_deletion_claims
            SET expires_at = now() + make_interval(secs => ${ttlSeconds})
@@ -1761,7 +1742,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return rows.length;
     });
 
-    const finishDeletion = Effect.fn("CaptureStoreRepo.finishDeletion")(function* (
+    const finishDeletion = Effect.fnUntraced(function* (
       token: string,
       deleted: ReadonlyArray<string>,
     ) {
@@ -1775,7 +1756,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         DELETE FROM capture_deletion_claims WHERE token = ${token}`.pipe(Effect.orDie);
     });
 
-    const deleteCaptures = Effect.fn("CaptureStoreRepo.deleteCaptures")(function* (
+    const deleteCaptures = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       captureIds: ReadonlyArray<string>,
     ) {
@@ -1801,7 +1782,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       );
     });
 
-    const listPacks = Effect.fn("CaptureStoreRepo.listPacks")(function* (state?: PackState) {
+    const listPacks = Effect.fnUntraced(function* (state?: PackState) {
       const query = db.select().from(packs);
       const rows = yield* (state === undefined ? query : query.where(eq(packs.state, state))).pipe(
         Effect.orDie,
@@ -1809,7 +1790,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return rows;
     });
 
-    const setPackState = Effect.fn("CaptureStoreRepo.setPackState")(function* (
+    const setPackState = Effect.fnUntraced(function* (
       packIds: ReadonlyArray<string>,
       state: PackState,
     ) {

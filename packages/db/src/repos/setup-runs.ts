@@ -130,7 +130,7 @@ export const SetupRunsRepoLive: Layer.Layer<SetupRunsRepo, never, MendDB> = Laye
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const claim = Effect.fn("SetupRunsRepo.claim")(function* (request: SetupClaimRequest) {
+    const claim = Effect.fnUntraced(function* (request: SetupClaimRequest) {
       const { siteKey } = request;
       return yield* db.transaction((tx) =>
         Effect.gen(function* () {
@@ -173,7 +173,7 @@ export const SetupRunsRepoLive: Layer.Layer<SetupRunsRepo, never, MendDB> = Laye
       );
     }, Effect.orDie);
 
-    const busy = Effect.fn("SetupRunsRepo.busy")(function* (siteKey: string) {
+    const busy = Effect.fnUntraced(function* (siteKey: string) {
       const rows = yield* db
         .select({ claimId: setupRuns.claimId })
         .from(setupRuns)
@@ -182,7 +182,7 @@ export const SetupRunsRepoLive: Layer.Layer<SetupRunsRepo, never, MendDB> = Laye
       return rows.length > 0;
     }, Effect.orDie);
 
-    const runningIn = Effect.fn("SetupRunsRepo.runningIn")(function* (workspaceId: string) {
+    const runningIn = Effect.fnUntraced(function* (workspaceId: string) {
       const [row] = yield* db
         .select({ n: count() })
         .from(setupRuns)
@@ -190,9 +190,7 @@ export const SetupRunsRepoLive: Layer.Layer<SetupRunsRepo, never, MendDB> = Laye
       return row?.n ?? 0;
     }, Effect.orDie);
 
-    const unendedInWorktree = Effect.fn("SetupRunsRepo.unendedInWorktree")(function* (
-      worktreeId: WorktreeId,
-    ) {
+    const unendedInWorktree = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const rows = yield* db
         .select({ claimId: setupRuns.claimId })
         .from(setupRuns)
@@ -201,7 +199,7 @@ export const SetupRunsRepoLive: Layer.Layer<SetupRunsRepo, never, MendDB> = Laye
       return rows.length > 0;
     }, Effect.orDie);
 
-    const renew = Effect.fn("SetupRunsRepo.renew")(function* (claimId: string, leaseMs: number) {
+    const renew = Effect.fnUntraced(function* (claimId: string, leaseMs: number) {
       const rows = yield* db
         .update(setupRuns)
         .set({ leaseUntil: leaseEnd(leaseMs) })
@@ -210,10 +208,7 @@ export const SetupRunsRepoLive: Layer.Layer<SetupRunsRepo, never, MendDB> = Laye
       return rows.length === 1;
     }, Effect.orDie);
 
-    const finish = Effect.fn("SetupRunsRepo.finish")(function* (
-      claimId: string,
-      outcome: SetupOutcome,
-    ) {
+    const finish = Effect.fnUntraced(function* (claimId: string, outcome: SetupOutcome) {
       const rows = yield* db
         .update(setupRuns)
         .set({
@@ -227,15 +222,15 @@ export const SetupRunsRepoLive: Layer.Layer<SetupRunsRepo, never, MendDB> = Laye
       return rows.length === 1;
     }, Effect.orDie);
 
-    const release = Effect.fn("SetupRunsRepo.release")(function* (claimId: string) {
+    const release = Effect.fnUntraced(function* (claimId: string) {
       yield* db.delete(setupRuns).where(and(eq(setupRuns.claimId, claimId), running));
     }, Effect.orDie);
 
-    const discard = Effect.fn("SetupRunsRepo.discard")(function* (claimId: string) {
+    const discard = Effect.fnUntraced(function* (claimId: string) {
       yield* db.delete(setupRuns).where(eq(setupRuns.claimId, claimId));
     }, Effect.orDie);
 
-    const stampAt = Effect.fn("SetupRunsRepo.stampAt")(function* (siteKey: string) {
+    const stampAt = Effect.fnUntraced(function* (siteKey: string) {
       const [row] = yield* db
         .select({ fingerprint: setupRuns.fingerprint })
         .from(setupRuns)

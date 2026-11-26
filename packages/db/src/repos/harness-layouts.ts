@@ -429,9 +429,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
           Effect.map((rows) => (rows[0] === undefined ? null : identityOf(rows[0]))),
         );
 
-      const ensureIdentity = Effect.fn("HarnessLayoutsRepo.ensureIdentity")(function* (
-        accountId: string,
-      ) {
+      const ensureIdentity = Effect.fnUntraced(function* (accountId: string) {
         const existing = yield* identityRow(accountId);
         if (existing !== null) return existing;
         // Concurrent first runs of different accounts race for the same next uid; the loser of
@@ -467,9 +465,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         });
       });
 
-      const identitiesOf = Effect.fn("HarnessLayoutsRepo.identitiesOf")(function* (
-        accountIds: ReadonlyArray<string>,
-      ) {
+      const identitiesOf = Effect.fnUntraced(function* (accountIds: ReadonlyArray<string>) {
         if (accountIds.length === 0) return [];
         const rows = yield* sql`
           SELECT user_id AS "userId", name, uid FROM linux_identities
@@ -478,9 +474,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return rows.map(identityOf);
       });
 
-      const identitiesNamed = Effect.fn("HarnessLayoutsRepo.identitiesNamed")(function* (
-        names: ReadonlyArray<string>,
-      ) {
+      const identitiesNamed = Effect.fnUntraced(function* (names: ReadonlyArray<string>) {
         if (names.length === 0) return [];
         const rows = yield* sql`
           SELECT user_id AS "userId", name, uid FROM linux_identities
@@ -489,9 +483,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return rows.map(identityOf);
       });
 
-      const worktreeLayout = Effect.fn("HarnessLayoutsRepo.worktreeLayout")(function* (
-        worktreeId: WorktreeId,
-      ) {
+      const worktreeLayout = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
         const rows = yield* sql`
           SELECT harness_layout AS layout, harness_layout_requested AS requested
           FROM worktrees WHERE id = ${worktreeId}`.pipe(Effect.orDie);
@@ -500,7 +492,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
           : decodeWorktreeLayoutRow(rows[0]);
       });
 
-      const requestLayout = Effect.fn("HarnessLayoutsRepo.requestLayout")(function* (
+      const requestLayout = Effect.fnUntraced(function* (
         worktreeId: WorktreeId,
         layout: HarnessLayout,
       ) {
@@ -509,9 +501,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
           WHERE id = ${worktreeId}`.pipe(Effect.orDie);
       });
 
-      const recordLaunch = Effect.fn("HarnessLayoutsRepo.recordLaunch")(function* (
-        record: ExecutorLayoutRecord,
-      ) {
+      const recordLaunch = Effect.fnUntraced(function* (record: ExecutorLayoutRecord) {
         yield* sql`
           INSERT INTO executor_layouts
             (launch_id, worktree_id, session_id, layout, source, reason, image_key, confirmed)
@@ -529,10 +519,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         }
       });
 
-      const confirmPerson = Effect.fn("HarnessLayoutsRepo.confirmPerson")(function* (
-        launchId: string,
-        worktreeId: WorktreeId,
-      ) {
+      const confirmPerson = Effect.fnUntraced(function* (launchId: string, worktreeId: WorktreeId) {
         yield* sql
           .withTransaction(
             Effect.gen(function* () {
@@ -547,10 +534,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
           .pipe(Effect.orDie);
       });
 
-      const recordFallback = Effect.fn("HarnessLayoutsRepo.recordFallback")(function* (
-        launchId: string,
-        reason: string,
-      ) {
+      const recordFallback = Effect.fnUntraced(function* (launchId: string, reason: string) {
         yield* sql`
           UPDATE executor_layouts
              SET layout = 'shared', source = 'fallback', reason = ${reason}, confirmed = true,
@@ -558,15 +542,13 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
            WHERE launch_id = ${launchId} AND NOT confirmed`.pipe(Effect.orDie);
       });
 
-      const confirm = Effect.fn("HarnessLayoutsRepo.confirm")(function* (launchId: string) {
+      const confirm = Effect.fnUntraced(function* (launchId: string) {
         yield* sql`
           UPDATE executor_layouts SET confirmed = true, updated_at = now()
           WHERE launch_id = ${launchId} AND layout = 'shared'`.pipe(Effect.orDie);
       });
 
-      const launchLayout = Effect.fn("HarnessLayoutsRepo.launchLayout")(function* (
-        launchId: string,
-      ) {
+      const launchLayout = Effect.fnUntraced(function* (launchId: string) {
         const rows = yield* sql`
           SELECT launch_id AS "launchId", worktree_id AS "worktreeId", session_id AS "sessionId",
                  layout, source, reason, image_key AS "imageKey", confirmed
@@ -575,10 +557,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return decodeLaunchRow(rows[0]);
       });
 
-      const capabilityOf = Effect.fn("HarnessLayoutsRepo.capabilityOf")(function* (
-        imageKey: string,
-        runtime: string,
-      ) {
+      const capabilityOf = Effect.fnUntraced(function* (imageKey: string, runtime: string) {
         const rows = yield* sql`
           SELECT image_key AS "imageKey", runtime, person, missing, confirmed,
                  observed_at AS "observedAt"
@@ -587,9 +566,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return rows[0] === undefined ? null : decodeCapabilityRow(rows[0]);
       });
 
-      const recordCapability = Effect.fn("HarnessLayoutsRepo.recordCapability")(function* (
-        record: CapabilityWrite,
-      ) {
+      const recordCapability = Effect.fnUntraced(function* (record: CapabilityWrite) {
         // An unconfirmed answer (a shared launch's probe) is a first guess only: it never
         // replaces a recorded answer, sealant's "no" made into a record included.
         yield* (
@@ -627,7 +604,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         ).pipe(Effect.orDie);
       });
 
-      const anyRecorded = Effect.fn("HarnessLayoutsRepo.anyRecorded")(function* () {
+      const anyRecorded = Effect.fnUntraced(function* () {
         const rows = yield* sql<{ readonly recorded: boolean }>`
           SELECT EXISTS (SELECT 1 FROM executor_layouts WHERE layout = 'person')
               OR EXISTS (SELECT 1 FROM worktrees
@@ -636,18 +613,17 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return rows[0]?.recorded === true;
       });
 
-      const markConversationShared = Effect.fn("HarnessLayoutsRepo.markConversationShared")(
-        function* (sessionId: string, owner: string) {
-          yield* sql`
+      const markConversationShared = Effect.fnUntraced(function* (
+        sessionId: string,
+        owner: string,
+      ) {
+        yield* sql`
             INSERT INTO shared_conversations (session_id, owner_user_id)
             VALUES (${sessionId}, ${owner})
             ON CONFLICT (session_id) DO NOTHING`.pipe(Effect.orDie);
-        },
-      );
+      });
 
-      const sharedConversationOf = Effect.fn("HarnessLayoutsRepo.sharedConversationOf")(function* (
-        sessionId: string,
-      ) {
+      const sharedConversationOf = Effect.fnUntraced(function* (sessionId: string) {
         const rows = yield* sql<{ readonly owner: string; readonly movedAt: Date }>`
             SELECT owner_user_id AS owner, moved_at AS "movedAt"
             FROM shared_conversations WHERE session_id = ${sessionId}`.pipe(Effect.orDie);
@@ -655,16 +631,14 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return row === undefined ? null : { owner: row.owner, movedAt: new Date(row.movedAt) };
       });
 
-      const conversationHolder = Effect.fn("HarnessLayoutsRepo.conversationHolder")(function* (
-        sessionId: string,
-      ) {
+      const conversationHolder = Effect.fnUntraced(function* (sessionId: string) {
         const rows = yield* sql`
           SELECT launch_id AS "launchId", process_id AS "processId", fence
           FROM conversation_processes WHERE session_id = ${sessionId}`.pipe(Effect.orDie);
         return rows[0] === undefined ? null : holderOf(rows[0]);
       });
 
-      const takeConversation = Effect.fn("HarnessLayoutsRepo.takeConversation")(function* (
+      const takeConversation = Effect.fnUntraced(function* (
         sessionId: string,
         launchId: string,
         replacing: string | null = null,
@@ -707,7 +681,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
           .pipe(Effect.orDie);
       });
 
-      const bindConversation = Effect.fn("HarnessLayoutsRepo.bindConversation")(function* (
+      const bindConversation = Effect.fnUntraced(function* (
         sessionId: string,
         fence: number,
         processId: string,
@@ -719,7 +693,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return rows.length > 0;
       });
 
-      const releaseConversation = Effect.fn("HarnessLayoutsRepo.releaseConversation")(function* (
+      const releaseConversation = Effect.fnUntraced(function* (
         sessionId: string,
         by: { readonly processId: string } | { readonly fence: number },
       ) {
@@ -736,20 +710,19 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         );
       });
 
-      const preReleaseMigrationOf = Effect.fn("HarnessLayoutsRepo.preReleaseMigrationOf")(
-        function* (worktreeId: WorktreeId) {
-          const rows = yield* sql`
+      const preReleaseMigrationOf = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
+        const rows = yield* sql`
             SELECT worktree_id AS "worktreeId", capture_id AS "captureId", capture_n AS "captureN",
                    final, credited_to AS "creditedTo", decided_by AS "decidedBy", credited,
                    not_credited AS "notCredited"
             FROM pre_release_migrations WHERE worktree_id = ${worktreeId}`.pipe(Effect.orDie);
-          return rows[0] === undefined ? null : decodeMigrationRow(rows[0]);
-        },
-      );
+        return rows[0] === undefined ? null : decodeMigrationRow(rows[0]);
+      });
 
-      const recordPreReleaseMigration = Effect.fn("HarnessLayoutsRepo.recordPreReleaseMigration")(
-        function* (record: PreReleaseMigrationRecord) {
-          yield* sql`
+      const recordPreReleaseMigration = Effect.fnUntraced(function* (
+        record: PreReleaseMigrationRecord,
+      ) {
+        yield* sql`
             INSERT INTO pre_release_migrations
               (worktree_id, capture_id, capture_n, final, credited_to, decided_by, credited,
                not_credited)
@@ -762,25 +735,20 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
                   final = excluded.final, credited_to = excluded.credited_to,
                   decided_by = excluded.decided_by, credited = excluded.credited,
                   not_credited = excluded.not_credited, ran_at = now()`.pipe(Effect.orDie);
-        },
-      );
+      });
 
-      const worktreesAwaitingMigration = Effect.fn("HarnessLayoutsRepo.worktreesAwaitingMigration")(
-        function* () {
-          // A removed project's worktree waits for its Restore: nothing of it runs till then.
-          const rows = yield* sql<{ readonly id: string }>`
+      const worktreesAwaitingMigration = Effect.fnUntraced(function* () {
+        // A removed project's worktree waits for its Restore: nothing of it runs till then.
+        const rows = yield* sql<{ readonly id: string }>`
             SELECT w.id FROM worktrees w
             JOIN projects p ON p.id = w.project_id AND p.removed_at IS NULL
             WHERE w.harness_layout = 'person'
               AND NOT EXISTS (SELECT 1 FROM pre_release_migrations m
                               WHERE m.worktree_id = w.id AND m.final)`.pipe(Effect.orDie);
-          return rows.map((row) => WorktreeId.make(row.id));
-        },
-      );
+        return rows.map((row) => WorktreeId.make(row.id));
+      });
 
-      const retirementOf = Effect.fn("HarnessLayoutsRepo.retirementOf")(function* (
-        workspaceId: string,
-      ) {
+      const retirementOf = Effect.fnUntraced(function* (workspaceId: string) {
         const rows = yield* sql`
           SELECT workspace_id AS "workspaceId", worktree_id AS "worktreeId", session_id AS "sessionId",
                  launcher, pre_release AS "preRelease", state, stops, reason,
@@ -791,7 +759,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return rows[0] === undefined ? null : decodeRetirementRow(rows[0]);
       });
 
-      const listRetirements = Effect.fn("HarnessLayoutsRepo.listRetirements")(function* () {
+      const listRetirements = Effect.fnUntraced(function* () {
         const rows = yield* sql`
           SELECT workspace_id AS "workspaceId", worktree_id AS "worktreeId", session_id AS "sessionId",
                  launcher, pre_release AS "preRelease", state, stops, reason,
@@ -801,7 +769,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return rows.map((row) => decodeRetirementRow(row));
       });
 
-      const markRetirement = Effect.fn("HarnessLayoutsRepo.markRetirement")(function* (
+      const markRetirement = Effect.fnUntraced(function* (
         record: Omit<ExecutorRetirementRecord, "state" | "updatedAt" | "restart">,
       ) {
         // A retiring row is the replacement's: the sweep changes nothing of it, its time included.
@@ -828,9 +796,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return decodeRetirementRow(rows[0]);
       });
 
-      const beginRetiring = Effect.fn("HarnessLayoutsRepo.beginRetiring")(function* (
-        workspaceId: string,
-      ) {
+      const beginRetiring = Effect.fnUntraced(function* (workspaceId: string) {
         const rows = yield* sql`
           UPDATE executor_retirements SET state = 'retiring', updated_at = now()
           WHERE workspace_id = ${workspaceId} AND state = 'marked'
@@ -838,9 +804,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return rows.length > 0;
       });
 
-      const sessionOwnersOf = Effect.fn("HarnessLayoutsRepo.sessionOwnersOf")(function* (
-        worktreeId: WorktreeId,
-      ) {
+      const sessionOwnersOf = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
         const owners = yield* sql<{ readonly userId: string }>`
           SELECT user_id AS "userId" FROM worktree_session_owners
           WHERE worktree_id = ${worktreeId} ORDER BY user_id`.pipe(Effect.orDie);
@@ -849,7 +813,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return { owners: owners.map((row) => row.userId), complete: gaps.length === 0 };
       });
 
-      const unmarkRetiring = Effect.fn("HarnessLayoutsRepo.unmarkRetiring")(function* (
+      const unmarkRetiring = Effect.fnUntraced(function* (
         workspaceId: string,
         found: {
           readonly stops: ReadonlyArray<RetirementStopRecord>;
@@ -865,7 +829,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
            WHERE workspace_id = ${workspaceId}`.pipe(Effect.orDie);
       });
 
-      const noteRetiring = Effect.fn("HarnessLayoutsRepo.noteRetiring")(function* (
+      const noteRetiring = Effect.fnUntraced(function* (
         workspaceId: string,
         note: { readonly reason?: string; readonly restart?: ReadonlyArray<string> },
       ) {
@@ -877,9 +841,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
            WHERE workspace_id = ${workspaceId} AND state = 'retiring'`.pipe(Effect.orDie);
       });
 
-      const clearRetirement = Effect.fn("HarnessLayoutsRepo.clearRetirement")(function* (
-        workspaceId: string,
-      ) {
+      const clearRetirement = Effect.fnUntraced(function* (workspaceId: string) {
         yield* sql`DELETE FROM executor_retirements WHERE workspace_id = ${workspaceId}`.pipe(
           Effect.orDie,
         );

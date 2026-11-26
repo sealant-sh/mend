@@ -161,7 +161,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
       const db = yield* MendDB;
       const pg = yield* PgClient.PgClient;
 
-      const notify = Effect.fn("ServicesRepo.notify")(function* (sessionId: SessionId) {
+      const notify = Effect.fnUntraced(function* (sessionId: SessionId) {
         const [row] = yield* db
           .select({ projectId: agentSessions.projectId })
           .from(agentSessions)
@@ -175,7 +175,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         });
       });
 
-      const byId = Effect.fn("ServicesRepo.byId")(function* (id: ServiceId) {
+      const byId = Effect.fnUntraced(function* (id: ServiceId) {
         const [row] = yield* db
           .select()
           .from(services)
@@ -185,7 +185,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         return row === undefined ? null : toService(row);
       });
 
-      const create = Effect.fn("ServicesRepo.create")(function* (input: NewService) {
+      const create = Effect.fnUntraced(function* (input: NewService) {
         const [row] = yield* db
           .insert(services)
           .values({
@@ -213,7 +213,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         return toService(row);
       });
 
-      const byReference = Effect.fn("ServicesRepo.byReference")(function* (id: string) {
+      const byReference = Effect.fnUntraced(function* (id: string) {
         const stable = yield* byId(ServiceId.make(id));
         if (stable !== null) return stable;
         const [process] = yield* db
@@ -227,10 +227,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
           : yield* byId(process.serviceId);
       });
 
-      const byName = Effect.fn("ServicesRepo.byName")(function* (
-        sessionId: SessionId,
-        name: string,
-      ) {
+      const byName = Effect.fnUntraced(function* (sessionId: SessionId, name: string) {
         const [row] = yield* db
           .select()
           .from(services)
@@ -243,9 +240,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         return row === undefined ? null : toService(row);
       });
 
-      const listForSession = Effect.fn("ServicesRepo.listForSession")(function* (
-        sessionId: SessionId,
-      ) {
+      const listForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
         const rows = yield* db
           .select()
           .from(services)
@@ -255,7 +250,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         return rows.map(toService);
       });
 
-      const listAll = Effect.fn("ServicesRepo.listAll")(function* () {
+      const listAll = Effect.fnUntraced(function* () {
         const rows = yield* db
           .select()
           .from(services)
@@ -265,7 +260,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         return rows.map(toService);
       });
 
-      const liveCountsForSessions = Effect.fn("ServicesRepo.liveCountsForSessions")(function* (
+      const liveCountsForSessions = Effect.fnUntraced(function* (
         sessionIds: ReadonlyArray<SessionId>,
       ) {
         if (sessionIds.length === 0) return new Map<SessionId, number>();
@@ -297,10 +292,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         return new Map(rows.map((row) => [row.sessionId, row.live]));
       });
 
-      const setStartedBy = Effect.fn("ServicesRepo.setStartedBy")(function* (
-        id: ServiceId,
-        accountId: string,
-      ) {
+      const setStartedBy = Effect.fnUntraced(function* (id: ServiceId, accountId: string) {
         yield* db
           .update(services)
           .set({ startedBy: accountId })
@@ -308,7 +300,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const startedByOf = Effect.fn("ServicesRepo.startedByOf")(function* (id: ServiceId) {
+      const startedByOf = Effect.fnUntraced(function* (id: ServiceId) {
         const rows = yield* db
           .select({ startedBy: services.startedBy })
           .from(services)
@@ -318,7 +310,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         return rows[0]?.startedBy ?? null;
       });
 
-      const setCurrentAttempt = Effect.fn("ServicesRepo.setCurrentAttempt")(function* (
+      const setCurrentAttempt = Effect.fnUntraced(function* (
         id: ServiceId,
         attemptId: SessionProcessId | null,
       ) {
@@ -332,7 +324,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         if (row !== undefined) yield* notify(row.sessionId);
       });
 
-      const setCurrentForward = Effect.fn("ServicesRepo.setCurrentForward")(function* (
+      const setCurrentForward = Effect.fnUntraced(function* (
         id: ServiceId,
         forwardId: ServiceForwardId | null,
       ) {
@@ -346,57 +338,53 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         if (row !== undefined) yield* notify(row.sessionId);
       });
 
-      const compareAndSetCurrentAttempt = Effect.fn("ServicesRepo.compareAndSetCurrentAttempt")(
-        function* (
-          id: ServiceId,
-          expected: SessionProcessId | null,
-          next: SessionProcessId | null,
-        ) {
-          const rows = yield* db
-            .update(services)
-            .set({ currentAttemptId: next, updatedAt: yield* DateTime.nowAsDate })
-            .where(
-              and(
-                eq(services.id, id),
-                expected === null
-                  ? isNull(services.currentAttemptId)
-                  : eq(services.currentAttemptId, expected),
-              ),
-            )
-            .returning({ sessionId: services.sessionId })
-            .pipe(Effect.orDie);
-          const row = rows[0];
-          if (row === undefined) return false;
-          yield* notify(row.sessionId);
-          return true;
-        },
-      );
+      const compareAndSetCurrentAttempt = Effect.fnUntraced(function* (
+        id: ServiceId,
+        expected: SessionProcessId | null,
+        next: SessionProcessId | null,
+      ) {
+        const rows = yield* db
+          .update(services)
+          .set({ currentAttemptId: next, updatedAt: yield* DateTime.nowAsDate })
+          .where(
+            and(
+              eq(services.id, id),
+              expected === null
+                ? isNull(services.currentAttemptId)
+                : eq(services.currentAttemptId, expected),
+            ),
+          )
+          .returning({ sessionId: services.sessionId })
+          .pipe(Effect.orDie);
+        const row = rows[0];
+        if (row === undefined) return false;
+        yield* notify(row.sessionId);
+        return true;
+      });
 
-      const compareAndSetCurrentForward = Effect.fn("ServicesRepo.compareAndSetCurrentForward")(
-        function* (
-          id: ServiceId,
-          expected: ServiceForwardId | null,
-          next: ServiceForwardId | null,
-        ) {
-          const rows = yield* db
-            .update(services)
-            .set({ currentForwardId: next, updatedAt: yield* DateTime.nowAsDate })
-            .where(
-              and(
-                eq(services.id, id),
-                expected === null
-                  ? isNull(services.currentForwardId)
-                  : eq(services.currentForwardId, expected),
-              ),
-            )
-            .returning({ sessionId: services.sessionId })
-            .pipe(Effect.orDie);
-          const row = rows[0];
-          if (row === undefined) return false;
-          yield* notify(row.sessionId);
-          return true;
-        },
-      );
+      const compareAndSetCurrentForward = Effect.fnUntraced(function* (
+        id: ServiceId,
+        expected: ServiceForwardId | null,
+        next: ServiceForwardId | null,
+      ) {
+        const rows = yield* db
+          .update(services)
+          .set({ currentForwardId: next, updatedAt: yield* DateTime.nowAsDate })
+          .where(
+            and(
+              eq(services.id, id),
+              expected === null
+                ? isNull(services.currentForwardId)
+                : eq(services.currentForwardId, expected),
+            ),
+          )
+          .returning({ sessionId: services.sessionId })
+          .pipe(Effect.orDie);
+        const row = rows[0];
+        if (row === undefined) return false;
+        yield* notify(row.sessionId);
+        return true;
+      });
 
       return {
         create,
@@ -426,7 +414,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
     const db = yield* MendDB;
     const pg = yield* PgClient.PgClient;
 
-    const notify = Effect.fn("ServiceForwardsRepo.notify")(function* (serviceId: ServiceId) {
+    const notify = Effect.fnUntraced(function* (serviceId: ServiceId) {
       const [row] = yield* db
         .select({ sessionId: services.sessionId, projectId: agentSessions.projectId })
         .from(services)
@@ -442,7 +430,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
       });
     });
 
-    const create = Effect.fn("ServiceForwardsRepo.create")(function* (input: NewServiceForward) {
+    const create = Effect.fnUntraced(function* (input: NewServiceForward) {
       const [row] = yield* db
         .insert(serviceForwards)
         .values({
@@ -465,9 +453,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
       return toForward(row);
     });
 
-    const createAndSelect = Effect.fn("ServiceForwardsRepo.createAndSelect")(function* (
-      input: NewServiceForward,
-    ) {
+    const createAndSelect = Effect.fnUntraced(function* (input: NewServiceForward) {
       const row = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -502,7 +488,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
       return toForward(row);
     });
 
-    const byId = Effect.fn("ServiceForwardsRepo.byId")(function* (id: ServiceForwardId) {
+    const byId = Effect.fnUntraced(function* (id: ServiceForwardId) {
       const [row] = yield* db
         .select()
         .from(serviceForwards)
@@ -512,9 +498,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
       return row === undefined ? null : toForward(row);
     });
 
-    const listForService = Effect.fn("ServiceForwardsRepo.listForService")(function* (
-      serviceId: ServiceId,
-    ) {
+    const listForService = Effect.fnUntraced(function* (serviceId: ServiceId) {
       const rows = yield* db
         .select()
         .from(serviceForwards)
@@ -524,7 +508,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
       return rows.map(toForward);
     });
 
-    const listOpen = Effect.fn("ServiceForwardsRepo.listOpen")(function* () {
+    const listOpen = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select()
         .from(serviceForwards)
@@ -534,7 +518,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
       return rows.map(toForward);
     });
 
-    const markBound = Effect.fn("ServiceForwardsRepo.markBound")(function* (
+    const markBound = Effect.fnUntraced(function* (
       id: ServiceForwardId,
       hostPort: number,
       boundAddresses: ReadonlyArray<string>,
@@ -556,10 +540,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
       if (row !== undefined) yield* notify(row.serviceId);
     });
 
-    const markFailed = Effect.fn("ServiceForwardsRepo.markFailed")(function* (
-      id: ServiceForwardId,
-      error: string,
-    ) {
+    const markFailed = Effect.fnUntraced(function* (id: ServiceForwardId, error: string) {
       const now = yield* DateTime.nowAsDate;
       const rows = yield* db
         .update(serviceForwards)
@@ -571,9 +552,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
       if (row !== undefined) yield* notify(row.serviceId);
     });
 
-    const markClosed = Effect.fn("ServiceForwardsRepo.markClosed")(function* (
-      id: ServiceForwardId,
-    ) {
+    const markClosed = Effect.fnUntraced(function* (id: ServiceForwardId) {
       const now = yield* DateTime.nowAsDate;
       const rows = yield* db
         .update(serviceForwards)
@@ -608,7 +587,7 @@ export const ServiceObservationsRepoLive: Layer.Layer<
     const db = yield* MendDB;
     const pg = yield* PgClient.PgClient;
 
-    const notify = Effect.fn("ServiceObservationsRepo.notify")(function* (serviceId: ServiceId) {
+    const notify = Effect.fnUntraced(function* (serviceId: ServiceId) {
       const [row] = yield* db
         .select({ sessionId: services.sessionId, projectId: agentSessions.projectId })
         .from(services)
@@ -624,9 +603,7 @@ export const ServiceObservationsRepoLive: Layer.Layer<
       });
     });
 
-    const record = Effect.fn("ServiceObservationsRepo.record")(function* (
-      input: NewServiceObservation,
-    ) {
+    const record = Effect.fnUntraced(function* (input: NewServiceObservation) {
       const [latest] = yield* db
         .select()
         .from(serviceObservations)
@@ -673,9 +650,7 @@ export const ServiceObservationsRepoLive: Layer.Layer<
       return toObservation(row);
     });
 
-    const latestForService = Effect.fn("ServiceObservationsRepo.latestForService")(function* (
-      serviceId: ServiceId,
-    ) {
+    const latestForService = Effect.fnUntraced(function* (serviceId: ServiceId) {
       const [row] = yield* db
         .select()
         .from(serviceObservations)
@@ -686,9 +661,7 @@ export const ServiceObservationsRepoLive: Layer.Layer<
       return row === undefined ? null : toObservation(row);
     });
 
-    const listForService = Effect.fn("ServiceObservationsRepo.listForService")(function* (
-      serviceId: ServiceId,
-    ) {
+    const listForService = Effect.fnUntraced(function* (serviceId: ServiceId) {
       const rows = yield* db
         .select()
         .from(serviceObservations)

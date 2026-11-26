@@ -37,7 +37,7 @@ export class PersonSettingsRepo extends Context.Service<
 const make: Effect.Effect<PersonSettingsRepo["Service"], never, MendDB> = Effect.gen(function* () {
   const db = yield* MendDB;
   return {
-    forUser: Effect.fn("PersonSettingsRepo.forUser")(function* (userId: string) {
+    forUser: Effect.fnUntraced(function* (userId: string) {
       const [row] = yield* db
         .select()
         .from(userAutomationSettings)
@@ -46,7 +46,7 @@ const make: Effect.Effect<PersonSettingsRepo["Service"], never, MendDB> = Effect
         .pipe(Effect.orDie);
       return personSettingsFromRow(row);
     }),
-    set: Effect.fn("PersonSettingsRepo.set")(function* (userId: string, settings: PersonSettings) {
+    set: Effect.fnUntraced(function* (userId: string, settings: PersonSettings) {
       const values = {
         autoTour: settings.autoTour,
         autoSuggest: settings.autoSuggest,

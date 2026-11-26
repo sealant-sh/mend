@@ -30,7 +30,7 @@ export const InferenceCallsRepoLive: Layer.Layer<InferenceCallsRepo, never, Mend
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const record = Effect.fn("InferenceCallsRepo.record")(function* (call: NewInferenceCall) {
+    const record = Effect.fnUntraced(function* (call: NewInferenceCall) {
       yield* db
         .insert(inferenceCalls)
         .values({

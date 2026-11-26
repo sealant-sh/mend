@@ -101,7 +101,7 @@ export const SavedLayoutsRepoLive: Layer.Layer<SavedLayoutsRepo, never, MendDB> 
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const list = Effect.fn("SavedLayoutsRepo.list")(function* (userId: string) {
+    const list = Effect.fnUntraced(function* (userId: string) {
       const rows = yield* db
         .select()
         .from(userSavedLayouts)
@@ -119,7 +119,7 @@ export const SavedLayoutsRepoLive: Layer.Layer<SavedLayoutsRepo, never, MendDB> 
       return layouts.flatMap((layout) => (Option.isSome(layout) ? [layout.value] : []));
     });
 
-    const save = Effect.fn("SavedLayoutsRepo.save")(function* (
+    const save = Effect.fnUntraced(function* (
       userId: string,
       input: { readonly name: string; readonly layout: TileLayout },
     ) {
@@ -162,11 +162,7 @@ export const SavedLayoutsRepoLive: Layer.Layer<SavedLayoutsRepo, never, MendDB> 
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    const rename = Effect.fn("SavedLayoutsRepo.rename")(function* (
-      userId: string,
-      id: string,
-      name: string,
-    ) {
+    const rename = Effect.fnUntraced(function* (userId: string, id: string, name: string) {
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -193,7 +189,7 @@ export const SavedLayoutsRepoLive: Layer.Layer<SavedLayoutsRepo, never, MendDB> 
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    const remove = Effect.fn("SavedLayoutsRepo.remove")(function* (userId: string, id: string) {
+    const remove = Effect.fnUntraced(function* (userId: string, id: string) {
       const deleted = yield* db
         .delete(userSavedLayouts)
         .where(

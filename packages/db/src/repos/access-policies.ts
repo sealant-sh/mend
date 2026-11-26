@@ -177,7 +177,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const list = Effect.fn("AccessPoliciesRepo.list")(function* (organizationId: OrganizationId) {
+    const list = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const rows = yield* db
         .select()
         .from(accessPolicies)
@@ -187,10 +187,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
       return [standardAccessPolicy(organizationId), ...rows.map(toPolicy)];
     });
 
-    const byId = Effect.fn("AccessPoliciesRepo.byId")(function* (
-      organizationId: OrganizationId,
-      id: AccessPolicyId,
-    ) {
+    const byId = Effect.fnUntraced(function* (organizationId: OrganizationId, id: AccessPolicyId) {
       if (id === STANDARD_ACCESS_POLICY_ID) return standardAccessPolicy(organizationId);
       const [row] = yield* db
         .select()
@@ -207,7 +204,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
         ? Effect.fail(new AccessPolicyNameTakenError({ name }))
         : Effect.die(cause);
 
-    const create = Effect.fn("AccessPoliciesRepo.create")(function* (input: {
+    const create = Effect.fnUntraced(function* (input: {
       readonly organizationId: OrganizationId;
       readonly name: string;
       readonly rules: AccessPolicyRules;
@@ -229,7 +226,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
       return toPolicy(row);
     });
 
-    const update = Effect.fn("AccessPoliciesRepo.update")(function* (input: {
+    const update = Effect.fnUntraced(function* (input: {
       readonly organizationId: OrganizationId;
       readonly id: AccessPolicyId;
       readonly name: string;
@@ -274,7 +271,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
       return toPolicy(row);
     });
 
-    const remove = Effect.fn("AccessPoliciesRepo.remove")(function* (
+    const remove = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       id: AccessPolicyId,
     ) {
@@ -290,9 +287,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
       return toPolicy(row);
     });
 
-    const projectPolicy = Effect.fn("AccessPoliciesRepo.projectPolicy")(function* (
-      projectId: ProjectId,
-    ) {
+    const projectPolicy = Effect.fnUntraced(function* (projectId: ProjectId) {
       const [row] = yield* db
         .select({ accessPolicy: projects.accessPolicy })
         .from(projects)
@@ -302,7 +297,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
       return row === undefined ? null : decodeProjectPolicy(row.accessPolicy);
     });
 
-    const setProjectPolicy = Effect.fn("AccessPoliciesRepo.setProjectPolicy")(function* (
+    const setProjectPolicy = Effect.fnUntraced(function* (
       projectId: ProjectId,
       policy: ProjectAccessPolicy,
     ) {
@@ -319,9 +314,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
         .pipe(Effect.orDie);
     });
 
-    const revoke = Effect.fn("AccessPoliciesRepo.revoke")(function* (
-      revocation: NewAccessRevocation,
-    ) {
+    const revoke = Effect.fnUntraced(function* (revocation: NewAccessRevocation) {
       const [row] = yield* db
         .insert(accessRevocations)
         .values({
@@ -341,9 +334,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
       return toRevocation(row);
     });
 
-    const revocations = Effect.fn("AccessPoliciesRepo.revocations")(function* (
-      organizationId: OrganizationId,
-    ) {
+    const revocations = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const rows = yield* db
         .select()
         .from(accessRevocations)
@@ -353,9 +344,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
       return rows.map(toRevocation);
     });
 
-    const revocationsForProject = Effect.fn("AccessPoliciesRepo.revocationsForProject")(function* (
-      projectId: ProjectId,
-    ) {
+    const revocationsForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* db
         .select({ revocation: accessRevocations })
         .from(accessRevocations)
@@ -383,7 +372,7 @@ export const AccessPoliciesRepoLive: Layer.Layer<AccessPoliciesRepo, never, Mend
       return rows.map((row) => toRevocation(row.revocation));
     });
 
-    const worktreesFrom = Effect.fn("AccessPoliciesRepo.worktreesFrom")(function* (
+    const worktreesFrom = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       policyId: AccessPolicyId | null,
     ) {

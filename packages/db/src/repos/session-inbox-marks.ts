@@ -55,10 +55,7 @@ export const SessionInboxMarksRepoLive: Layer.Layer<SessionInboxMarksRepo, never
     Effect.gen(function* () {
       const db = yield* MendDB;
 
-      const forUser = Effect.fn("SessionInboxMarksRepo.forUser")(function* (
-        userId: string,
-        now: Date,
-      ) {
+      const forUser = Effect.fnUntraced(function* (userId: string, now: Date) {
         return yield* db
           .select(selected)
           .from(sessionInboxMarks)
@@ -71,7 +68,7 @@ export const SessionInboxMarksRepoLive: Layer.Layer<SessionInboxMarksRepo, never
           .pipe(Effect.orDie);
       });
 
-      const set = Effect.fn("SessionInboxMarksRepo.set")(function* (
+      const set = Effect.fnUntraced(function* (
         userId: string,
         sessionId: SessionId,
         change: SessionInboxMarkChange,

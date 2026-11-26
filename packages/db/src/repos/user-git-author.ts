@@ -36,7 +36,7 @@ export const UserGitAuthorRepoLive: Layer.Layer<UserGitAuthorRepo, never, PgClie
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
 
-      const resolve = Effect.fn("UserGitAuthorRepo.resolve")(function* (userId: string) {
+      const resolve = Effect.fnUntraced(function* (userId: string) {
         // better-auth owns `user` (plain SQL, like UsersRepo); the setting sits beside it.
         const rows = yield* sql`
           SELECT u.name AS "accountName", u.email AS "accountEmail", a.name, a.email
@@ -55,7 +55,7 @@ export const UserGitAuthorRepoLive: Layer.Layer<UserGitAuthorRepo, never, PgClie
             });
       });
 
-      const set = Effect.fn("UserGitAuthorRepo.set")(function* (userId: string, author: GitAuthor) {
+      const set = Effect.fnUntraced(function* (userId: string, author: GitAuthor) {
         yield* sql`
           INSERT INTO user_git_author (user_id, name, email)
           VALUES (${userId}, ${author.name}, ${author.email})
@@ -63,7 +63,7 @@ export const UserGitAuthorRepoLive: Layer.Layer<UserGitAuthorRepo, never, PgClie
           SET name = excluded.name, email = excluded.email, updated_at = now()`.pipe(Effect.orDie);
       });
 
-      const clear = Effect.fn("UserGitAuthorRepo.clear")(function* (userId: string) {
+      const clear = Effect.fnUntraced(function* (userId: string) {
         yield* sql`DELETE FROM user_git_author WHERE user_id = ${userId}`.pipe(Effect.orDie);
       });
 

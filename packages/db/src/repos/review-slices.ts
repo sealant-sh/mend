@@ -119,7 +119,7 @@ export const ReviewSlicesRepoLive: Layer.Layer<ReviewSlicesRepo, never, MendDB> 
           ),
         );
 
-    const byIdempotencyKey = Effect.fn("ReviewSlicesRepo.byIdempotencyKey")(function* (
+    const byIdempotencyKey = Effect.fnUntraced(function* (
       changeId: ChangeId,
       idempotencyKey: string,
     ) {
@@ -134,7 +134,7 @@ export const ReviewSlicesRepoLive: Layer.Layer<ReviewSlicesRepo, never, MendDB> 
       return row === undefined ? null : toReviewSlice(row);
     });
 
-    const create = Effect.fn("ReviewSlicesRepo.create")(function* (slice: NewReviewSlice) {
+    const create = Effect.fnUntraced(function* (slice: NewReviewSlice) {
       const [row] = yield* db
         .insert(reviewSlices)
         .values({ id: ReviewSliceId.make(crypto.randomUUID()), ...slice })
@@ -149,7 +149,7 @@ export const ReviewSlicesRepoLive: Layer.Layer<ReviewSlicesRepo, never, MendDB> 
       return existing;
     });
 
-    const byId = Effect.fn("ReviewSlicesRepo.byId")(function* (id: ReviewSliceId) {
+    const byId = Effect.fnUntraced(function* (id: ReviewSliceId) {
       const [row] = yield* db
         .select()
         .from(reviewSlices)
@@ -159,9 +159,7 @@ export const ReviewSlicesRepoLive: Layer.Layer<ReviewSlicesRepo, never, MendDB> 
       return row === undefined ? null : toReviewSlice(row);
     });
 
-    const latestForChange = Effect.fn("ReviewSlicesRepo.latestForChange")(function* (
-      changeId: ChangeId,
-    ) {
+    const latestForChange = Effect.fnUntraced(function* (changeId: ChangeId) {
       const [row] = yield* db
         .select()
         .from(reviewSlices)

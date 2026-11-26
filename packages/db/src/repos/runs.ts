@@ -69,7 +69,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
     const db = yield* MendDB;
     const sql = yield* PgClient.PgClient;
 
-    const issueIdOf = Effect.fn("RunsRepo.issueIdOf")(function* (id: RunId) {
+    const issueIdOf = Effect.fnUntraced(function* (id: RunId) {
       const [row] = yield* db
         .select({ issueId: runs.issueId })
         .from(runs)
@@ -79,7 +79,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
       return row?.issueId ?? "";
     });
 
-    const create = Effect.fn("RunsRepo.create")(function* (issueId: IssueId, kind: RunKind) {
+    const create = Effect.fnUntraced(function* (issueId: IssueId, kind: RunKind) {
       const [row] = yield* db
         .insert(runs)
         .values({ id: RunId.make(crypto.randomUUID()), issueId, kind })
@@ -91,7 +91,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
       return run;
     });
 
-    const byId = Effect.fn("RunsRepo.byId")(function* (id: RunId) {
+    const byId = Effect.fnUntraced(function* (id: RunId) {
       const [row] = yield* db
         .select()
         .from(runs)
@@ -102,7 +102,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
       return yield* decodeRow(row);
     });
 
-    const listForIssue = Effect.fn("RunsRepo.listForIssue")(function* (issueId: IssueId) {
+    const listForIssue = Effect.fnUntraced(function* (issueId: IssueId) {
       const rows = yield* db
         .select()
         .from(runs)
@@ -112,7 +112,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
       return yield* Effect.forEach(rows, decodeRow);
     });
 
-    const listUnsettled = Effect.fn("RunsRepo.listUnsettled")(function* () {
+    const listUnsettled = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select()
         .from(runs)
@@ -122,7 +122,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
       return yield* Effect.forEach(rows, decodeRow);
     });
 
-    const setSealantIds = Effect.fn("RunsRepo.setSealantIds")(function* (
+    const setSealantIds = Effect.fnUntraced(function* (
       id: RunId,
       sealantRunId: SealantRunId,
       workspaceId: SealantWorkspaceId,
@@ -138,7 +138,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
         .pipe(Effect.orDie);
     });
 
-    const setStatus = Effect.fn("RunsRepo.setStatus")(function* (id: RunId, status: RunStatus) {
+    const setStatus = Effect.fnUntraced(function* (id: RunId, status: RunStatus) {
       yield* db
         .update(runs)
         .set({
@@ -152,7 +152,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
       yield* notifyEvent(sql, { type: "run", runId: id, issueId });
     });
 
-    const linkChange = Effect.fn("RunsRepo.linkChange")(function* (id: RunId, changeId: ChangeId) {
+    const linkChange = Effect.fnUntraced(function* (id: RunId, changeId: ChangeId) {
       yield* db
         .update(runs)
         .set({ changeId, updatedAt: yield* DateTime.nowAsDate })
@@ -160,10 +160,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
         .pipe(Effect.orDie);
     });
 
-    const saveLastSeenSequence = Effect.fn("RunsRepo.saveLastSeenSequence")(function* (
-      id: RunId,
-      sequence: bigint,
-    ) {
+    const saveLastSeenSequence = Effect.fnUntraced(function* (id: RunId, sequence: bigint) {
       yield* db
         .update(runs)
         .set({ lastSeenSequence: sequence, updatedAt: yield* DateTime.nowAsDate })
@@ -171,7 +168,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
         .pipe(Effect.orDie);
     });
 
-    const settle = Effect.fn("RunsRepo.settle")(function* (
+    const settle = Effect.fnUntraced(function* (
       id: RunId,
       outcome: RunOutcome,
       summary: string | null,
@@ -186,10 +183,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
       yield* notifyEvent(sql, { type: "run", runId: id, issueId });
     });
 
-    const saveFailureBrief = Effect.fn("RunsRepo.saveFailureBrief")(function* (
-      id: RunId,
-      brief: FailureBrief,
-    ) {
+    const saveFailureBrief = Effect.fnUntraced(function* (id: RunId, brief: FailureBrief) {
       const encoded = yield* Schema.encodeEffect(FailureBrief)(brief).pipe(Effect.orDie);
       yield* db
         .update(runs)

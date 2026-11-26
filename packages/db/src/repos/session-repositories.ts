@@ -115,9 +115,7 @@ export const SessionRepositoriesRepoLive: Layer.Layer<
     const pg = yield* PgClient.PgClient;
 
     // The session changed: its detail lists repositories, so clients re-read it (events.ts).
-    const announce = Effect.fn("SessionRepositoriesRepo.announce")(function* (row: {
-      readonly sessionId: SessionId;
-    }) {
+    const announce = Effect.fnUntraced(function* (row: { readonly sessionId: SessionId }) {
       const [session] = yield* db
         .select({ projectId: agentSessions.projectId })
         .from(agentSessions)
@@ -132,9 +130,7 @@ export const SessionRepositoriesRepoLive: Layer.Layer<
       });
     });
 
-    const create = Effect.fn("SessionRepositoriesRepo.create")(function* (
-      input: NewSessionRepository,
-    ) {
+    const create = Effect.fnUntraced(function* (input: NewSessionRepository) {
       const [row] = yield* db
         .insert(sessionRepositories)
         .values({ id: SessionRepositoryId.make(crypto.randomUUID()), ...input })
@@ -153,7 +149,7 @@ export const SessionRepositoriesRepoLive: Layer.Layer<
       return toSessionRepository(row);
     });
 
-    const byId = Effect.fn("SessionRepositoriesRepo.byId")(function* (id: SessionRepositoryId) {
+    const byId = Effect.fnUntraced(function* (id: SessionRepositoryId) {
       const [row] = yield* db
         .select()
         .from(sessionRepositories)
@@ -164,10 +160,7 @@ export const SessionRepositoriesRepoLive: Layer.Layer<
       return toSessionRepository(row);
     });
 
-    const byName = Effect.fn("SessionRepositoriesRepo.byName")(function* (
-      sessionId: SessionId,
-      name: string,
-    ) {
+    const byName = Effect.fnUntraced(function* (sessionId: SessionId, name: string) {
       const [row] = yield* db
         .select()
         .from(sessionRepositories)
@@ -179,9 +172,7 @@ export const SessionRepositoriesRepoLive: Layer.Layer<
       return row === undefined ? null : toSessionRepository(row);
     });
 
-    const listForSession = Effect.fn("SessionRepositoriesRepo.listForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const listForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* db
         .select()
         .from(sessionRepositories)
@@ -191,9 +182,7 @@ export const SessionRepositoriesRepoLive: Layer.Layer<
       return rows.map(toSessionRepository);
     });
 
-    const listForWorktree = Effect.fn("SessionRepositoriesRepo.listForWorktree")(function* (
-      worktreeId: WorktreeId,
-    ) {
+    const listForWorktree = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const rows = yield* db
         .select()
         .from(sessionRepositories)
@@ -203,9 +192,7 @@ export const SessionRepositoriesRepoLive: Layer.Layer<
       return rows.map(toSessionRepository);
     });
 
-    const listForProject = Effect.fn("SessionRepositoriesRepo.listForProject")(function* (
-      projectId: ProjectId,
-    ) {
+    const listForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* db
         .select()
         .from(sessionRepositories)
@@ -215,7 +202,7 @@ export const SessionRepositoriesRepoLive: Layer.Layer<
       return rows.map(toSessionRepository);
     });
 
-    const setState = Effect.fn("SessionRepositoriesRepo.setState")(function* (
+    const setState = Effect.fnUntraced(function* (
       id: SessionRepositoryId,
       state: SessionRepositoryState,
       error: string | null,
@@ -235,7 +222,7 @@ export const SessionRepositoriesRepoLive: Layer.Layer<
       if (row !== undefined) yield* announce(row);
     });
 
-    const remove = Effect.fn("SessionRepositoriesRepo.remove")(function* (id: SessionRepositoryId) {
+    const remove = Effect.fnUntraced(function* (id: SessionRepositoryId) {
       const [row] = yield* db
         .delete(sessionRepositories)
         .where(eq(sessionRepositories.id, id))

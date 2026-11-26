@@ -1616,7 +1616,7 @@ export const SealantClientsLive: Layer.Layer<
     // not kept, so a transient outage at first use does not poison the user.
     const clients = new Map<string, SealantClientShape>();
     const building = new Map<string, Effect.Effect<SealantClientShape, SealantPlatformError>>();
-    const clientFor = Effect.fn("SealantClients.clientFor")(function* (sealantUserId: string) {
+    const clientFor = Effect.fnUntraced(function* (sealantUserId: string) {
       const ready = clients.get(sealantUserId);
       if (ready !== undefined) return ready;
       const inFlight = building.get(sealantUserId);
@@ -1633,7 +1633,7 @@ export const SealantClientsLive: Layer.Layer<
       return yield* build;
     });
 
-    const sealantUserIdFor = Effect.fn("SealantClients.sealantUserId")(function* (userId: string) {
+    const sealantUserIdFor = Effect.fnUntraced(function* (userId: string) {
       const recorded = yield* identities.sealantUserId(userId);
       if (recorded !== null) return recorded;
       const user = yield* identities.user(userId);
@@ -1652,12 +1652,12 @@ export const SealantClientsLive: Layer.Layer<
       return ensured.userId;
     });
 
-    const forUser = Effect.fn("SealantClients.forUser")(function* (userId: string) {
+    const forUser = Effect.fnUntraced(function* (userId: string) {
       const sealantUserId = yield* sealantUserIdFor(userId);
       return yield* clientFor(sealantUserId);
     });
 
-    const forPrincipal = Effect.fn("SealantClients.forPrincipal")(function* () {
+    const forPrincipal = Effect.fnUntraced(function* () {
       const principal = yield* SealantPrincipal;
       switch (principal.kind) {
         case "user":

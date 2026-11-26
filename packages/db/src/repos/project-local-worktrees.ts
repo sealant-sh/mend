@@ -25,7 +25,7 @@ export const ProjectLocalWorktreesRepoLive: Layer.Layer<
   ProjectLocalWorktreesRepo,
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
-    const find = Effect.fn("ProjectLocalWorktreesRepo.find")(function* (projectId: ProjectId) {
+    const find = Effect.fnUntraced(function* (projectId: ProjectId) {
       const [row] =
         yield* sql`SELECT worktree_id FROM project_local_worktrees WHERE project_id = ${projectId}`.pipe(
           Effect.orDie,
@@ -34,9 +34,7 @@ export const ProjectLocalWorktreesRepoLive: Layer.Layer<
         ? null
         : (yield* decodeAllocation(row).pipe(Effect.orDie)).worktreeId;
     });
-    const reserve = Effect.fn("ProjectLocalWorktreesRepo.reserve")(function* (
-      projectId: ProjectId,
-    ) {
+    const reserve = Effect.fnUntraced(function* (projectId: ProjectId) {
       const candidate = WorktreeId.make(crypto.randomUUID());
       const [row] = yield* sql`
         INSERT INTO project_local_worktrees (project_id, worktree_id)

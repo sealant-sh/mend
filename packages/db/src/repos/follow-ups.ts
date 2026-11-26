@@ -148,7 +148,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const byId = Effect.fn("FollowUpsRepo.byId")(function* (id: FollowUpId) {
+    const byId = Effect.fnUntraced(function* (id: FollowUpId) {
       const [row] = yield* db
         .select()
         .from(followUps)
@@ -158,10 +158,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
       return row === undefined ? null : toFollowUp(row);
     });
 
-    const byIdempotencyKey = Effect.fn("FollowUpsRepo.byIdempotencyKey")(function* (
-      sessionId: SessionId,
-      key: string,
-    ) {
+    const byIdempotencyKey = Effect.fnUntraced(function* (sessionId: SessionId, key: string) {
       const [row] = yield* db
         .select()
         .from(followUps)
@@ -190,9 +187,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
           ),
         );
 
-    const createOrGet = Effect.fn("FollowUpsRepo.createOrGet")(function* (
-      input: NewFollowUpBundle,
-    ) {
+    const createOrGet = Effect.fnUntraced(function* (input: NewFollowUpBundle) {
       const existing = yield* byIdempotencyKey(input.sessionId, input.idempotencyKey);
       if (existing !== null) return existing;
       return yield* db
@@ -221,9 +216,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
         .pipe(Effect.orDie);
     });
 
-    const activeForSession = Effect.fn("FollowUpsRepo.activeForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const activeForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [row] = yield* db
         .select()
         .from(followUps)
@@ -239,9 +232,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
       return row === undefined ? null : toFollowUp(row);
     });
 
-    const deliveringForSession = Effect.fn("FollowUpsRepo.deliveringForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const deliveringForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [row] = yield* db
         .select()
         .from(followUps)
@@ -252,9 +243,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
       return row === undefined ? null : toDeliveryAttempt(row);
     });
 
-    const attemptForFollowUp = Effect.fn("FollowUpsRepo.attemptForFollowUp")(function* (
-      id: FollowUpId,
-    ) {
+    const attemptForFollowUp = Effect.fnUntraced(function* (id: FollowUpId) {
       const [row] = yield* db
         .select()
         .from(followUps)
@@ -264,7 +253,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
       return row === undefined ? null : toDeliveryAttempt(row);
     });
 
-    const updateStatus = Effect.fn("FollowUpsRepo.updateStatus")(function* (
+    const updateStatus = Effect.fnUntraced(function* (
       id: FollowUpId,
       values: Partial<typeof followUps.$inferInsert>,
     ) {
@@ -287,7 +276,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
         deliveryLeaseExpiresAt: null,
       });
 
-    const claimDelivery = Effect.fn("FollowUpsRepo.claimDelivery")(function* (
+    const claimDelivery = Effect.fnUntraced(function* (
       id: FollowUpId,
       attemptId: string,
       leaseExpiresAt: Date,
@@ -307,7 +296,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
       return row === undefined ? null : toDeliveryAttempt(row);
     });
 
-    const renewClaim = Effect.fn("FollowUpsRepo.renewClaim")(function* (
+    const renewClaim = Effect.fnUntraced(function* (
       id: FollowUpId,
       attemptId: string,
       leaseExpiresAt: Date,
@@ -327,7 +316,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
       return rows.length === 1;
     });
 
-    const releaseClaim = Effect.fn("FollowUpsRepo.releaseClaim")(function* (
+    const releaseClaim = Effect.fnUntraced(function* (
       id: FollowUpId,
       attemptId: string,
       outcome:
@@ -364,7 +353,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
       return row === undefined ? null : toFollowUp(row);
     });
 
-    const reconcileDelivered = Effect.fn("FollowUpsRepo.reconcileDelivered")(function* (
+    const reconcileDelivered = Effect.fnUntraced(function* (
       id: FollowUpId,
       processId: SessionProcessId,
       sealantRunId: SealantRunId,
@@ -380,10 +369,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
       });
     });
 
-    const lastSentBy = Effect.fn("FollowUpsRepo.lastSentBy")(function* (
-      changeId: ChangeId,
-      userId: string,
-    ) {
+    const lastSentBy = Effect.fnUntraced(function* (changeId: ChangeId, userId: string) {
       const [row] = yield* db
         .select({
           id: followUps.id,
@@ -405,9 +391,7 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
       return { followUpId: row.id, checkpointBId: row.checkpointBId, sentAt: row.createdAt };
     });
 
-    const turnsForChange = Effect.fn("FollowUpsRepo.turnsForChange")(function* (
-      changeId: ChangeId,
-    ) {
+    const turnsForChange = Effect.fnUntraced(function* (changeId: ChangeId) {
       // A follow-up's turn carries `follow-up:<id>` as its launch correlation (FollowUpDelivery).
       const rows = yield* db
         .select({

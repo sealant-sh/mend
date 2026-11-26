@@ -179,7 +179,12 @@
 # launches state `transport.plaintext: true` for their local socket even when remote workspaces
 # require HTTPS. It changes no hot-pool, claim, retire, drain or discard call, so no action
 # changes. --quick tlx run at d893035c6f: every row as expected.
-sync d893035c6f440b0ef62434c131d278fdc0ee2da4
+# 9a01be0347 (SLNT-1375) turns hot-workspaces.ts's and session-processes.ts's Effect.fn("…")
+# methods, and six of engine.ts's lookups (recordReading, executorLaunchIdOf, leasedExecutorOf,
+# standbyPlaceholderOf, executorLayoutOf, readCaptureStatusOf), into Effect.fnUntraced: each runs
+# the same statements without a span of its own. Normalised for that wrapper and whitespace, the
+# three files are main's, so no action changes. Full tlx run at 9a01be0347: every row as expected.
+sync 9a01be034798e7e2e23c373283fbb1654b18290c
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

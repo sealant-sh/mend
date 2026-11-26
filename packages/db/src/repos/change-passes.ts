@@ -74,7 +74,7 @@ export const ChangePassesRepoLive: Layer.Layer<
     const db = yield* MendDB;
     const sql = yield* PgClient.PgClient;
 
-    const notify = Effect.fn("ChangePassesRepo.notify")(function* (changeId: ChangeId) {
+    const notify = Effect.fnUntraced(function* (changeId: ChangeId) {
       const [row] = yield* db
         .select({
           sessionId: worktreeChanges.sessionId,
@@ -96,10 +96,7 @@ export const ChangePassesRepoLive: Layer.Layer<
       });
     });
 
-    const queue = Effect.fn("ChangePassesRepo.queue")(function* (
-      changeId: ChangeId,
-      kind: PassKind,
-    ) {
+    const queue = Effect.fnUntraced(function* (changeId: ChangeId, kind: PassKind) {
       yield* db
         .insert(changePasses)
         .values({ changeId, kind, status: "queued", detail: null, findings: null })
@@ -118,10 +115,7 @@ export const ChangePassesRepoLive: Layer.Layer<
       yield* notify(changeId);
     });
 
-    const begin = Effect.fn("ChangePassesRepo.begin")(function* (
-      changeId: ChangeId,
-      kind: PassKind,
-    ) {
+    const begin = Effect.fnUntraced(function* (changeId: ChangeId, kind: PassKind) {
       const written = yield* db
         .insert(changePasses)
         .values({ changeId, kind, status: "running", detail: null, findings: null })
@@ -142,7 +136,7 @@ export const ChangePassesRepoLive: Layer.Layer<
       return true;
     });
 
-    const complete = Effect.fn("ChangePassesRepo.complete")(function* (
+    const complete = Effect.fnUntraced(function* (
       changeId: ChangeId,
       kind: PassKind,
       findings: number | null,
@@ -155,11 +149,7 @@ export const ChangePassesRepoLive: Layer.Layer<
       yield* notify(changeId);
     });
 
-    const fail = Effect.fn("ChangePassesRepo.fail")(function* (
-      changeId: ChangeId,
-      kind: PassKind,
-      detail: string,
-    ) {
+    const fail = Effect.fnUntraced(function* (changeId: ChangeId, kind: PassKind, detail: string) {
       yield* db
         .update(changePasses)
         .set({
@@ -172,9 +162,7 @@ export const ChangePassesRepoLive: Layer.Layer<
       yield* notify(changeId);
     });
 
-    const listForChange = Effect.fn("ChangePassesRepo.listForChange")(function* (
-      changeId: ChangeId,
-    ) {
+    const listForChange = Effect.fnUntraced(function* (changeId: ChangeId) {
       // Old workers could die or disappear without writing an outcome. Expire those rows
       // lazily with the same deadline as the worker, without touching queued/finished passes.
       const now = yield* DateTime.nowAsDate;
@@ -205,10 +193,7 @@ export const ChangePassesRepoLive: Layer.Layer<
       return yield* Effect.forEach(rows, decodeRow);
     });
 
-    const preparedDigest = Effect.fn("ChangePassesRepo.preparedDigest")(function* (
-      changeId: ChangeId,
-      kind: PassKind,
-    ) {
+    const preparedDigest = Effect.fnUntraced(function* (changeId: ChangeId, kind: PassKind) {
       const [row] = yield* db
         .select({ diffDigest: changeReviewPreps.diffDigest })
         .from(changeReviewPreps)
@@ -218,7 +203,7 @@ export const ChangePassesRepoLive: Layer.Layer<
       return row?.diffDigest ?? null;
     });
 
-    const recordPrep = Effect.fn("ChangePassesRepo.recordPrep")(function* (
+    const recordPrep = Effect.fnUntraced(function* (
       changeId: ChangeId,
       kind: PassKind,
       diffDigest: string,

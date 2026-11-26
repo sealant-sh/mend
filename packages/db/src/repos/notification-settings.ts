@@ -54,9 +54,7 @@ export const NotificationSettingsRepoLive: Layer.Layer<NotificationSettingsRepo,
     Effect.gen(function* () {
       const db = yield* MendDB;
 
-      const forUsers = Effect.fn("NotificationSettingsRepo.forUsers")(function* (
-        userIds: ReadonlyArray<string>,
-      ) {
+      const forUsers = Effect.fnUntraced(function* (userIds: ReadonlyArray<string>) {
         const settings = new Map<string, NotificationSettings>(
           userIds.map((userId) => [userId, DEFAULT_NOTIFICATION_SETTINGS]),
         );
@@ -70,15 +68,12 @@ export const NotificationSettingsRepoLive: Layer.Layer<NotificationSettingsRepo,
         return settings;
       });
 
-      const forUser = Effect.fn("NotificationSettingsRepo.forUser")(function* (userId: string) {
+      const forUser = Effect.fnUntraced(function* (userId: string) {
         const settings = yield* forUsers([userId]);
         return settings.get(userId) ?? DEFAULT_NOTIFICATION_SETTINGS;
       });
 
-      const set = Effect.fn("NotificationSettingsRepo.set")(function* (
-        userId: string,
-        settings: NotificationSettings,
-      ) {
+      const set = Effect.fnUntraced(function* (userId: string, settings: NotificationSettings) {
         const values = {
           slackSessions: settings.slackSessions,
           turnFinished: settings.turnFinished,

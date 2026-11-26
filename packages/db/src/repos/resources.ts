@@ -357,9 +357,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         .delete(resourceInstances)
         .where(instanceWhere(resourceId, worktreeId))
         .pipe(Effect.orDie, Effect.asVoid);
-    const listForProject = Effect.fn("ResourcesRepo.listForProject")(function* (
-      projectId: ProjectId,
-    ) {
+    const listForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* db
         .select({ identity: resourceDefinitions, instance: resourceInstances })
         .from(resourceDefinitions)
@@ -428,9 +426,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
           }),
         )
         .pipe(Effect.catchTags(queryErrorsDie));
-    const ownDatabases = Effect.fn("ResourcesRepo.ownDatabases")(function* (
-      worktreeId: WorktreeId,
-    ) {
+    const ownDatabases = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const rows = yield* db
         .select()
         .from(resourceOwnDatabases)
@@ -449,7 +445,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       );
     });
 
-    const ownDatabasesForWorktrees = Effect.fn("ResourcesRepo.ownDatabasesForWorktrees")(function* (
+    const ownDatabasesForWorktrees = Effect.fnUntraced(function* (
       worktreeIds: ReadonlyArray<WorktreeId>,
     ) {
       const result = new Map<WorktreeId, Map<ResourceDefinitionId, OwnDatabaseOrigin>>();
@@ -549,7 +545,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         .where(and(ownKey(worktreeId, definitionId), isNull(resourceOwnDatabases.removedAt)))
         .pipe(Effect.orDie, Effect.asVoid);
 
-    const recordOwnDatabase = Effect.fn("ResourcesRepo.recordOwnDatabase")(function* (
+    const recordOwnDatabase = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       origin: OwnDatabaseOrigin["kind"],
@@ -564,7 +560,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         .pipe(Effect.orDie);
     });
 
-    const bindingRows = Effect.fn("ResourcesRepo.bindingRows")(function* (
+    const bindingRows = Effect.fnUntraced(function* (
       projectId: ProjectId,
       worktreeId: WorktreeId,
     ): Effect.fn.Return<ResourceBindingRows> {
@@ -610,7 +606,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         return definition === undefined ? [] : [{ definition, choice }];
       });
 
-    const listWithChoices = Effect.fn("ResourcesRepo.listWithChoices")(function* (
+    const listWithChoices = Effect.fnUntraced(function* (
       projectId: ProjectId,
       worktreeId: WorktreeId | null,
     ) {
@@ -623,7 +619,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       const rows = yield* bindingRows(projectId, worktreeId);
       return choicesOf(instances, rows);
     });
-    const listForWorktrees = Effect.fn("ResourcesRepo.listForWorktrees")(function* (
+    const listForWorktrees = Effect.fnUntraced(function* (
       projectId: ProjectId,
       worktreeIds: ReadonlyArray<WorktreeId>,
     ) {

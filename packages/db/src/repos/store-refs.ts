@@ -70,7 +70,7 @@ export const StoreRefsRepoLive: Layer.Layer<StoreRefsRepo, never, PgClient.PgCli
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
 
-    const list = Effect.fn("StoreRefsRepo.list")(function* (projectId: ProjectId) {
+    const list = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* sql<StoreRefRecord>`
           SELECT project_id, name, sha, version, updated_at
             FROM store_refs WHERE project_id = ${projectId}
@@ -78,14 +78,14 @@ export const StoreRefsRepoLive: Layer.Layer<StoreRefsRepo, never, PgClient.PgCli
       return rows.map(toStoreRef);
     });
 
-    const get = Effect.fn("StoreRefsRepo.get")(function* (projectId: ProjectId, name: string) {
+    const get = Effect.fnUntraced(function* (projectId: ProjectId, name: string) {
       const [row] = yield* sql<StoreRefRecord>`
           SELECT project_id, name, sha, version, updated_at
             FROM store_refs WHERE project_id = ${projectId} AND name = ${name}`.pipe(Effect.orDie);
       return row === undefined ? null : toStoreRef(row);
     });
 
-    const set = Effect.fn("StoreRefsRepo.set")(function* (
+    const set = Effect.fnUntraced(function* (
       projectId: ProjectId,
       name: string,
       sha: Sha,
@@ -110,7 +110,7 @@ export const StoreRefsRepoLive: Layer.Layer<StoreRefsRepo, never, PgClient.PgCli
       return toStoreRef(row);
     });
 
-    const remove = Effect.fn("StoreRefsRepo.remove")(function* (
+    const remove = Effect.fnUntraced(function* (
       projectId: ProjectId,
       name: string,
       seenVersion: number,
@@ -124,7 +124,7 @@ export const StoreRefsRepoLive: Layer.Layer<StoreRefsRepo, never, PgClient.PgCli
       }
     });
 
-    const refsMap = Effect.fn("StoreRefsRepo.refsMap")(function* (projectId: ProjectId) {
+    const refsMap = Effect.fnUntraced(function* (projectId: ProjectId) {
       const refs = yield* list(projectId);
       return Object.fromEntries(refs.map((ref) => [ref.name, ref.sha]));
     });

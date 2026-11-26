@@ -14,16 +14,14 @@ export const SealantIdentityStoreLive: Layer.Layer<SealantIdentityStore, never, 
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
 
-      const user = Effect.fn("SealantIdentityStore.user")(function* (userId: string) {
+      const user = Effect.fnUntraced(function* (userId: string) {
         const rows = yield* sql<MendUserRecord>`
         SELECT id, email, name FROM "user" WHERE id = ${userId} LIMIT 1`.pipe(Effect.orDie);
         const row = rows[0];
         return row === undefined ? null : { id: row.id, email: row.email, name: row.name };
       });
 
-      const sealantUserId = Effect.fn("SealantIdentityStore.sealantUserId")(function* (
-        userId: string,
-      ) {
+      const sealantUserId = Effect.fnUntraced(function* (userId: string) {
         const rows = yield* sql<{ readonly sealantUserId: string }>`
         SELECT sealant_user_id FROM user_sealant_identities WHERE user_id = ${userId} LIMIT 1`.pipe(
           Effect.orDie,
@@ -31,10 +29,7 @@ export const SealantIdentityStoreLive: Layer.Layer<SealantIdentityStore, never, 
         return rows[0]?.sealantUserId ?? null;
       });
 
-      const record = Effect.fn("SealantIdentityStore.record")(function* (
-        userId: string,
-        sealantId: string,
-      ) {
+      const record = Effect.fnUntraced(function* (userId: string, sealantId: string) {
         yield* sql`
         INSERT INTO user_sealant_identities (user_id, sealant_user_id)
         VALUES (${userId}, ${sealantId})

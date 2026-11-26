@@ -28,7 +28,7 @@ const makeDopplerRepo: Effect.Effect<DopplerRepo["Service"], never, MendDB> = Ef
   function* () {
     const db = yield* MendDB;
     return {
-      connection: Effect.fn("DopplerRepo.connection")(function* (userId: string) {
+      connection: Effect.fnUntraced(function* (userId: string) {
         const [row] = yield* db
           .select()
           .from(userDopplerConnections)
@@ -38,7 +38,7 @@ const makeDopplerRepo: Effect.Effect<DopplerRepo["Service"], never, MendDB> = Ef
           ? null
           : yield* Schema.decodeUnknownEffect(Connection)(row).pipe(Effect.orDie);
       }),
-      save: Effect.fn("DopplerRepo.save")(function* (userId: string, sealedToken: string) {
+      save: Effect.fnUntraced(function* (userId: string, sealedToken: string) {
         yield* db
           .insert(userDopplerConnections)
           .values({ userId, sealedToken })
@@ -48,7 +48,7 @@ const makeDopplerRepo: Effect.Effect<DopplerRepo["Service"], never, MendDB> = Ef
           })
           .pipe(Effect.orDie);
       }),
-      disconnect: Effect.fn("DopplerRepo.disconnect")(function* (userId: string) {
+      disconnect: Effect.fnUntraced(function* (userId: string) {
         const rows = yield* db
           .delete(userDopplerConnections)
           .where(eq(userDopplerConnections.userId, userId))
@@ -56,7 +56,7 @@ const makeDopplerRepo: Effect.Effect<DopplerRepo["Service"], never, MendDB> = Ef
           .pipe(Effect.orDie);
         return rows.length > 0;
       }),
-      mappings: Effect.fn("DopplerRepo.mappings")(function* (userId: string) {
+      mappings: Effect.fnUntraced(function* (userId: string) {
         const rows = yield* db
           .select()
           .from(userDopplerProjects)
@@ -66,7 +66,7 @@ const makeDopplerRepo: Effect.Effect<DopplerRepo["Service"], never, MendDB> = Ef
           Effect.orDie,
         );
       }),
-      use: Effect.fn("DopplerRepo.use")(function* (
+      use: Effect.fnUntraced(function* (
         userId: string,
         projectId: ProjectId,
         selection: DopplerSelection,
@@ -80,10 +80,7 @@ const makeDopplerRepo: Effect.Effect<DopplerRepo["Service"], never, MendDB> = Ef
           })
           .pipe(Effect.orDie);
       }),
-      removeMapping: Effect.fn("DopplerRepo.removeMapping")(function* (
-        userId: string,
-        projectId: ProjectId,
-      ) {
+      removeMapping: Effect.fnUntraced(function* (userId: string, projectId: ProjectId) {
         return (
           (yield* db
             .delete(userDopplerProjects)

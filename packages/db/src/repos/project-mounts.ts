@@ -44,7 +44,7 @@ export const ProjectMountsRepoLive: Layer.Layer<ProjectMountsRepo, never, MendDB
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const create = Effect.fn("ProjectMountsRepo.create")(function* (mount: NewProjectMount) {
+    const create = Effect.fnUntraced(function* (mount: NewProjectMount) {
       const [row] = yield* db
         .insert(projectMounts)
         .values({ id: ProjectMountId.make(crypto.randomUUID()), ...mount })
@@ -54,7 +54,7 @@ export const ProjectMountsRepoLive: Layer.Layer<ProjectMountsRepo, never, MendDB
       return toProjectMount(row);
     });
 
-    const byId = Effect.fn("ProjectMountsRepo.byId")(function* (id: ProjectMountId) {
+    const byId = Effect.fnUntraced(function* (id: ProjectMountId) {
       const [row] = yield* db
         .select()
         .from(projectMounts)
@@ -65,9 +65,7 @@ export const ProjectMountsRepoLive: Layer.Layer<ProjectMountsRepo, never, MendDB
       return toProjectMount(row);
     });
 
-    const listForProject = Effect.fn("ProjectMountsRepo.listForProject")(function* (
-      projectId: ProjectId,
-    ) {
+    const listForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* db
         .select()
         .from(projectMounts)
@@ -77,7 +75,7 @@ export const ProjectMountsRepoLive: Layer.Layer<ProjectMountsRepo, never, MendDB
       return rows.map(toProjectMount);
     });
 
-    const remove = Effect.fn("ProjectMountsRepo.remove")(function* (id: ProjectMountId) {
+    const remove = Effect.fnUntraced(function* (id: ProjectMountId) {
       yield* db.delete(projectMounts).where(eq(projectMounts.id, id)).pipe(Effect.orDie);
     });
 

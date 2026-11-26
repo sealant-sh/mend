@@ -56,7 +56,7 @@ export const BriefCommentsRepoLive: Layer.Layer<
     const db = yield* MendDB;
     const sql = yield* PgClient.PgClient;
 
-    const notify = Effect.fn("BriefCommentsRepo.notify")(function* (briefId: BriefId) {
+    const notify = Effect.fnUntraced(function* (briefId: BriefId) {
       const [row] = yield* db
         .select({ issueId: changes.issueId })
         .from(changes)
@@ -71,7 +71,7 @@ export const BriefCommentsRepoLive: Layer.Layer<
       });
     });
 
-    const create = Effect.fn("BriefCommentsRepo.create")(function* (input: {
+    const create = Effect.fnUntraced(function* (input: {
       readonly briefId: BriefId;
       readonly thread: string;
       readonly authorKind: CommentAuthorKind;
@@ -89,7 +89,7 @@ export const BriefCommentsRepoLive: Layer.Layer<
       return comment;
     });
 
-    const byId = Effect.fn("BriefCommentsRepo.byId")(function* (id: BriefCommentId) {
+    const byId = Effect.fnUntraced(function* (id: BriefCommentId) {
       const [row] = yield* db
         .select()
         .from(briefComments)
@@ -100,7 +100,7 @@ export const BriefCommentsRepoLive: Layer.Layer<
       return toComment(row);
     });
 
-    const listForBrief = Effect.fn("BriefCommentsRepo.listForBrief")(function* (briefId: BriefId) {
+    const listForBrief = Effect.fnUntraced(function* (briefId: BriefId) {
       const rows = yield* db
         .select()
         .from(briefComments)
@@ -110,7 +110,7 @@ export const BriefCommentsRepoLive: Layer.Layer<
       return rows.map(toComment);
     });
 
-    const setRouted = Effect.fn("BriefCommentsRepo.setRouted")(function* (
+    const setRouted = Effect.fnUntraced(function* (
       id: BriefCommentId,
       action: RoutedAction,
       runId: RunId | null,

@@ -73,7 +73,7 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const create = Effect.fn("ReferencesRepo.create")(function* (reference: NewReference) {
+    const create = Effect.fnUntraced(function* (reference: NewReference) {
       const [row] = yield* db
         .insert(referenceRepos)
         .values({
@@ -87,7 +87,7 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
       return toReference(row);
     });
 
-    const byId = Effect.fn("ReferencesRepo.byId")(function* (id: ReferenceId) {
+    const byId = Effect.fnUntraced(function* (id: ReferenceId) {
       const [row] = yield* db
         .select()
         .from(referenceRepos)
@@ -98,10 +98,7 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
       return toReference(row);
     });
 
-    const byName = Effect.fn("ReferencesRepo.byName")(function* (
-      organizationId: OrganizationId,
-      name: string,
-    ) {
+    const byName = Effect.fnUntraced(function* (organizationId: OrganizationId, name: string) {
       const [row] = yield* db
         .select()
         .from(referenceRepos)
@@ -113,14 +110,12 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
       return row === undefined ? null : toReference(row);
     });
 
-    const listAll = Effect.fn("ReferencesRepo.listAll")(function* () {
+    const listAll = Effect.fnUntraced(function* () {
       const rows = yield* db.select().from(referenceRepos).pipe(Effect.orDie);
       return rows.map(toReference);
     });
 
-    const listForOrganization = Effect.fn("ReferencesRepo.listForOrganization")(function* (
-      organizationId: OrganizationId,
-    ) {
+    const listForOrganization = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const rows = yield* db
         .select()
         .from(referenceRepos)
@@ -130,7 +125,7 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
       return rows.map(toReference);
     });
 
-    const byIdsInOrganization = Effect.fn("ReferencesRepo.byIdsInOrganization")(function* (
+    const byIdsInOrganization = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       ids: ReadonlyArray<ReferenceId>,
     ) {
@@ -148,11 +143,11 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
       return rows.map(toReference);
     });
 
-    const remove = Effect.fn("ReferencesRepo.remove")(function* (id: ReferenceId) {
+    const remove = Effect.fnUntraced(function* (id: ReferenceId) {
       yield* db.delete(referenceRepos).where(eq(referenceRepos.id, id)).pipe(Effect.orDie);
     });
 
-    const setHead = Effect.fn("ReferencesRepo.setHead")(function* (id: ReferenceId, head: Sha) {
+    const setHead = Effect.fnUntraced(function* (id: ReferenceId, head: Sha) {
       const now = yield* DateTime.nowAsDate;
       yield* db
         .update(referenceRepos)
@@ -161,9 +156,7 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
         .pipe(Effect.orDie);
     });
 
-    const listForProject = Effect.fn("ReferencesRepo.listForProject")(function* (
-      projectId: ProjectId,
-    ) {
+    const listForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* db
         .select({ reference: referenceRepos })
         .from(referenceRepos)
@@ -174,7 +167,7 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
       return rows.map(({ reference }) => toReference(reference));
     });
 
-    const setForProject = Effect.fn("ReferencesRepo.setForProject")(function* (
+    const setForProject = Effect.fnUntraced(function* (
       projectId: ProjectId,
       referenceIds: ReadonlyArray<ReferenceId>,
     ) {

@@ -4963,7 +4963,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * starts). A final flush's answer also leaves why it did not complete, with what sealantd
        * named behind it.
        */
-      const recordReading = Effect.fn("SessionEngine.recordReading")(function* (
+      const recordReading = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: string,
         reading: CaptureReading,
@@ -5185,7 +5185,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * A status read of a running session's own executor, at most once per `minIntervalMs`:
        * the executor holds the worktree's live lease and nothing is draining it.
        */
-      const readCaptureStatusOf = Effect.fn("SessionEngine.readCaptureStatusOf")(function* (
+      const readCaptureStatusOf = Effect.fnUntraced(function* (
         sessionId: SessionId,
         minIntervalMs: number,
       ) {
@@ -5609,7 +5609,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * channel token was issued for, and its epoch: held by `session`, or by the session whose
        * workspace it is. Null once released, or when another executor holds the worktree.
        */
-      const leasedExecutorOf = Effect.fn("SessionEngine.leasedExecutorOf")(function* (
+      const leasedExecutorOf = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -5635,7 +5635,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * row names that workspace, else the lease holder's whose workspace it is. Null when
        * neither names one.
        */
-      const executorLaunchIdOf = Effect.fn("SessionEngine.executorLaunchIdOf")(function* (
+      const executorLaunchIdOf = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -5684,7 +5684,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the synthetic epoch it booted under — its pool row's creation, which its claim recorded as
        * the executor's start. Null for any other executor, or when its start is not that one.
        */
-      const standbyPlaceholderOf = Effect.fn("SessionEngine.standbyPlaceholderOf")(function* (
+      const standbyPlaceholderOf = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -11382,7 +11382,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * The layout of the executor a session's process ran in: its launch's, else the worktree's
        * own, which a `person` worktree never leaves.
        */
-      const executorLayoutOf = Effect.fn("SessionEngine.executorLayoutOf")(function* (
+      const executorLayoutOf = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId | null,
       ) {

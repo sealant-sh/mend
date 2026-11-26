@@ -241,9 +241,7 @@ export const PreviewPreparationsRepoLive: Layer.Layer<
     const db = yield* MendDB;
     const pg = yield* PgClient.PgClient;
 
-    const notifyWorktree = Effect.fn("PreviewPreparationsRepo.notifyWorktree")(function* (
-      worktreeId: WorktreeId,
-    ) {
+    const notifyWorktree = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const [row] = yield* db
         .select({ projectId: worktrees.projectId })
         .from(worktrees)
@@ -254,9 +252,7 @@ export const PreviewPreparationsRepoLive: Layer.Layer<
       }
     });
 
-    const undecided = Effect.fn("PreviewPreparationsRepo.undecided")(function* (
-      sessionId: SessionId,
-    ) {
+    const undecided = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* db
         .select({ id: agentTurns.id })
         .from(agentTurns)
@@ -272,10 +268,7 @@ export const PreviewPreparationsRepoLive: Layer.Layer<
       return rows.map((row) => row.id);
     }, Effect.orDie);
 
-    const claim = Effect.fn("PreviewPreparationsRepo.claim")(function* (
-      turnId: AgentTurnId,
-      leaseMs: number,
-    ) {
+    const claim = Effect.fnUntraced(function* (turnId: AgentTurnId, leaseMs: number) {
       const [turn] = yield* db
         .select({ sessionId: agentTurns.sessionId, worktreeId: agentSessions.worktreeId })
         .from(agentTurns)
@@ -318,10 +311,7 @@ export const PreviewPreparationsRepoLive: Layer.Layer<
       return row === undefined ? null : claimOf(row);
     }, Effect.orDie);
 
-    const renew = Effect.fn("PreviewPreparationsRepo.renew")(function* (
-      held_: PreviewPreparationClaim,
-      leaseMs: number,
-    ) {
+    const renew = Effect.fnUntraced(function* (held_: PreviewPreparationClaim, leaseMs: number) {
       const rows = yield* db
         .update(previewPreparations)
         .set({ leaseUntil: leaseEnd(leaseMs) })
@@ -330,7 +320,7 @@ export const PreviewPreparationsRepoLive: Layer.Layer<
       return rows.length === 1;
     }, Effect.orDie);
 
-    const left = Effect.fn("PreviewPreparationsRepo.left")(function* (sessionId: SessionId) {
+    const left = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* db
         .select({ turnId: previewPreparations.turnId, state: previewPreparations.state })
         .from(previewPreparations)
@@ -348,7 +338,7 @@ export const PreviewPreparationsRepoLive: Layer.Layer<
       );
     }, Effect.orDie);
 
-    const progress = Effect.fn("PreviewPreparationsRepo.progress")(function* (
+    const progress = Effect.fnUntraced(function* (
       held_: PreviewPreparationClaim,
       update: PreviewPreparationProgress,
     ) {
@@ -396,7 +386,7 @@ export const PreviewPreparationsRepoLive: Layer.Layer<
       return outcome;
     });
 
-    const decide = Effect.fn("PreviewPreparationsRepo.decide")(function* (
+    const decide = Effect.fnUntraced(function* (
       held_: PreviewPreparationClaim,
       decision: PreviewPreparationDecision,
     ) {
@@ -409,9 +399,7 @@ export const PreviewPreparationsRepoLive: Layer.Layer<
       return rows.length === 1;
     }, Effect.orDie);
 
-    const latestForWorktree = Effect.fn("PreviewPreparationsRepo.latestForWorktree")(function* (
-      worktreeId: WorktreeId,
-    ) {
+    const latestForWorktree = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const [row] = yield* db
         .select()
         .from(previewPreparations)

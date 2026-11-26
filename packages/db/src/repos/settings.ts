@@ -60,13 +60,11 @@ export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.
     const db = yield* MendDB;
     const builtIn = yield* BuiltInSettings;
 
-    const get = Effect.fn("SettingsRepo.get")(function* () {
+    const get = Effect.fnUntraced(function* () {
       return yield* readInstanceSettings(db, builtIn);
     });
 
-    const modify = Effect.fn("SettingsRepo.modify")(function* (
-      update: (current: MendSettings) => MendSettings,
-    ) {
+    const modify = Effect.fnUntraced(function* (update: (current: MendSettings) => MendSettings) {
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -96,9 +94,7 @@ export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.
         .pipe(Effect.orDie);
     });
 
-    const forOrganization = Effect.fn("SettingsRepo.forOrganization")(function* (
-      organizationId: OrganizationId,
-    ) {
+    const forOrganization = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const instance = yield* get();
       const [row] = yield* db
         .select()
@@ -116,7 +112,7 @@ export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.
       );
     });
 
-    const forPerson = Effect.fn("SettingsRepo.forPerson")(function* (
+    const forPerson = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       userId: string | null,
     ) {

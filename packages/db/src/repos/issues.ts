@@ -46,7 +46,7 @@ export const IssuesRepoLive: Layer.Layer<IssuesRepo, never, MendDB | PgClient.Pg
       const db = yield* MendDB;
       const sql = yield* PgClient.PgClient;
 
-      const updateStage = Effect.fn("IssuesRepo.updateStage")(function* (
+      const updateStage = Effect.fnUntraced(function* (
         id: IssueId,
         stage: IssueStage,
         options?: { readonly failureRunId?: RunId },
@@ -70,10 +70,7 @@ export const IssuesRepoLive: Layer.Layer<IssuesRepo, never, MendDB | PgClient.Pg
       });
 
       /** Renumbers the queue with `id` at `index` (appends when null). */
-      const placeInQueue = Effect.fn("IssuesRepo.placeInQueue")(function* (
-        id: IssueId,
-        index: number | null,
-      ) {
+      const placeInQueue = Effect.fnUntraced(function* (id: IssueId, index: number | null) {
         const issue = yield* db
           .transaction((tx) =>
             Effect.gen(function* () {
@@ -117,7 +114,7 @@ export const IssuesRepoLive: Layer.Layer<IssuesRepo, never, MendDB | PgClient.Pg
         return issue;
       });
 
-      const create = Effect.fn("IssuesRepo.create")(function* (input: NewIssue) {
+      const create = Effect.fnUntraced(function* (input: NewIssue) {
         const [row] = yield* db
           .insert(issues)
           .values({ id: IssueId.make(crypto.randomUUID()), ...input })
@@ -129,7 +126,7 @@ export const IssuesRepoLive: Layer.Layer<IssuesRepo, never, MendDB | PgClient.Pg
         return issue;
       });
 
-      const list = Effect.fn("IssuesRepo.list")(function* () {
+      const list = Effect.fnUntraced(function* () {
         const rows = yield* db
           .select()
           .from(issues)
@@ -138,7 +135,7 @@ export const IssuesRepoLive: Layer.Layer<IssuesRepo, never, MendDB | PgClient.Pg
         return rows.map(toIssue);
       });
 
-      const byId = Effect.fn("IssuesRepo.byId")(function* (id: IssueId) {
+      const byId = Effect.fnUntraced(function* (id: IssueId) {
         const [row] = yield* db
           .select()
           .from(issues)
@@ -149,24 +146,19 @@ export const IssuesRepoLive: Layer.Layer<IssuesRepo, never, MendDB | PgClient.Pg
         return toIssue(row);
       });
 
-      const move = Effect.fn("IssuesRepo.move")(function* (id: IssueId, queueMove: QueueMove) {
+      const move = Effect.fnUntraced(function* (id: IssueId, queueMove: QueueMove) {
         if (queueMove.stage === "queued") return yield* placeInQueue(id, queueMove.position);
         return yield* updateStage(id, "triage");
       });
 
-      const markMending = Effect.fn("IssuesRepo.markMending")((id: IssueId) =>
-        updateStage(id, "mending"),
-      );
+      const markMending = (id: IssueId) => updateStage(id, "mending");
 
-      const markReview = Effect.fn("IssuesRepo.markReview")((id: IssueId) =>
-        updateStage(id, "review"),
-      );
+      const markReview = (id: IssueId) => updateStage(id, "review");
 
-      const returnToTriage = Effect.fn("IssuesRepo.returnToTriage")(
-        (id: IssueId, failureRunId: RunId) => updateStage(id, "triage", { failureRunId }),
-      );
+      const returnToTriage = (id: IssueId, failureRunId: RunId) =>
+        updateStage(id, "triage", { failureRunId });
 
-      const topOfQueued = Effect.fn("IssuesRepo.topOfQueued")(function* () {
+      const topOfQueued = Effect.fnUntraced(function* () {
         const [row] = yield* db
           .select()
           .from(issues)
@@ -178,7 +170,7 @@ export const IssuesRepoLive: Layer.Layer<IssuesRepo, never, MendDB | PgClient.Pg
         return Option.some(toIssue(row));
       });
 
-      const countByStage = Effect.fn("IssuesRepo.countByStage")(function* (stage: IssueStage) {
+      const countByStage = Effect.fnUntraced(function* (stage: IssueStage) {
         const [row] = yield* db
           .select({ count: count() })
           .from(issues)

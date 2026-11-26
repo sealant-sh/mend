@@ -98,9 +98,7 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
           })),
         );
 
-      const get = Effect.fn("OrganizationSettingsRepo.get")(function* (
-        organizationId: OrganizationId,
-      ) {
+      const get = Effect.fnUntraced(function* (organizationId: OrganizationId) {
         const read = db
           .select()
           .from(organizationSettingsTable)
@@ -119,7 +117,7 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
         return yield* organizationSettingsFromRow(written);
       });
 
-      const set = Effect.fn("OrganizationSettingsRepo.set")(function* (
+      const set = Effect.fnUntraced(function* (
         organizationId: OrganizationId,
         settings: OrganizationSettings,
       ) {
@@ -135,7 +133,7 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
         return settings;
       });
 
-      const modify = Effect.fn("OrganizationSettingsRepo.modify")(function* (
+      const modify = Effect.fnUntraced(function* (
         organizationId: OrganizationId,
         update: (current: OrganizationSettings) => OrganizationSettings,
       ) {
@@ -166,9 +164,7 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
           .pipe(Effect.orDie);
       });
 
-      const sessionRuntime = Effect.fn("OrganizationSettingsRepo.sessionRuntime")(function* (
-        organizationId: OrganizationId,
-      ) {
+      const sessionRuntime = Effect.fnUntraced(function* (organizationId: OrganizationId) {
         const [row] = yield* db
           .select({ sessionRuntime: organizationSettingsTable.sessionRuntime })
           .from(organizationSettingsTable)
@@ -178,7 +174,7 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
         return row?.sessionRuntime ?? null;
       });
 
-      const setSessionRuntime = Effect.fn("OrganizationSettingsRepo.setSessionRuntime")(function* (
+      const setSessionRuntime = Effect.fnUntraced(function* (
         organizationId: OrganizationId,
         runtime: SessionRuntime | null,
       ) {

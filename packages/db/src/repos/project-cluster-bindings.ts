@@ -152,9 +152,7 @@ export const ProjectClusterBindingsRepoLive: Layer.Layer<
     const db = yield* MendDB;
     const sqlClient = yield* PgClient.PgClient;
 
-    const snapshot = Effect.fn("ProjectClusterBindingsRepo.snapshot")(function* (
-      projectId: ProjectId,
-    ) {
+    const snapshot = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* db
         .select({
           clusterBindingRevision: projects.clusterBindingRevision,
@@ -175,7 +173,7 @@ export const ProjectClusterBindingsRepoLive: Layer.Layer<
       });
     });
 
-    const add = Effect.fn("ProjectClusterBindingsRepo.add")(function* (
+    const add = Effect.fnUntraced(function* (
       projectId: ProjectId,
       input: { readonly kind: ClusterBindingKind; readonly objectName: string },
     ) {
@@ -220,7 +218,7 @@ export const ProjectClusterBindingsRepoLive: Layer.Layer<
       return result;
     });
 
-    const remove = Effect.fn("ProjectClusterBindingsRepo.remove")(function* (
+    const remove = Effect.fnUntraced(function* (
       projectId: ProjectId,
       bindingId: ProjectClusterBindingId,
     ) {
@@ -250,7 +248,7 @@ export const ProjectClusterBindingsRepoLive: Layer.Layer<
       return result;
     });
 
-    const setServiceAccount = Effect.fn("ProjectClusterBindingsRepo.setServiceAccount")(function* (
+    const setServiceAccount = Effect.fnUntraced(function* (
       projectId: ProjectId,
       serviceAccount: string | null,
     ) {

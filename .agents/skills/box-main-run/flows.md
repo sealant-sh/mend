@@ -3471,8 +3471,14 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   a `mend.web.message.send` per message with the `mend.turn_id` of the turn it started (none for the
   message sent into a running turn), and one `mend.web.turn.first_visible_output` per answered turn
   with the same `mend.turn_id`, `mend.turn.waited_from` send, lasting about as long as the answer
-  took; a send's trace holds its own `http.client` span and the web server's
-  `mend.web.sessions.sendMessage` under it, and nothing else of the page.
+  took; a send's trace holds its own `http.client` span (`POST /trpc/sessions.sendMessage`) and the
+  web server's `mend.web.sessions.sendMessage` under it, and nothing else of the page. Across both
+  projects (SLNT-1375): no span with operation `default` or an empty description; no database span
+  whose description is `[Filtered]`, each reading as a short query naming its table
+  (`select .. from projects where …`, op `db.sql.query`); every `http.client` named for a route
+  template (`GET /v1/sessions/:sessionId/output`, `POST /trpc/sessions.detail +2`), never a host,
+  port, ID or query; Mend's own spans named `mend.<area>.<operation>`; no `drizzle.operation` span;
+  and no browser span for the five-second `executor.calls` read.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/server/`, `apps/web/src/lib/telemetry.ts`,

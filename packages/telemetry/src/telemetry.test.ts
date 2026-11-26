@@ -46,6 +46,19 @@ const capturingTransports = () => {
   };
 };
 
+interface ExportedSpan {
+  readonly name: string;
+  readonly traceId: string;
+  readonly spanId: string;
+  readonly attributes: ReadonlyArray<{
+    readonly key: string;
+    readonly value: { readonly stringValue?: string };
+  }>;
+}
+
+const attribute = (span: ExportedSpan | undefined, key: string) =>
+  span?.attributes.find((a) => a.key === key)?.value.stringValue;
+
 afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.MEND_TELEMETRY_CANARY;
@@ -104,23 +117,16 @@ describe("what telemetry may send", () => {
     expect(sent).not.toContain("canary4f1d9c2e7b30aa");
 
     const traces = otlp.find((request) => request.url.endsWith("/v1/traces"));
-    const spans: ReadonlyArray<{
-      readonly name: string;
-      readonly traceId: string;
-      readonly spanId: string;
-      readonly attributes: ReadonlyArray<{
-        readonly key: string;
-        readonly value: { readonly stringValue?: string };
-      }>;
-    }> = JSON.parse(traces?.body ?? "{}").resourceSpans[0].scopeSpans[0].spans;
-    const server = spans.find((span) => span.name === "GET");
+    const spans: ReadonlyArray<ExportedSpan> = JSON.parse(traces?.body ?? "{}").resourceSpans[0]
+      .scopeSpans[0].spans;
+    // Named for its route, never for the path it was asked for (the canary is in that path).
+    const server = spans.find((span) => span.name === "GET /things/:id");
     const workSpan = spans.find((span) => span.name === "mend.test.work");
-    expect(server?.attributes.find((a) => a.key === "http.route")?.value.stringValue).toBe(
-      "/things/:id",
-    );
-    expect(workSpan?.attributes.find((a) => a.key === "mend.session_id")?.value.stringValue).toBe(
-      "ses_01J9Z",
-    );
+    expect(attribute(server, "http.route")).toBe("/things/:id");
+    expect(attribute(server, "sentry.op")).toBe("http.server");
+    expect(attribute(server, "sentry.description")).toBe("GET /things/:id");
+    expect(attribute(workSpan, "sentry.op")).toBe("mend.test");
+    expect(attribute(workSpan, "mend.session_id")).toBe("ses_01J9Z");
 
     // One envelope, one event: its header line, the item header, the event.
     const event = JSON.parse(sentry[0]?.split("\n")[2] ?? "{}");

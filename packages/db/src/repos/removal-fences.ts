@@ -240,7 +240,7 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
             FROM projects WHERE id = ${id}`;
         });
 
-      const keep = Effect.fn("RemovalFencesRepo.keep")(function* (
+      const keep = Effect.fnUntraced(function* (
         id: ProjectId,
         mark: RemovalFenceId,
         userId: string,
@@ -282,11 +282,7 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
           .pipe(Effect.orDie);
       });
 
-      const restore = Effect.fn("RemovalFencesRepo.restore")(function* (
-        id: ProjectId,
-        userId: string,
-        name?: string,
-      ) {
+      const restore = Effect.fnUntraced(function* (id: ProjectId, userId: string, name?: string) {
         return yield* sql
           .withTransaction(
             Effect.gen(function* () {
@@ -326,7 +322,7 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
           );
       });
 
-      const takePurge = Effect.fn("RemovalFencesRepo.takePurge")(function* (
+      const takePurge = Effect.fnUntraced(function* (
         projectId: ProjectId,
         userId: string,
         confirmed: { readonly name: string; readonly removedAt: Date },
@@ -363,7 +359,7 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
           .pipe(Effect.orDie);
       });
 
-      const finishPurge = Effect.fn("RemovalFencesRepo.finishPurge")(function* (
+      const finishPurge = Effect.fnUntraced(function* (
         id: ProjectId,
         mark: RemovalFenceId,
         userId: string,
@@ -407,7 +403,7 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
               WHERE project_id = ${row.id} AND removal_fence_marked(removal_phase, removal_since)
               ORDER BY removal_fence_fresh(removal_since) DESC, name`;
 
-      const take = Effect.fn("RemovalFencesRepo.take")(function* (row: FencedRow) {
+      const take = Effect.fnUntraced(function* (row: FencedRow) {
         return yield* sql
           .withTransaction(
             Effect.gen(function* () {
@@ -467,10 +463,7 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
           .pipe(Effect.orDie);
       });
 
-      const renew = Effect.fn("RemovalFencesRepo.renew")(function* (
-        row: FencedRow,
-        id: RemovalFenceId,
-      ) {
+      const renew = Effect.fnUntraced(function* (row: FencedRow, id: RemovalFenceId) {
         const updated = yield* sql`
           UPDATE ${sql(tableOf(row))}
           SET removal_since = now()
@@ -480,7 +473,7 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
         return updated.length > 0;
       });
 
-      const commit = Effect.fn("RemovalFencesRepo.commit")(function* (
+      const commit = Effect.fnUntraced(function* (
         row: Extract<FencedRow, { readonly kind: "worktree" }>,
         id: RemovalFenceId,
       ) {
@@ -493,10 +486,7 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
         return updated.length > 0;
       });
 
-      const release = Effect.fn("RemovalFencesRepo.release")(function* (
-        row: FencedRow,
-        id: RemovalFenceId,
-      ) {
+      const release = Effect.fnUntraced(function* (row: FencedRow, id: RemovalFenceId) {
         yield* sql`
           UPDATE ${sql(tableOf(row))}
           SET removal_phase = NULL, removal_id = NULL, removal_since = NULL
@@ -506,10 +496,7 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
         );
       });
 
-      const handOver = Effect.fn("RemovalFencesRepo.handOver")(function* (
-        row: FencedRow,
-        id: RemovalFenceId,
-      ) {
+      const handOver = Effect.fnUntraced(function* (row: FencedRow, id: RemovalFenceId) {
         yield* sql`
           UPDATE ${sql(tableOf(row))}
           SET removal_since = '-infinity'
@@ -518,7 +505,7 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
         );
       });
 
-      const admitsStart = Effect.fn("RemovalFencesRepo.admitsStart")(function* (place: {
+      const admitsStart = Effect.fnUntraced(function* (place: {
         readonly projectId: ProjectId;
         readonly worktreeId: WorktreeId | null;
       }) {
@@ -533,7 +520,7 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
         return marked[0]?.marked !== true;
       });
 
-      const admit = Effect.fn("RemovalFencesRepo.admit")(function* (sessionId: SessionId) {
+      const admit = Effect.fnUntraced(function* (sessionId: SessionId) {
         const id = SessionAdmissionId.make(`adm_${crypto.randomUUID()}`);
         yield* sql
           .withTransaction(
@@ -546,21 +533,15 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
         return id;
       });
 
-      const renewAdmission = Effect.fn("RemovalFencesRepo.renewAdmission")(function* (
-        id: SessionAdmissionId,
-      ) {
+      const renewAdmission = Effect.fnUntraced(function* (id: SessionAdmissionId) {
         yield* sql`UPDATE session_admissions SET since = now() WHERE id = ${id}`.pipe(Effect.orDie);
       });
 
-      const endAdmission = Effect.fn("RemovalFencesRepo.endAdmission")(function* (
-        id: SessionAdmissionId,
-      ) {
+      const endAdmission = Effect.fnUntraced(function* (id: SessionAdmissionId) {
         yield* sql`DELETE FROM session_admissions WHERE id = ${id}`.pipe(Effect.orDie);
       });
 
-      const sessionsIn = Effect.fn("RemovalFencesRepo.sessionsIn")(function* (
-        worktreeId: WorktreeId,
-      ) {
+      const sessionsIn = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
         return decodeSessionIds(
           yield* sql`
             SELECT session_id AS id FROM removal_fence_sessions_in(${worktreeId})
@@ -568,9 +549,7 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
         ).map((row) => row.id);
       });
 
-      const startingIn = Effect.fn("RemovalFencesRepo.startingIn")(function* (
-        worktreeId: WorktreeId,
-      ) {
+      const startingIn = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
         return decodeSessionIds(
           yield* sql`
             SELECT DISTINCT a.session_id AS id

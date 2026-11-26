@@ -18,7 +18,7 @@ const make: Effect.Effect<SettleSettingsRepo["Service"], never, MendDB> = Effect
   const db = yield* MendDB;
   const selected = { stopSessionOnSettle: userSettleSettings.stopSessionOnSettle };
   return {
-    forUser: Effect.fn("SettleSettingsRepo.forUser")(function* (userId: string) {
+    forUser: Effect.fnUntraced(function* (userId: string) {
       const [row] = yield* db
         .select(selected)
         .from(userSettleSettings)
@@ -26,7 +26,7 @@ const make: Effect.Effect<SettleSettingsRepo["Service"], never, MendDB> = Effect
         .pipe(Effect.orDie);
       return row === undefined ? DEFAULT_SETTLE_SETTINGS : new SettleSettings(row);
     }),
-    set: Effect.fn("SettleSettingsRepo.set")(function* (userId: string, settings: SettleSettings) {
+    set: Effect.fnUntraced(function* (userId: string, settings: SettleSettings) {
       const [row] = yield* db
         .insert(userSettleSettings)
         .values({ userId, ...settings })

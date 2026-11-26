@@ -147,7 +147,7 @@ export const ProjectAccessLive: Layer.Layer<
     const processes = yield* SessionProcessesRepo;
     const services = yield* ServicesRepo;
 
-    const viewerOf = Effect.fn("ProjectAccess.viewerOf")(function* (actor: Actor) {
+    const viewerOf = Effect.fnUntraced(function* (actor: Actor) {
       return viewerFrom(
         actor.userId,
         "organizationId" in actor
@@ -156,7 +156,7 @@ export const ProjectAccessLive: Layer.Layer<
       );
     });
 
-    const viewer = Effect.fn("ProjectAccess.viewer")(function* () {
+    const viewer = Effect.fnUntraced(function* () {
       return yield* viewerOf(signInOf(yield* CurrentUser));
     });
 
@@ -201,7 +201,7 @@ export const ProjectAccessLive: Layer.Layer<
       return yield* guarded(actor, id, id, canSeeProject);
     });
 
-    const project = Effect.fn("ProjectAccess.project")(function* (id: ProjectId) {
+    const project = Effect.fnUntraced(function* (id: ProjectId) {
       return yield* projectAs(yield* caller, id);
     });
 
@@ -248,7 +248,7 @@ export const ProjectAccessLive: Layer.Layer<
       return row;
     });
 
-    const session = Effect.fn("ProjectAccess.session")(function* (id: SessionId) {
+    const session = Effect.fnUntraced(function* (id: SessionId) {
       return yield* sessionAs(yield* caller, id);
     });
 
@@ -259,7 +259,7 @@ export const ProjectAccessLive: Layer.Layer<
       return row;
     });
 
-    const process = Effect.fn("ProjectAccess.process")(function* (id: SessionProcessId) {
+    const process = Effect.fnUntraced(function* (id: SessionProcessId) {
       const row = yield* processes.byId(id);
       if (row === null) return yield* new NotFound({ id });
       const parent = yield* session(row.sessionId).pipe(
@@ -268,7 +268,7 @@ export const ProjectAccessLive: Layer.Layer<
       return { process: row, session: parent };
     });
 
-    const service = Effect.fn("ProjectAccess.service")(function* (id: ServiceId) {
+    const service = Effect.fnUntraced(function* (id: ServiceId) {
       const row = yield* services.byId(id);
       if (row === null) return yield* new NotFound({ id });
       const parent = yield* session(row.sessionId).pipe(
@@ -286,11 +286,11 @@ export const ProjectAccessLive: Layer.Layer<
       return rows.filter((row) => canSeeProject(row, found));
     });
 
-    const visibleProjects = Effect.fn("ProjectAccess.visibleProjects")(function* () {
+    const visibleProjects = Effect.fnUntraced(function* () {
       return yield* visibleProjectsOf(yield* caller);
     });
 
-    const filterByProject = Effect.fn("ProjectAccess.filterByProject")(function* <
+    const filterByProject = Effect.fnUntraced(function* <
       A extends { readonly projectId: ProjectId },
     >(rows: ReadonlyArray<A>) {
       if (rows.length === 0) return rows;

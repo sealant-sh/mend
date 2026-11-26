@@ -104,9 +104,7 @@ const toConversation = (row: Row): ImportedConversation => ({
  * the organization go with the rest of their private state. Turns already shown stay, as other
  * turns of their sessions do.
  */
-export const deleteImportedConversationsOf = Effect.fn(
-  "ImportedConversationsRepo.deleteImportedConversationsOf",
-)(function* (
+export const deleteImportedConversationsOf = Effect.fnUntraced(function* (
   tx: Pick<MendDatabase, "delete" | "select">,
   userId: string,
   organizationId: OrganizationId,
@@ -135,7 +133,7 @@ export const ImportedConversationsRepoLive: Layer.Layer<
     const db = yield* MendDB;
     const pg = yield* PgClient.PgClient;
 
-    const sessionOf = Effect.fn("ImportedConversationsRepo.sessionOf")(function* (input: {
+    const sessionOf = Effect.fnUntraced(function* (input: {
       readonly ownerUserId: string;
       readonly projectId: ProjectId;
       readonly harness: ImportedHarness;
@@ -157,9 +155,7 @@ export const ImportedConversationsRepoLive: Layer.Layer<
       return row?.sessionId ?? null;
     });
 
-    const bySession = Effect.fn("ImportedConversationsRepo.bySession")(function* (
-      sessionId: SessionId,
-    ) {
+    const bySession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [row] = yield* db
         .select()
         .from(sessionImportedConversations)
@@ -169,9 +165,7 @@ export const ImportedConversationsRepoLive: Layer.Layer<
       return row === undefined ? null : toConversation(row);
     });
 
-    const undeliveredAmong = Effect.fn("ImportedConversationsRepo.undeliveredAmong")(function* (
-      sessionIds: ReadonlyArray<SessionId>,
-    ) {
+    const undeliveredAmong = Effect.fnUntraced(function* (sessionIds: ReadonlyArray<SessionId>) {
       if (sessionIds.length === 0) return new Set<SessionId>();
       // By the primary key: one row per session, whatever the list holds.
       const rows = yield* db
@@ -187,7 +181,7 @@ export const ImportedConversationsRepoLive: Layer.Layer<
       return new Set(rows.map((row) => row.sessionId));
     });
 
-    const files = Effect.fn("ImportedConversationsRepo.files")(function* (sessionId: SessionId) {
+    const files = Effect.fnUntraced(function* (sessionId: SessionId) {
       const conversation = yield* bySession(sessionId);
       if (conversation === null) return [];
       const rows = yield* db
@@ -213,7 +207,7 @@ export const ImportedConversationsRepoLive: Layer.Layer<
       });
     });
 
-    const save = Effect.fn("ImportedConversationsRepo.save")(function* (
+    const save = Effect.fnUntraced(function* (
       conversation: Omit<ImportedConversation, "deliveredAt">,
       bytes: ReadonlyArray<ImportedConversationFile>,
       turns: ReadonlyArray<BackfillTurnInput>,
@@ -298,9 +292,7 @@ export const ImportedConversationsRepoLive: Layer.Layer<
       return outcome;
     });
 
-    const markDelivered = Effect.fn("ImportedConversationsRepo.markDelivered")(function* (
-      sessionId: SessionId,
-    ) {
+    const markDelivered = Effect.fnUntraced(function* (sessionId: SessionId) {
       const now = yield* DateTime.nowAsDate;
       const rows = yield* db
         .update(sessionImportedConversations)

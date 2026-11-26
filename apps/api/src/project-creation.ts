@@ -205,41 +205,41 @@ const UNSETTLED_REPOSITORY_AGE = Duration.minutes(10);
  * publication. One a project row names is settled and kept; one no row names is removed once it
  * is older than `minimumAge`; one whose row cannot be read waits for the next sweep.
  */
-export const sweepUnsettledRepositories = Effect.fn("sweepUnsettledRepositories")(function* (
-  minimumAge: Duration.Duration,
-) {
-  const store = yield* Store;
-  const projects = yield* ProjectsRepo;
-  const now = yield* Clock.currentTimeMillis;
-  const settled: Array<string> = [];
-  const removed: Array<string> = [];
-  for (const repository of yield* store.unsettledRepositories()) {
-    const { storePath } = repository;
-    const row = yield* projects.storeClaimed(storePath).pipe(
-      Effect.map((claimed) => (claimed ? ("registered" as const) : ("absent" as const))),
-      Effect.catchCause((cause) =>
-        Effect.as(
-          Effect.logWarning("project creation: an unsettled repository's row was not read").pipe(
-            Effect.annotateLogs({ storePath, cause: String(cause) }),
+export const sweepUnsettledRepositories = Effect.fn("mend.project.sweep_unsettled_repositories")(
+  function* (minimumAge: Duration.Duration) {
+    const store = yield* Store;
+    const projects = yield* ProjectsRepo;
+    const now = yield* Clock.currentTimeMillis;
+    const settled: Array<string> = [];
+    const removed: Array<string> = [];
+    for (const repository of yield* store.unsettledRepositories()) {
+      const { storePath } = repository;
+      const row = yield* projects.storeClaimed(storePath).pipe(
+        Effect.map((claimed) => (claimed ? ("registered" as const) : ("absent" as const))),
+        Effect.catchCause((cause) =>
+          Effect.as(
+            Effect.logWarning("project creation: an unsettled repository's row was not read").pipe(
+              Effect.annotateLogs({ storePath, cause: String(cause) }),
+            ),
+            "unknown" as const,
           ),
-          "unknown" as const,
         ),
-      ),
-    );
-    if (row === "registered") {
-      yield* store.settleCreatedRepository(storePath);
-      settled.push(storePath);
-    } else if (row === "absent" && now - repository.markedAtMs >= Duration.toMillis(minimumAge)) {
-      const { leftover } = yield* store.removeProjectStore(storePath);
-      if (leftover === null) removed.push(storePath);
-      else
-        yield* Effect.logWarning("project creation: an unclaimed repository was not removed").pipe(
-          Effect.annotateLogs({ storePath, leftover }),
-        );
+      );
+      if (row === "registered") {
+        yield* store.settleCreatedRepository(storePath);
+        settled.push(storePath);
+      } else if (row === "absent" && now - repository.markedAtMs >= Duration.toMillis(minimumAge)) {
+        const { leftover } = yield* store.removeProjectStore(storePath);
+        if (leftover === null) removed.push(storePath);
+        else
+          yield* Effect.logWarning(
+            "project creation: an unclaimed repository was not removed",
+          ).pipe(Effect.annotateLogs({ storePath, leftover }));
+      }
     }
-  }
-  return { settled, removed };
-});
+    return { settled, removed };
+  },
+);
 
 /** The API process's startup sweep of repositories no project row claimed. */
 export const UnsettledRepositorySweepLive: Layer.Layer<never, never, Store | ProjectsRepo> =

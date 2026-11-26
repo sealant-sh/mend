@@ -259,7 +259,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
               : "removed",
         };
       };
-      const removedById = Effect.fn("ProjectsRepo.removedById")(function* (id: ProjectId) {
+      const removedById = Effect.fnUntraced(function* (id: ProjectId) {
         const [row] = yield* db
           .select()
           .from(projects)
@@ -267,9 +267,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
         return row === undefined ? null : retained(row);
       });
-      const removedForOrganization = Effect.fn("ProjectsRepo.removedForOrganization")(function* (
-        id: OrganizationId,
-      ) {
+      const removedForOrganization = Effect.fnUntraced(function* (id: OrganizationId) {
         const rows = yield* db
           .select()
           .from(projects)
@@ -278,7 +276,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
         return rows.flatMap((row) => retained(row) ?? []);
       });
-      const storeClaimed = Effect.fn("ProjectsRepo.storeClaimed")(function* (storePath: string) {
+      const storeClaimed = Effect.fnUntraced(function* (storePath: string) {
         const rows = yield* db
           .select({ id: projects.id })
           .from(projects)
@@ -288,7 +286,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return rows.length > 0;
       });
 
-      const create = Effect.fn("ProjectsRepo.create")(function* (project: NewProject) {
+      const create = Effect.fnUntraced(function* (project: NewProject) {
         const [row] = yield* db
           .insert(projects)
           .values({ ...project, originUrl: redactNullableUrlCredentials(project.originUrl) })
@@ -306,7 +304,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return created;
       });
 
-      const byId = Effect.fn("ProjectsRepo.byId")(function* (id: ProjectId) {
+      const byId = Effect.fnUntraced(function* (id: ProjectId) {
         const [row] = yield* db
           .select()
           .from(projects)
@@ -317,10 +315,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return toProject(row);
       });
 
-      const byName = Effect.fn("ProjectsRepo.byName")(function* (
-        organizationId: OrganizationId,
-        name: string,
-      ) {
+      const byName = Effect.fnUntraced(function* (organizationId: OrganizationId, name: string) {
         const [row] = yield* db
           .select()
           .from(projects)
@@ -336,7 +331,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return row === undefined ? null : toProject(row);
       });
 
-      const byScratchOwner = Effect.fn("ProjectsRepo.byScratchOwner")(function* (userId: string) {
+      const byScratchOwner = Effect.fnUntraced(function* (userId: string) {
         const [row] = yield* db
           .select()
           .from(projects)
@@ -346,9 +341,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return row === undefined ? null : toProject(row);
       });
 
-      const publishInitialized = Effect.fn("ProjectsRepo.publishInitialized")(function* (
-        project: InitializedProject,
-      ) {
+      const publishInitialized = Effect.fnUntraced(function* (project: InitializedProject) {
         const { purpose, headSha, ...input } = project;
         // Set when the body succeeds: only a failure after that can be a COMMIT with an unknown
         // outcome, and an uncertain COMMIT must never cause the caller to delete a registered store.
@@ -446,7 +439,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
           );
       });
 
-      const listAll = Effect.fn("ProjectsRepo.listAll")(function* () {
+      const listAll = Effect.fnUntraced(function* () {
         const rows = yield* db
           .select()
           .from(projects)
@@ -456,9 +449,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return rows.map(toProject);
       });
 
-      const listForOrganization = Effect.fn("ProjectsRepo.listForOrganization")(function* (
-        organizationId: OrganizationId,
-      ) {
+      const listForOrganization = Effect.fnUntraced(function* (organizationId: OrganizationId) {
         const rows = yield* db
           .select()
           .from(projects)
@@ -468,7 +459,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return rows.map(toProject);
       });
 
-      const setName = Effect.fn("ProjectsRepo.setName")(function* (id: ProjectId, name: string) {
+      const setName = Effect.fnUntraced(function* (id: ProjectId, name: string) {
         const [row] = yield* db
           .update(projects)
           .set({ name, updatedAt: yield* DateTime.nowAsDate })
@@ -487,7 +478,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setVisibility = Effect.fn("ProjectsRepo.setVisibility")(function* (
+      const setVisibility = Effect.fnUntraced(function* (
         id: ProjectId,
         visibility: ProjectVisibility,
       ) {
@@ -506,10 +497,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setCreatedBy = Effect.fn("ProjectsRepo.setCreatedBy")(function* (
-        id: ProjectId,
-        userId: string,
-      ) {
+      const setCreatedBy = Effect.fnUntraced(function* (id: ProjectId, userId: string) {
         // Recovery transfers the content, not the departed person's scratch identity. A removed
         // project is taken over too: only its new creator can then Restore or purge it.
         const [row] = yield* db
@@ -528,7 +516,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setAutomation = Effect.fn("ProjectsRepo.setAutomation")(function* (
+      const setAutomation = Effect.fnUntraced(function* (
         id: ProjectId,
         choices: {
           readonly autoTour: AutomationChoice;
@@ -555,10 +543,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setAutoLand = Effect.fn("ProjectsRepo.setAutoLand")(function* (
-        id: ProjectId,
-        choice: AutomationChoice,
-      ) {
+      const setAutoLand = Effect.fnUntraced(function* (id: ProjectId, choice: AutomationChoice) {
         const [row] = yield* db
           .update(projects)
           .set({ autoLand: choice, updatedAt: yield* DateTime.nowAsDate })
@@ -571,10 +556,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setGitAuthMode = Effect.fn("ProjectsRepo.setGitAuthMode")(function* (
-        id: ProjectId,
-        mode: GitAuthMode,
-      ) {
+      const setGitAuthMode = Effect.fnUntraced(function* (id: ProjectId, mode: GitAuthMode) {
         const [row] = yield* db
           .update(projects)
           .set({ gitAuthMode: mode, updatedAt: yield* DateTime.nowAsDate })
@@ -587,10 +569,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setWorkspaceImage = Effect.fn("ProjectsRepo.setWorkspaceImage")(function* (
-        id: ProjectId,
-        image: WorkspaceImage,
-      ) {
+      const setWorkspaceImage = Effect.fnUntraced(function* (id: ProjectId, image: WorkspaceImage) {
         const [row] = yield* db
           .update(projects)
           .set({ workspaceImage: image, updatedAt: yield* DateTime.nowAsDate })
@@ -603,10 +582,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setApplyDotfiles = Effect.fn("ProjectsRepo.setApplyDotfiles")(function* (
-        id: ProjectId,
-        applyDotfiles: boolean,
-      ) {
+      const setApplyDotfiles = Effect.fnUntraced(function* (id: ProjectId, applyDotfiles: boolean) {
         const [row] = yield* db
           .update(projects)
           .set({ applyDotfiles, updatedAt: yield* DateTime.nowAsDate })
@@ -619,7 +595,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setDefaultShellProfile = Effect.fn("ProjectsRepo.setDefaultShellProfile")(function* (
+      const setDefaultShellProfile = Effect.fnUntraced(function* (
         id: ProjectId,
         defaultShellProfile: boolean,
       ) {
@@ -635,9 +611,10 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setNewWorktreesUseProjectResources = Effect.fn(
-        "ProjectsRepo.setNewWorktreesUseProjectResources",
-      )(function* (id: ProjectId, newWorktreesUseProjectResources: boolean) {
+      const setNewWorktreesUseProjectResources = Effect.fnUntraced(function* (
+        id: ProjectId,
+        newWorktreesUseProjectResources: boolean,
+      ) {
         const [row] = yield* db
           .update(projects)
           .set({ newWorktreesUseProjectResources, updatedAt: yield* DateTime.nowAsDate })
@@ -650,7 +627,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setInheritUserSkills = Effect.fn("ProjectsRepo.setInheritUserSkills")(function* (
+      const setInheritUserSkills = Effect.fnUntraced(function* (
         id: ProjectId,
         inheritUserSkills: boolean,
       ) {
@@ -666,10 +643,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setHotSessions = Effect.fn("ProjectsRepo.setHotSessions")(function* (
-        id: ProjectId,
-        hotSessions: number,
-      ) {
+      const setHotSessions = Effect.fnUntraced(function* (id: ProjectId, hotSessions: number) {
         const [row] = yield* db
           .update(projects)
           .set({ hotSessions, updatedAt: yield* DateTime.nowAsDate })
@@ -682,7 +656,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setInstallCommand = Effect.fn("ProjectsRepo.setInstallCommand")(function* (
+      const setInstallCommand = Effect.fnUntraced(function* (
         id: ProjectId,
         installCommand: string | null,
       ) {
@@ -698,7 +672,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const setInstallEnabled = Effect.fn("ProjectsRepo.setInstallEnabled")(function* (
+      const setInstallEnabled = Effect.fnUntraced(function* (
         id: ProjectId,
         installEnabled: boolean,
       ) {

@@ -140,7 +140,7 @@ const historyAdmission = (tx: Pick<MendDatabase, "select">, sessionId: SessionId
     .innerJoin(worktrees, eq(worktrees.id, agentSessions.worktreeId))
     .where(eq(agentSessions.id, sessionId));
 
-const assertHistoryAdmission = Effect.fn("AgentConversationRepo.assertHistoryAdmission")(function* (
+const assertHistoryAdmission = Effect.fnUntraced(function* (
   tx: Pick<MendDatabase, "select">,
   sessionId: SessionId,
   expected?: HistoryPosition,
@@ -855,7 +855,7 @@ const conversationTurnsOf = (
   );
 };
 
-export const nextAgentItemSeq = Effect.fn("AgentConversationRepo.nextAgentItemSeq")(function* (
+export const nextAgentItemSeq = Effect.fnUntraced(function* (
   tx: Pick<MendDatabase, "select">,
   sessionId: SessionId,
 ) {
@@ -872,7 +872,7 @@ export const nextAgentItemSeq = Effect.fn("AgentConversationRepo.nextAgentItemSe
  * there. A mode switch's turns name the process whose transcript they came from; an imported
  * conversation's turns name none (`imported`), since nothing in Mend ran them.
  */
-export const landHistoryTurns = Effect.fn("AgentConversationRepo.landHistoryTurns")(function* (
+export const landHistoryTurns = Effect.fnUntraced(function* (
   tx: Pick<MendDatabase, "select" | "insert" | "update" | "execute">,
   sessionId: SessionId,
   source: { readonly processId: SessionProcessId } | { readonly imported: true },
@@ -1006,7 +1006,7 @@ export const landHistoryTurns = Effect.fn("AgentConversationRepo.landHistoryTurn
   return count;
 });
 
-export const notifyAgentConversation = Effect.fn("AgentConversationRepo.notify")(function* (
+export const notifyAgentConversation = Effect.fnUntraced(function* (
   db: Pick<MendDatabase, "select">,
   pg: PgClient.PgClient,
   sessionId: SessionId,
@@ -1026,7 +1026,7 @@ export const notifyAgentConversation = Effect.fn("AgentConversationRepo.notify")
 
 type ConversationTx = Pick<MendDatabase, "select" | "insert" | "execute">;
 
-const lockOpenConversation = Effect.fn("AgentConversationRepo.lockOpenConversation")(function* (
+const lockOpenConversation = Effect.fnUntraced(function* (
   tx: ConversationTx,
   sessionId: SessionId,
   expected?: HistoryPosition,
@@ -1050,10 +1050,7 @@ const lockOpenConversation = Effect.fn("AgentConversationRepo.lockOpenConversati
  * a waiting turn is admitted (SLNT-1237). Read under the conversation's lock, which `settle`'s end
  * of the waiting turns takes too, so a waiting turn is either admitted before they end or refused.
  */
-const readsStarting = Effect.fn("AgentConversationRepo.readsStarting")(function* (
-  tx: ConversationTx,
-  sessionId: SessionId,
-) {
+const readsStarting = Effect.fnUntraced(function* (tx: ConversationTx, sessionId: SessionId) {
   const [starting] = yield* tx
     .select({ id: agentSessions.id })
     .from(agentSessions)
@@ -1077,7 +1074,7 @@ const waitingTurnsOf = (sessionId: SessionId) =>
     eq(agentTurns.status, "queued"),
   );
 
-const admittedSelection = Effect.fn("AgentConversationRepo.admittedSelection")(function* (
+const admittedSelection = Effect.fnUntraced(function* (
   tx: ConversationTx,
   sessionId: SessionId,
   selection: TurnSelection | null | undefined,
@@ -1096,7 +1093,7 @@ const admittedSelection = Effect.fn("AgentConversationRepo.admittedSelection")(f
     : turnSelectionOf(session.harness, session.model, session.effort);
 });
 
-const insertQueuedTurn = Effect.fn("AgentConversationRepo.insertQueuedTurn")(function* (
+const insertQueuedTurn = Effect.fnUntraced(function* (
   tx: ConversationTx,
   turn: {
     readonly sessionId: SessionId;
@@ -1129,7 +1126,7 @@ const insertQueuedTurn = Effect.fn("AgentConversationRepo.insertQueuedTurn")(fun
   return toTurn(row);
 });
 
-const insertTurnSteer = Effect.fn("AgentConversationRepo.insertTurnSteer")(function* (
+const insertTurnSteer = Effect.fnUntraced(function* (
   tx: ConversationTx,
   target: AgentTurn,
   input: AdmitTurnSteerInput,
@@ -1158,7 +1155,7 @@ const insertTurnSteer = Effect.fn("AgentConversationRepo.insertTurnSteer")(funct
 });
 
 /** Cancel queued turns and their open requests in the caller's transaction, without events. */
-export const cancelOpenTurnRows = Effect.fn("AgentConversationRepo.cancelOpenTurnRows")(function* (
+export const cancelOpenTurnRows = Effect.fnUntraced(function* (
   db: Pick<MendDatabase, "update">,
   turnIds: ReadonlyArray<AgentTurnId>,
 ) {
@@ -1220,7 +1217,7 @@ const bindMessage = (
   });
 
 /** Cancels a turn no process took: still queued on `processId`, never claimed or sent. */
-const withdrawUntakenTurn = Effect.fn("AgentConversationRepo.withdrawUntakenTurn")(function* (
+const withdrawUntakenTurn = Effect.fnUntraced(function* (
   db: Pick<MendDatabase, "update">,
   id: AgentTurnId,
   processId: SessionProcessId,
@@ -1268,10 +1265,7 @@ export const AgentConversationRepoLive: Layer.Layer<
         ),
       );
 
-    const readMessage = Effect.fn("AgentConversationRepo.readMessage")(function* (
-      tx: Pick<MendDatabase, "select">,
-      where: SQL,
-    ) {
+    const readMessage = Effect.fnUntraced(function* (tx: Pick<MendDatabase, "select">, where: SQL) {
       const [row] = yield* tx
         .select()
         .from(sessionMessages)
@@ -1309,7 +1303,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return yield* Effect.die("message target disappeared");
     });
 
-    const readMessageKey = Effect.fn("AgentConversationRepo.readMessageKey")(function* (
+    const readMessageKey = Effect.fnUntraced(function* (
       tx: Pick<MendDatabase, "select">,
       input: SendMessageInput,
     ) {
@@ -1345,7 +1339,7 @@ export const AgentConversationRepoLive: Layer.Layer<
         ),
       );
 
-    const replayUnderLock = Effect.fn("AgentConversationRepo.replayUnderLock")(function* (
+    const replayUnderLock = Effect.fnUntraced(function* (
       tx: ConversationTx,
       input: SendMessageInput,
     ) {
@@ -1372,7 +1366,7 @@ export const AgentConversationRepoLive: Layer.Layer<
         return { _tag: "Replay", result: replay };
       });
 
-    const admitSteerMessage = Effect.fn("AgentConversationRepo.admitSteerMessage")(function* (
+    const admitSteerMessage = Effect.fnUntraced(function* (
       input: SendMessageInput,
       turnId: AgentTurnId,
     ) {
@@ -1422,7 +1416,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return admitted;
     });
 
-    const admitTurnMessage = Effect.fn("AgentConversationRepo.admitTurnMessage")(function* (
+    const admitTurnMessage = Effect.fnUntraced(function* (
       input: SendMessageInput,
       processId: SessionProcessId | null,
       reason: MessageTurnReason,
@@ -1463,7 +1457,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return admitted;
     });
 
-    const withdrawMessageTurn = Effect.fn("AgentConversationRepo.withdrawMessageTurn")(function* (
+    const withdrawMessageTurn = Effect.fnUntraced(function* (
       id: AgentTurnId,
       processId: SessionProcessId,
     ) {
@@ -1472,7 +1466,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return withdrawn !== null;
     });
 
-    const queueOpeningTurn = Effect.fn("AgentConversationRepo.queueOpeningTurn")(function* (
+    const queueOpeningTurn = Effect.fnUntraced(function* (
       sessionId: SessionId,
       input: string,
       author: string | null,
@@ -1516,7 +1510,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return queued.turn;
     });
 
-    const takeWaitingTurns = Effect.fn("AgentConversationRepo.takeWaitingTurns")(function* (
+    const takeWaitingTurns = Effect.fnUntraced(function* (
       sessionId: SessionId,
       to: SessionProcessId,
     ) {
@@ -1539,7 +1533,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.length;
     });
 
-    const endWaitingTurns = Effect.fn("AgentConversationRepo.endWaitingTurns")(function* (
+    const endWaitingTurns = Effect.fnUntraced(function* (
       sessionId: SessionId,
       end: { readonly status: "cancelled" | "failed"; readonly error: string },
     ) {
@@ -1559,7 +1553,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.length;
     });
 
-    const rekeyWaitingTurn = Effect.fn("AgentConversationRepo.rekeyWaitingTurn")(function* (
+    const rekeyWaitingTurn = Effect.fnUntraced(function* (
       sessionId: SessionId,
       from: string,
       to: string,
@@ -1571,7 +1565,7 @@ export const AgentConversationRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const submitTurn = Effect.fn("AgentConversationRepo.submitTurn")(function* (
+    const submitTurn = Effect.fnUntraced(function* (
       sessionId: SessionId,
       processId: SessionProcessId,
       input: string,
@@ -1642,7 +1636,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return created;
     });
 
-    const byTurnId = Effect.fn("AgentConversationRepo.byTurnId")(function* (id: AgentTurnId) {
+    const byTurnId = Effect.fnUntraced(function* (id: AgentTurnId) {
       const [row] = yield* db
         .select()
         .from(agentTurns)
@@ -1664,7 +1658,7 @@ export const AgentConversationRepoLive: Layer.Layer<
           Effect.orElseSucceed(() => null),
         );
 
-    const byLaunchCorrelation = Effect.fn("AgentConversationRepo.byLaunchCorrelation")(function* (
+    const byLaunchCorrelation = Effect.fnUntraced(function* (
       sessionId: SessionId,
       launchCorrelationId: string,
     ) {
@@ -1682,7 +1676,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return row === undefined ? null : toTurn(row);
     });
 
-    const byProviderTurnId = Effect.fn("AgentConversationRepo.byProviderTurnId")(function* (
+    const byProviderTurnId = Effect.fnUntraced(function* (
       sessionId: SessionId,
       providerTurnId: string,
     ) {
@@ -1697,9 +1691,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return row === undefined ? null : toTurn(row);
     });
 
-    const listTurns = Effect.fn("AgentConversationRepo.listTurns")(function* (
-      sessionId: SessionId,
-    ) {
+    const listTurns = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* db
         .select()
         .from(agentTurns)
@@ -1709,10 +1701,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.map(toTurn);
     });
 
-    const turnSentAfter = Effect.fn("AgentConversationRepo.turnSentAfter")(function* (
-      sessionId: SessionId,
-      ordinal: number,
-    ) {
+    const turnSentAfter = Effect.fnUntraced(function* (sessionId: SessionId, ordinal: number) {
       const [row] = yield* db
         .select({ id: agentTurns.id })
         .from(agentTurns)
@@ -1732,7 +1721,7 @@ export const AgentConversationRepoLive: Layer.Layer<
      * The keys a session's messages were sent under, by the turn or steer each became: every one
      * of the session's (`scope` null), or only those of the named turns and steers.
      */
-    const messageKeysOf = Effect.fn("AgentConversationRepo.messageKeysOf")(function* (
+    const messageKeysOf = Effect.fnUntraced(function* (
       sessionId: SessionId,
       scope: {
         readonly turnIds: ReadonlyArray<AgentTurnId>;
@@ -1775,23 +1764,18 @@ export const AgentConversationRepoLive: Layer.Layer<
       return keyOf;
     });
 
-    const listConversationTurns = Effect.fn("AgentConversationRepo.listConversationTurns")(
-      function* (sessionId: SessionId) {
-        const rows = yield* db
-          .select({ turn: agentTurns, steer: agentTurnSteers })
-          .from(agentTurns)
-          .leftJoin(agentTurnSteers, eq(agentTurnSteers.turnId, agentTurns.id))
-          .where(eq(agentTurns.sessionId, sessionId))
-          .orderBy(asc(agentTurns.ordinal), asc(agentTurnSteers.ordinal))
-          .pipe(Effect.orDie);
-        return conversationTurnsOf(rows, [], yield* messageKeysOf(sessionId, null));
-      },
-    );
+    const listConversationTurns = Effect.fnUntraced(function* (sessionId: SessionId) {
+      const rows = yield* db
+        .select({ turn: agentTurns, steer: agentTurnSteers })
+        .from(agentTurns)
+        .leftJoin(agentTurnSteers, eq(agentTurnSteers.turnId, agentTurns.id))
+        .where(eq(agentTurns.sessionId, sessionId))
+        .orderBy(asc(agentTurns.ordinal), asc(agentTurnSteers.ordinal))
+        .pipe(Effect.orDie);
+      return conversationTurnsOf(rows, [], yield* messageKeysOf(sessionId, null));
+    });
 
-    const steerByClientId = Effect.fn("AgentConversationRepo.steerByClientId")(function* (
-      author: string,
-      clientSteerId: string,
-    ) {
+    const steerByClientId = Effect.fnUntraced(function* (author: string, clientSteerId: string) {
       const [row] = yield* db
         .select()
         .from(agentTurnSteers)
@@ -1803,9 +1787,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return row === undefined ? null : toSteer(row);
     });
 
-    const admitTurnSteer = Effect.fn("AgentConversationRepo.admitTurnSteer")(function* (
-      input: AdmitTurnSteerInput,
-    ) {
+    const admitTurnSteer = Effect.fnUntraced(function* (input: AdmitTurnSteerInput) {
       const clientSteerId = input.clientSteerId?.toLowerCase() ?? null;
       const turn = yield* byTurnId(input.turnId);
       if (turn === null) return yield* new AgentTurnNotFoundError({ turnId: input.turnId });
@@ -1852,7 +1834,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return admitted;
     });
 
-    const settleTurnSteer = Effect.fn("AgentConversationRepo.settleTurnSteer")(function* (
+    const settleTurnSteer = Effect.fnUntraced(function* (
       id: AgentTurnSteerId,
       delivery: Exclude<AgentTurnSteerDelivery, { readonly _tag: "Sending" | "Queued" }>,
     ) {
@@ -1877,7 +1859,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toSteer(row);
     });
 
-    const markTurnSteerTaken = Effect.fn("AgentConversationRepo.markTurnSteerTaken")(function* (
+    const markTurnSteerTaken = Effect.fnUntraced(function* (
       id: AgentTurnSteerId,
       processId: SessionProcessId,
     ) {
@@ -1900,7 +1882,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toSteer(changed);
     });
 
-    const queueTurnSteer = Effect.fn("AgentConversationRepo.queueTurnSteer")(function* (
+    const queueTurnSteer = Effect.fnUntraced(function* (
       id: AgentTurnSteerId,
       processId: SessionProcessId | null,
       reason: TurnSteerQueueReason,
@@ -1960,7 +1942,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return result.steer;
     });
 
-    const withdrawTurnSteer = Effect.fn("AgentConversationRepo.withdrawTurnSteer")(function* (
+    const withdrawTurnSteer = Effect.fnUntraced(function* (
       id: AgentTurnSteerId,
       processId: SessionProcessId,
     ) {
@@ -2002,9 +1984,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return result.steer;
     });
 
-    const recoverSendingSteers = Effect.fn("AgentConversationRepo.recoverSendingSteers")(function* (
-      processId: SessionProcessId,
-    ) {
+    const recoverSendingSteers = Effect.fnUntraced(function* (processId: SessionProcessId) {
       const rows = yield* db
         .update(agentTurnSteers)
         .set({
@@ -2042,39 +2022,38 @@ export const AgentConversationRepoLive: Layer.Layer<
         }),
       );
 
-    const recordProtocolControl = Effect.fn("AgentConversationRepo.recordProtocolControl")(
-      function* (processId: SessionProcessId, control: AgentProtocolControl) {
-        const holds = (stored: typeof agentProtocolControlJournal.$inferSelect | null) =>
-          stored !== null &&
-          stored.controlId === control.controlId &&
-          stored.providerTurnId === control.providerTurnId &&
-          stored.afterOutputLine === control.afterOutputLine &&
-          stored.action === control.action;
-        const claimed = yield* claimControlSlot(processId, control).pipe(Effect.result);
-        if (claimed._tag === "Success") {
-          if (holds(claimed.success)) return;
-          return yield* new AgentControlJournalError({
-            message: "The agent control conflicts with its recorded position.",
-            cause: null,
-          });
-        }
-        // A failed commit may still have landed. A `not-written` claim on the same slot settles
-        // it: it finds the control (written) or takes the slot, so the control can never land.
-        const settled = yield* claimControlSlot(processId, {
-          ...control,
-          action: "not-written",
-        }).pipe(Effect.orDie);
-        if (holds(settled)) return;
-        return yield* new AgentControlJournalError({
-          message: "The agent control could not be recorded.",
-          cause: claimed.failure,
-        });
-      },
-    );
-
-    const protocolControls = Effect.fn("AgentConversationRepo.protocolControls")(function* (
+    const recordProtocolControl = Effect.fnUntraced(function* (
       processId: SessionProcessId,
+      control: AgentProtocolControl,
     ) {
+      const holds = (stored: typeof agentProtocolControlJournal.$inferSelect | null) =>
+        stored !== null &&
+        stored.controlId === control.controlId &&
+        stored.providerTurnId === control.providerTurnId &&
+        stored.afterOutputLine === control.afterOutputLine &&
+        stored.action === control.action;
+      const claimed = yield* claimControlSlot(processId, control).pipe(Effect.result);
+      if (claimed._tag === "Success") {
+        if (holds(claimed.success)) return;
+        return yield* new AgentControlJournalError({
+          message: "The agent control conflicts with its recorded position.",
+          cause: null,
+        });
+      }
+      // A failed commit may still have landed. A `not-written` claim on the same slot settles
+      // it: it finds the control (written) or takes the slot, so the control can never land.
+      const settled = yield* claimControlSlot(processId, {
+        ...control,
+        action: "not-written",
+      }).pipe(Effect.orDie);
+      if (holds(settled)) return;
+      return yield* new AgentControlJournalError({
+        message: "The agent control could not be recorded.",
+        cause: claimed.failure,
+      });
+    });
+
+    const protocolControls = Effect.fnUntraced(function* (processId: SessionProcessId) {
       const rows = yield* db
         .select()
         .from(agentProtocolControlJournal)
@@ -2084,9 +2063,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.map((row) => Schema.decodeUnknownSync(AgentProtocolControl)(row));
     });
 
-    const openTurns = Effect.fn("AgentConversationRepo.openTurns")(function* (
-      sessionId: SessionId,
-    ) {
+    const openTurns = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* db
         .select()
         .from(agentTurns)
@@ -2101,7 +2078,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.map(toTurn);
     });
 
-    const claimNextTurn = Effect.fn("AgentConversationRepo.claimNextTurn")(function* (
+    const claimNextTurn = Effect.fnUntraced(function* (
       processId: SessionProcessId,
       attempt: DispatchAttemptId,
     ) {
@@ -2189,7 +2166,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return claimed;
     });
 
-    const insertHarnessTurn = Effect.fn("AgentConversationRepo.insertHarnessTurn")(function* (
+    const insertHarnessTurn = Effect.fnUntraced(function* (
       tx: ConversationTx,
       sessionId: SessionId,
       processId: SessionProcessId,
@@ -2227,7 +2204,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toTurn(row);
     });
 
-    const openHarnessTurn = Effect.fn("AgentConversationRepo.openHarnessTurn")(function* (
+    const openHarnessTurn = Effect.fnUntraced(function* (
       sessionId: SessionId,
       processId: SessionProcessId,
       providerTurnId: string,
@@ -2283,9 +2260,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return opened.opening;
     });
 
-    const unsentClaim = Effect.fn("AgentConversationRepo.unsentClaim")(function* (
-      processId: SessionProcessId,
-    ) {
+    const unsentClaim = Effect.fnUntraced(function* (processId: SessionProcessId) {
       const [row] = yield* db
         .select()
         .from(agentTurns)
@@ -2301,7 +2276,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return row === undefined ? null : { turn: toTurn(row), attempt: row.dispatchAttemptId };
     });
 
-    const bindOwnSend = Effect.fn("AgentConversationRepo.bindOwnSend")(function* (
+    const bindOwnSend = Effect.fnUntraced(function* (
       claim: DispatchClaim,
       providerTurnId: string,
       payer: TurnPayer,
@@ -2381,14 +2356,14 @@ export const AgentConversationRepoLive: Layer.Layer<
           Effect.tap((turn) => (turn === null ? Effect.void : notifyCommitted(turn.sessionId))),
         );
 
-    const putBackOwn = Effect.fn("AgentConversationRepo.putBackOwn")(function* (
+    const putBackOwn = Effect.fnUntraced(function* (
       claim: DispatchClaim,
       release: ClaimRelease = {},
     ) {
       return yield* releaseOwn(claim, { status: "queued", startedAt: null }, release);
     });
 
-    const failOwn = Effect.fn("AgentConversationRepo.failOwn")(function* (
+    const failOwn = Effect.fnUntraced(function* (
       claim: DispatchClaim,
       error: string,
       release: ClaimRelease = {},
@@ -2397,9 +2372,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return yield* releaseOwn(claim, { status: "failed", error, endedAt }, release);
     });
 
-    const taskActivity = Effect.fn("AgentConversationRepo.taskActivity")(function* (
-      processId: SessionProcessId,
-    ) {
+    const taskActivity = Effect.fnUntraced(function* (processId: SessionProcessId) {
       const [row] = yield* db
         .select({
           running: sql<number>`(count(*) FILTER (WHERE ${agentItems.status} = 'in-progress'))::int`,
@@ -2414,10 +2387,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       };
     });
 
-    const setTurnPayer = Effect.fn("AgentConversationRepo.setTurnPayer")(function* (
-      id: AgentTurnId,
-      payer: TurnPayer,
-    ) {
+    const setTurnPayer = Effect.fnUntraced(function* (id: AgentTurnId, payer: TurnPayer) {
       const [row] = yield* db
         .update(agentTurns)
         .set({
@@ -2433,10 +2403,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toTurn(row);
     });
 
-    const failTurn = Effect.fn("AgentConversationRepo.failTurn")(function* (
-      id: AgentTurnId,
-      error: string,
-    ) {
+    const failTurn = Effect.fnUntraced(function* (id: AgentTurnId, error: string) {
       const [row] = yield* db
         .update(agentTurns)
         .set({ status: "failed", error, endedAt: yield* DateTime.nowAsDate })
@@ -2450,9 +2417,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toTurn(row);
     });
 
-    const failUnconfirmedTurn = Effect.fn("AgentConversationRepo.failUnconfirmedTurn")(function* (
-      id: AgentTurnId,
-    ) {
+    const failUnconfirmedTurn = Effect.fnUntraced(function* (id: AgentTurnId) {
       const [row] = yield* db
         .update(agentTurns)
         .set({
@@ -2474,10 +2439,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toTurn(row);
     });
 
-    const setTurnMemoryLimit = Effect.fn("AgentConversationRepo.setTurnMemoryLimit")(function* (
-      id: AgentTurnId,
-      hit: MemoryLimitHit,
-    ) {
+    const setTurnMemoryLimit = Effect.fnUntraced(function* (id: AgentTurnId, hit: MemoryLimitHit) {
       const [row] = yield* db
         .update(agentTurns)
         .set({ memoryLimit: hit })
@@ -2489,7 +2451,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toTurn(row);
     });
 
-    const setTurnIntent = Effect.fn("AgentConversationRepo.setTurnIntent")(function* (
+    const setTurnIntent = Effect.fnUntraced(function* (
       id: AgentTurnId,
       reading: RequestIntentReading,
     ) {
@@ -2504,9 +2466,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toTurn(row);
     });
 
-    const claimTurnLanding = Effect.fn("AgentConversationRepo.claimTurnLanding")(function* (
-      id: AgentTurnId,
-    ) {
+    const claimTurnLanding = Effect.fnUntraced(function* (id: AgentTurnId) {
       const [row] = yield* db
         .update(agentTurns)
         .set({ landingClaimedAt: yield* DateTime.nowAsDate })
@@ -2522,7 +2482,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return row === undefined ? null : toTurn(row);
     });
 
-    const decideTurnLanding = Effect.fn("AgentConversationRepo.decideTurnLanding")(function* (
+    const decideTurnLanding = Effect.fnUntraced(function* (
       id: AgentTurnId,
       landing: TurnLanding,
       landingId: ChangeLandingId | null,
@@ -2538,7 +2498,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toTurn(row);
     });
 
-    const completeTurn = Effect.fn("AgentConversationRepo.completeTurn")(function* (
+    const completeTurn = Effect.fnUntraced(function* (
       providerTurnId: string,
       sessionId: SessionId,
       status: Exclude<AgentTurnStatus, "queued" | "running">,
@@ -2565,9 +2525,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toTurn(row);
     });
 
-    const upsertItem = Effect.fn("AgentConversationRepo.upsertItem")(function* (
-      input: UpsertAgentItemInput,
-    ) {
+    const upsertItem = Effect.fnUntraced(function* (input: UpsertAgentItemInput) {
       const item = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -2645,7 +2603,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return item;
     });
 
-    const listItems = Effect.fn("AgentConversationRepo.listItems")(function* (
+    const listItems = Effect.fnUntraced(function* (
       sessionId: SessionId,
       after: number,
       limit: number,
@@ -2663,7 +2621,7 @@ export const AgentConversationRepoLive: Layer.Layer<
     /** Turns whose window holds no items are few: the newest this many when a window is empty. */
     const ITEMLESS_TURNS = 50;
 
-    const historyWindow = Effect.fn("AgentConversationRepo.historyWindow")(function* (
+    const historyWindow = Effect.fnUntraced(function* (
       sessionId: SessionId,
       before: HistoryCursor | null,
       limit: number,
@@ -2739,10 +2697,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       } satisfies HistoryWindow;
     });
 
-    const turnsInRange = Effect.fn("AgentConversationRepo.turnsInRange")(function* (
-      sessionId: SessionId,
-      range: HistoryRange,
-    ) {
+    const turnsInRange = Effect.fnUntraced(function* (sessionId: SessionId, range: HistoryRange) {
       const picked = yield* db
         .select({ id: agentTurns.id })
         .from(agentTurns)
@@ -2780,7 +2735,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return conversationTurnsOf(rows, origins, keyOf);
     });
 
-    const requestsInRange = Effect.fn("AgentConversationRepo.requestsInRange")(function* (
+    const requestsInRange = Effect.fnUntraced(function* (
       sessionId: SessionId,
       range: HistoryRange,
     ) {
@@ -2794,9 +2749,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.map((row) => toRequest(row.request));
     });
 
-    const turnMessages = Effect.fn("AgentConversationRepo.turnMessages")(function* (
-      turnId: AgentTurnId,
-    ) {
+    const turnMessages = Effect.fnUntraced(function* (turnId: AgentTurnId) {
       const rows = yield* db
         .select()
         .from(agentItems)
@@ -2811,7 +2764,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.map(toItem);
     });
 
-    const turnItems = Effect.fn("AgentConversationRepo.turnItems")(function* (turnId: AgentTurnId) {
+    const turnItems = Effect.fnUntraced(function* (turnId: AgentTurnId) {
       const rows = yield* db
         .select()
         .from(agentItems)
@@ -2821,9 +2774,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.map(toItem);
     });
 
-    const openRequest = Effect.fn("AgentConversationRepo.openRequest")(function* (
-      input: OpenAgentRequestInput,
-    ) {
+    const openRequest = Effect.fnUntraced(function* (input: OpenAgentRequestInput) {
       const [row] = yield* db
         .insert(agentRequests)
         .values({
@@ -2856,9 +2807,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toRequest(row);
     });
 
-    const byRequestId = Effect.fn("AgentConversationRepo.byRequestId")(function* (
-      id: AgentRequestId,
-    ) {
+    const byRequestId = Effect.fnUntraced(function* (id: AgentRequestId) {
       const [row] = yield* db
         .select()
         .from(agentRequests)
@@ -2868,10 +2817,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return row === undefined ? null : toRequest(row);
     });
 
-    const listRequests = Effect.fn("AgentConversationRepo.listRequests")(function* (
-      sessionId: SessionId,
-      pendingOnly: boolean,
-    ) {
+    const listRequests = Effect.fnUntraced(function* (sessionId: SessionId, pendingOnly: boolean) {
       const rows = yield* db
         .select()
         .from(agentRequests)
@@ -2885,9 +2831,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.map(toRequest);
     });
 
-    const hasPendingRequests = Effect.fn("AgentConversationRepo.hasPendingRequests")(function* (
-      sessionId: SessionId,
-    ) {
+    const hasPendingRequests = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [row] = yield* db
         .select({ id: agentRequests.id })
         .from(agentRequests)
@@ -2897,27 +2841,25 @@ export const AgentConversationRepoLive: Layer.Layer<
       return row !== undefined;
     });
 
-    const oldestPendingRequests = Effect.fn("AgentConversationRepo.oldestPendingRequests")(
-      function* (sessionIds: ReadonlyArray<SessionId>) {
-        if (sessionIds.length === 0) return [];
-        const rows = yield* db
-          .selectDistinctOn([agentRequests.sessionId])
-          .from(agentRequests)
-          .where(
-            and(
-              inArray(agentRequests.sessionId, [...sessionIds]),
-              eq(agentRequests.status, "pending"),
-            ),
-          )
-          .orderBy(asc(agentRequests.sessionId), asc(agentRequests.createdAt))
-          .pipe(Effect.orDie);
-        return rows.map(toRequest);
-      },
-    );
-
-    const firstMessages = Effect.fn("AgentConversationRepo.firstMessages")(function* (
+    const oldestPendingRequests = Effect.fnUntraced(function* (
       sessionIds: ReadonlyArray<SessionId>,
     ) {
+      if (sessionIds.length === 0) return [];
+      const rows = yield* db
+        .selectDistinctOn([agentRequests.sessionId])
+        .from(agentRequests)
+        .where(
+          and(
+            inArray(agentRequests.sessionId, [...sessionIds]),
+            eq(agentRequests.status, "pending"),
+          ),
+        )
+        .orderBy(asc(agentRequests.sessionId), asc(agentRequests.createdAt))
+        .pipe(Effect.orDie);
+      return rows.map(toRequest);
+    });
+
+    const firstMessages = Effect.fnUntraced(function* (sessionIds: ReadonlyArray<SessionId>) {
       if (sessionIds.length === 0) return [];
       return yield* db
         .selectDistinctOn([agentTurns.sessionId], {
@@ -2936,10 +2878,7 @@ export const AgentConversationRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const openingMessages = Effect.fn("AgentConversationRepo.openingMessages")(function* (
-      sessionId: SessionId,
-      count: number,
-    ) {
+    const openingMessages = Effect.fnUntraced(function* (sessionId: SessionId, count: number) {
       const rows = yield* db
         .select({ input: agentTurns.input })
         .from(agentTurns)
@@ -2956,9 +2895,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.map((row) => row.input);
     });
 
-    const inboxTurnFacts = Effect.fn("AgentConversationRepo.inboxTurnFacts")(function* (
-      sessionIds: ReadonlyArray<SessionId>,
-    ) {
+    const inboxTurnFacts = Effect.fnUntraced(function* (sessionIds: ReadonlyArray<SessionId>) {
       if (sessionIds.length === 0) return [];
       const [turns, asks] = yield* Effect.all(
         [
@@ -2997,9 +2934,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return [...facts].map(([sessionId, fact]): InboxTurnFacts => ({ sessionId, ...fact }));
     });
 
-    const newestItems = Effect.fn("AgentConversationRepo.newestItems")(function* (
-      sessionIds: ReadonlyArray<SessionId>,
-    ) {
+    const newestItems = Effect.fnUntraced(function* (sessionIds: ReadonlyArray<SessionId>) {
       if (sessionIds.length === 0) return [];
       // LATERAL with LIMIT 1: one step down `agent_items_session_seq_idx` per session, however
       // long its conversation.
@@ -3040,70 +2975,68 @@ export const AgentConversationRepoLive: Layer.Layer<
       );
     });
 
-    const prepareRequestResponse = Effect.fn("AgentConversationRepo.prepareRequestResponse")(
-      function* (id: AgentRequestId, response: ResolveAgentRequestInput, decidedBy: string) {
-        const [existing] = yield* db
-          .select()
-          .from(agentRequests)
-          .where(eq(agentRequests.id, id))
-          .limit(1)
-          .pipe(Effect.orDie);
-        if (existing === undefined) return yield* new AgentRequestNotFoundError({ requestId: id });
-        if (
-          existing.status !== "pending" ||
-          (existing.responseDelivery !== "none" && existing.responseDelivery !== "failed")
-        ) {
-          return yield* new AgentRequestAlreadyResolvedError({ requestId: id });
-        }
-        const [row] = yield* db
-          .update(agentRequests)
-          .set({
-            decision: "decision" in response ? response.decision : null,
-            answers: "answers" in response ? response.answers : null,
-            decidedBy,
-            decidedAt: yield* DateTime.nowAsDate,
-            responseDelivery: "sending",
-          })
-          .where(
-            and(
-              eq(agentRequests.id, id),
-              eq(agentRequests.status, "pending"),
-              sql`${agentRequests.responseDelivery} IN ('none', 'failed')`,
-            ),
-          )
-          .returning()
-          .pipe(Effect.orDie);
-        if (row === undefined) {
-          return yield* new AgentRequestAlreadyResolvedError({ requestId: id });
-        }
-        yield* notify(row.sessionId);
-        return toRequest(row);
-      },
-    );
-
-    const completeRequestResponse = Effect.fn("AgentConversationRepo.completeRequestResponse")(
-      function* (id: AgentRequestId) {
-        const [row] = yield* db
-          .update(agentRequests)
-          .set({ status: "resolved", responseDelivery: "delivered" })
-          .where(
-            and(
-              eq(agentRequests.id, id),
-              eq(agentRequests.status, "pending"),
-              eq(agentRequests.responseDelivery, "sending"),
-            ),
-          )
-          .returning()
-          .pipe(Effect.orDie);
-        if (row === undefined) return yield* new AgentRequestNotFoundError({ requestId: id });
-        yield* notify(row.sessionId);
-        return toRequest(row);
-      },
-    );
-
-    const failRequestResponse = Effect.fn("AgentConversationRepo.failRequestResponse")(function* (
+    const prepareRequestResponse = Effect.fnUntraced(function* (
       id: AgentRequestId,
+      response: ResolveAgentRequestInput,
+      decidedBy: string,
     ) {
+      const [existing] = yield* db
+        .select()
+        .from(agentRequests)
+        .where(eq(agentRequests.id, id))
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (existing === undefined) return yield* new AgentRequestNotFoundError({ requestId: id });
+      if (
+        existing.status !== "pending" ||
+        (existing.responseDelivery !== "none" && existing.responseDelivery !== "failed")
+      ) {
+        return yield* new AgentRequestAlreadyResolvedError({ requestId: id });
+      }
+      const [row] = yield* db
+        .update(agentRequests)
+        .set({
+          decision: "decision" in response ? response.decision : null,
+          answers: "answers" in response ? response.answers : null,
+          decidedBy,
+          decidedAt: yield* DateTime.nowAsDate,
+          responseDelivery: "sending",
+        })
+        .where(
+          and(
+            eq(agentRequests.id, id),
+            eq(agentRequests.status, "pending"),
+            sql`${agentRequests.responseDelivery} IN ('none', 'failed')`,
+          ),
+        )
+        .returning()
+        .pipe(Effect.orDie);
+      if (row === undefined) {
+        return yield* new AgentRequestAlreadyResolvedError({ requestId: id });
+      }
+      yield* notify(row.sessionId);
+      return toRequest(row);
+    });
+
+    const completeRequestResponse = Effect.fnUntraced(function* (id: AgentRequestId) {
+      const [row] = yield* db
+        .update(agentRequests)
+        .set({ status: "resolved", responseDelivery: "delivered" })
+        .where(
+          and(
+            eq(agentRequests.id, id),
+            eq(agentRequests.status, "pending"),
+            eq(agentRequests.responseDelivery, "sending"),
+          ),
+        )
+        .returning()
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* new AgentRequestNotFoundError({ requestId: id });
+      yield* notify(row.sessionId);
+      return toRequest(row);
+    });
+
+    const failRequestResponse = Effect.fnUntraced(function* (id: AgentRequestId) {
       const rows = yield* db
         .update(agentRequests)
         .set({ responseDelivery: "failed" })
@@ -3114,7 +3047,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       if (first !== undefined) yield* notify(first.sessionId);
     });
 
-    const resolveRequest = Effect.fn("AgentConversationRepo.resolveRequest")(function* (
+    const resolveRequest = Effect.fnUntraced(function* (
       id: AgentRequestId,
       response: ResolveAgentRequestInput,
       decidedBy: string,
@@ -3123,28 +3056,27 @@ export const AgentConversationRepoLive: Layer.Layer<
       return yield* completeRequestResponse(id);
     });
 
-    const resolveProviderRequest = Effect.fn("AgentConversationRepo.resolveProviderRequest")(
-      function* (processId: SessionProcessId, providerRequestId: string) {
-        const rows = yield* db
-          .update(agentRequests)
-          .set({ status: "resolved", decidedAt: yield* DateTime.nowAsDate })
-          .where(
-            and(
-              eq(agentRequests.processId, processId),
-              eq(agentRequests.providerRequestId, providerRequestId),
-              eq(agentRequests.status, "pending"),
-            ),
-          )
-          .returning({ sessionId: agentRequests.sessionId })
-          .pipe(Effect.orDie);
-        const first = rows[0];
-        if (first !== undefined) yield* notify(first.sessionId);
-      },
-    );
-
-    const cancelOpenForTurn = Effect.fn("AgentConversationRepo.cancelOpenForTurn")(function* (
-      turnId: AgentTurnId,
+    const resolveProviderRequest = Effect.fnUntraced(function* (
+      processId: SessionProcessId,
+      providerRequestId: string,
     ) {
+      const rows = yield* db
+        .update(agentRequests)
+        .set({ status: "resolved", decidedAt: yield* DateTime.nowAsDate })
+        .where(
+          and(
+            eq(agentRequests.processId, processId),
+            eq(agentRequests.providerRequestId, providerRequestId),
+            eq(agentRequests.status, "pending"),
+          ),
+        )
+        .returning({ sessionId: agentRequests.sessionId })
+        .pipe(Effect.orDie);
+      const first = rows[0];
+      if (first !== undefined) yield* notify(first.sessionId);
+    });
+
+    const cancelOpenForTurn = Effect.fnUntraced(function* (turnId: AgentTurnId) {
       const rows = yield* cancelOpenTurnRows(db, [turnId]);
       // Readers hear of the turn itself too: a waiting turn has no process whose hooks say so
       // (SLNT-1237), and it may have no request to cancel.
@@ -3156,9 +3088,7 @@ export const AgentConversationRepoLive: Layer.Layer<
      * A process that ended took its background tasks with it: any it never reported ending read
      * `stopped`, each at a fresh cursor so readers see the change. The session id, when any did.
      */
-    const stopTasksOf = Effect.fn("AgentConversationRepo.stopTasksOf")(function* (
-      processId: SessionProcessId,
-    ) {
+    const stopTasksOf = Effect.fnUntraced(function* (processId: SessionProcessId) {
       const [first] = yield* db
         .select({ sessionId: agentItems.sessionId })
         .from(agentItems)
@@ -3207,9 +3137,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return sessionId;
     });
 
-    const cancelOpenForProcess = Effect.fn("AgentConversationRepo.cancelOpenForProcess")(function* (
-      processId: SessionProcessId,
-    ) {
+    const cancelOpenForProcess = Effect.fnUntraced(function* (processId: SessionProcessId) {
       const now = yield* DateTime.nowAsDate;
       const rows = yield* db
         .update(agentRequests)
@@ -3237,7 +3165,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       if (sessionId !== null) yield* notify(sessionId);
     });
 
-    const backfillConversation = Effect.fn("AgentConversationRepo.backfillConversation")(function* (
+    const backfillConversation = Effect.fnUntraced(function* (
       sessionId: SessionId,
       processId: SessionProcessId,
       turns: ReadonlyArray<BackfillTurnInput>,
@@ -3250,9 +3178,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return landed;
     });
 
-    const startTerminalTurn = Effect.fn("AgentConversationRepo.startTerminalTurn")(function* (
-      processId: SessionProcessId,
-    ) {
+    const startTerminalTurn = Effect.fnUntraced(function* (processId: SessionProcessId) {
       const started = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -3295,9 +3221,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return started;
     });
 
-    const requeueTerminalTurn = Effect.fn("AgentConversationRepo.requeueTerminalTurn")(function* (
-      turnId: AgentTurnId,
-    ) {
+    const requeueTerminalTurn = Effect.fnUntraced(function* (turnId: AgentTurnId) {
       const rows = yield* db
         .update(agentTurns)
         .set({ status: "queued", startedAt: null })
@@ -3314,9 +3238,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       if (first !== undefined) yield* notify(first.sessionId);
     });
 
-    const settleTerminalTurns = Effect.fn("AgentConversationRepo.settleTerminalTurns")(function* (
-      processId: SessionProcessId,
-    ) {
+    const settleTerminalTurns = Effect.fnUntraced(function* (processId: SessionProcessId) {
       const now = yield* DateTime.nowAsDate;
       const rows = yield* db
         .update(agentTurns)
@@ -3334,26 +3256,24 @@ export const AgentConversationRepoLive: Layer.Layer<
       if (first !== undefined) yield* notify(first.sessionId);
     });
 
-    const resetSendingResponses = Effect.fn("AgentConversationRepo.resetSendingResponses")(
-      function* (processId: SessionProcessId) {
-        const rows = yield* db
-          .update(agentRequests)
-          .set({ responseDelivery: "failed" })
-          .where(
-            and(
-              eq(agentRequests.processId, processId),
-              eq(agentRequests.status, "pending"),
-              eq(agentRequests.responseDelivery, "sending"),
-            ),
-          )
-          .returning({ sessionId: agentRequests.sessionId })
-          .pipe(Effect.orDie);
-        const first = rows[0];
-        if (first !== undefined) yield* notify(first.sessionId);
-      },
-    );
+    const resetSendingResponses = Effect.fnUntraced(function* (processId: SessionProcessId) {
+      const rows = yield* db
+        .update(agentRequests)
+        .set({ responseDelivery: "failed" })
+        .where(
+          and(
+            eq(agentRequests.processId, processId),
+            eq(agentRequests.status, "pending"),
+            eq(agentRequests.responseDelivery, "sending"),
+          ),
+        )
+        .returning({ sessionId: agentRequests.sessionId })
+        .pipe(Effect.orDie);
+      const first = rows[0];
+      if (first !== undefined) yield* notify(first.sessionId);
+    });
 
-    const requeueQueuedTurns = Effect.fn("AgentConversationRepo.requeueQueuedTurns")(function* (
+    const requeueQueuedTurns = Effect.fnUntraced(function* (
       from: SessionProcessId,
       to: SessionProcessId,
     ) {
@@ -3388,9 +3308,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       if (first !== undefined) yield* notify(first.sessionId);
     });
 
-    const protocolCursor = Effect.fn("AgentConversationRepo.protocolCursor")(function* (
-      processId: SessionProcessId,
-    ) {
+    const protocolCursor = Effect.fnUntraced(function* (processId: SessionProcessId) {
       const [row] = yield* db
         .select({
           nextSequence: sessionProcesses.protocolOutputSeq,
@@ -3402,7 +3320,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       return row ?? { nextSequence: 0n };
     });
 
-    const saveProtocolCursor = Effect.fn("AgentConversationRepo.saveProtocolCursor")(function* (
+    const saveProtocolCursor = Effect.fnUntraced(function* (
       processId: SessionProcessId,
       cursor: AgentProtocolCursor,
     ) {

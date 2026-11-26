@@ -117,7 +117,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
     const db = yield* MendDB;
     const sql = yield* PgClient.PgClient;
 
-    const ensureForWorktree = Effect.fn("WorktreeChangesRepo.ensureForWorktree")(function* (
+    const ensureForWorktree = Effect.fnUntraced(function* (
       projectId: ProjectId,
       worktreeId: WorktreeId,
       branch: string,
@@ -142,7 +142,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
       return toChange(row);
     });
 
-    const byId = Effect.fn("WorktreeChangesRepo.byId")(function* (id: ChangeId) {
+    const byId = Effect.fnUntraced(function* (id: ChangeId) {
       const [row] = yield* db
         .select()
         .from(worktreeChanges)
@@ -153,9 +153,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
       return toChange(row);
     });
 
-    const byWorktree = Effect.fn("WorktreeChangesRepo.byWorktree")(function* (
-      worktreeId: WorktreeId,
-    ) {
+    const byWorktree = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const [row] = yield* db
         .select()
         .from(worktreeChanges)
@@ -165,7 +163,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
       return row === undefined ? null : toChange(row);
     });
 
-    const bySession = Effect.fn("WorktreeChangesRepo.bySession")(function* (sessionId: SessionId) {
+    const bySession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [row] = yield* db
         .select({ change: worktreeChanges })
         .from(worktreeChanges)
@@ -176,7 +174,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
       return row === undefined ? null : toChange(row.change);
     });
 
-    const refreshHead = Effect.fn("WorktreeChangesRepo.refreshHead")(function* (
+    const refreshHead = Effect.fnUntraced(function* (
       id: ChangeId,
       headSha: Sha,
       viaSessionId: SessionId | null,
@@ -211,7 +209,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
       }
     });
 
-    const recordFileCount = Effect.fn("WorktreeChangesRepo.recordFileCount")(function* (
+    const recordFileCount = Effect.fnUntraced(function* (
       id: ChangeId,
       headSha: Sha,
       fileCount: number,
@@ -244,7 +242,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
     });
 
     /** Session annotations for the sessions `scope` picks (its project ids, or its session ids). */
-    const annotationsIn = Effect.fn("WorktreeChangesRepo.annotationsIn")(function* (
+    const annotationsIn = Effect.fnUntraced(function* (
       scope:
         | { readonly projectIds: ReadonlyArray<ProjectId> }
         | { readonly sessionIds: ReadonlyArray<SessionId> },

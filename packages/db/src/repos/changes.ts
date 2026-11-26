@@ -45,7 +45,7 @@ export const ChangesRepoLive: Layer.Layer<ChangesRepo, never, MendDB> = Layer.ef
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const ensureForIssue = Effect.fn("ChangesRepo.ensureForIssue")(function* (
+    const ensureForIssue = Effect.fnUntraced(function* (
       issueId: IssueId,
       facts: {
         readonly branch: string;
@@ -71,7 +71,7 @@ export const ChangesRepoLive: Layer.Layer<ChangesRepo, never, MendDB> = Layer.ef
       return toChange(row);
     });
 
-    const byId = Effect.fn("ChangesRepo.byId")(function* (id: ChangeId) {
+    const byId = Effect.fnUntraced(function* (id: ChangeId) {
       const [row] = yield* db
         .select()
         .from(changes)
@@ -82,7 +82,7 @@ export const ChangesRepoLive: Layer.Layer<ChangesRepo, never, MendDB> = Layer.ef
       return toChange(row);
     });
 
-    const byIssue = Effect.fn("ChangesRepo.byIssue")(function* (issueId: IssueId) {
+    const byIssue = Effect.fnUntraced(function* (issueId: IssueId) {
       const [row] = yield* db
         .select()
         .from(changes)

@@ -50,7 +50,7 @@ export const ResourceArchivesRepoLive: Layer.Layer<ResourceArchivesRepo, never, 
     ResourceArchivesRepo,
     Effect.gen(function* () {
       const db = yield* MendDB;
-      const rememberVolumes = Effect.fn("ResourceArchivesRepo.rememberVolumes")(function* (
+      const rememberVolumes = Effect.fnUntraced(function* (
         projectId: ProjectId,
         volumes: ReadonlyArray<ArchivedResourceVolume>,
       ) {
@@ -72,9 +72,7 @@ export const ResourceArchivesRepoLive: Layer.Layer<ResourceArchivesRepo, never, 
             .pipe(Effect.orDie);
         }
       });
-      const keptVolumes = Effect.fn("ResourceArchivesRepo.keptVolumes")(function* (
-        projectId: ProjectId,
-      ) {
+      const keptVolumes = Effect.fnUntraced(function* (projectId: ProjectId) {
         const rows = yield* db
           .select()
           .from(resourceKeptVolumes)
@@ -82,9 +80,7 @@ export const ResourceArchivesRepoLive: Layer.Layer<ResourceArchivesRepo, never, 
           .pipe(Effect.orDie);
         return yield* Effect.forEach(rows, (row) => decodeVolume(row.volume).pipe(Effect.orDie));
       });
-      const byProject = Effect.fn("ResourceArchivesRepo.byProject")(function* (
-        projectId: ProjectId,
-      ) {
+      const byProject = Effect.fnUntraced(function* (projectId: ProjectId) {
         const [row] = yield* db
           .select()
           .from(resourceArchives)
@@ -94,7 +90,7 @@ export const ResourceArchivesRepoLive: Layer.Layer<ResourceArchivesRepo, never, 
           ? null
           : { archive: yield* decode(row).pipe(Effect.orDie), complete: row.complete };
       });
-      const begin = Effect.fn("ResourceArchivesRepo.begin")(function* (archive: ResourceArchive) {
+      const begin = Effect.fnUntraced(function* (archive: ResourceArchive) {
         const volumes = yield* encodeVolumes(archive.volumes).pipe(Effect.orDie);
         yield* db
           .insert(resourceArchives)
@@ -102,7 +98,7 @@ export const ResourceArchivesRepoLive: Layer.Layer<ResourceArchivesRepo, never, 
           .onConflictDoNothing()
           .pipe(Effect.orDie);
       });
-      const finish = Effect.fn("ResourceArchivesRepo.finish")(function* (
+      const finish = Effect.fnUntraced(function* (
         projectId: ProjectId,
         volumes: ReadonlyArray<ArchivedResourceVolume>,
       ) {
@@ -113,9 +109,7 @@ export const ResourceArchivesRepoLive: Layer.Layer<ResourceArchivesRepo, never, 
           .where(eq(resourceArchives.projectId, projectId))
           .pipe(Effect.orDie);
       });
-      const list = Effect.fn("ResourceArchivesRepo.list")(function* (
-        organizationId: OrganizationId,
-      ) {
+      const list = Effect.fnUntraced(function* (organizationId: OrganizationId) {
         const rows = yield* db
           .select()
           .from(resourceArchives)

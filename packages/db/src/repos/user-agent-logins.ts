@@ -27,7 +27,7 @@ export const UserAgentLoginsRepoLive: Layer.Layer<UserAgentLoginsRepo, never, Me
     Effect.gen(function* () {
       const db = yield* MendDB;
 
-      const forUser = Effect.fn("UserAgentLoginsRepo.forUser")(function* (userId: string) {
+      const forUser = Effect.fnUntraced(function* (userId: string) {
         const [row] = yield* db
           .select({ selectedOnly: userAgentLogins.selectedOnly })
           .from(userAgentLogins)
@@ -39,10 +39,7 @@ export const UserAgentLoginsRepoLive: Layer.Layer<UserAgentLoginsRepo, never, Me
           : new AgentLogins({ selectedOnly: row.selectedOnly });
       });
 
-      const set = Effect.fn("UserAgentLoginsRepo.set")(function* (
-        userId: string,
-        setting: AgentLogins,
-      ) {
+      const set = Effect.fnUntraced(function* (userId: string, setting: AgentLogins) {
         const [row] = yield* db
           .insert(userAgentLogins)
           .values({ userId, selectedOnly: setting.selectedOnly })

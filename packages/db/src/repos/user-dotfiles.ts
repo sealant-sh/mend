@@ -37,7 +37,7 @@ export const UserDotfilesRepoLive: Layer.Layer<UserDotfilesRepo, never, MendDB> 
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const repository = Effect.fn("UserDotfilesRepo.repository")(function* (userId: string) {
+    const repository = Effect.fnUntraced(function* (userId: string) {
       const [row] = yield* db
         .select()
         .from(userDotfiles)
@@ -48,7 +48,7 @@ export const UserDotfilesRepoLive: Layer.Layer<UserDotfilesRepo, never, MendDB> 
       return decodeRepository(row.repository);
     });
 
-    const setRepository = Effect.fn("UserDotfilesRepo.setRepository")(function* (
+    const setRepository = Effect.fnUntraced(function* (
       userId: string,
       value: DotfilesRepository | null,
     ) {
@@ -63,36 +63,35 @@ export const UserDotfilesRepoLive: Layer.Layer<UserDotfilesRepo, never, MendDB> 
       return value;
     });
 
-    const startAgentsAfterInstall = Effect.fn("UserDotfilesRepo.startAgentsAfterInstall")(
-      function* (userId: string) {
-        const [row] = yield* db
-          .select({ value: userDotfiles.startAgentsAfterInstall })
-          .from(userDotfiles)
-          .where(eq(userDotfiles.userId, userId))
-          .limit(1)
-          .pipe(Effect.orDie);
-        return row?.value ?? false;
-      },
-    );
+    const startAgentsAfterInstall = Effect.fnUntraced(function* (userId: string) {
+      const [row] = yield* db
+        .select({ value: userDotfiles.startAgentsAfterInstall })
+        .from(userDotfiles)
+        .where(eq(userDotfiles.userId, userId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row?.value ?? false;
+    });
 
-    const setStartAgentsAfterInstall = Effect.fn("UserDotfilesRepo.setStartAgentsAfterInstall")(
-      function* (userId: string, value: boolean) {
-        yield* db
-          .insert(userDotfiles)
-          .values({
-            userId,
-            repository: null,
-            startAgentsAfterInstall: value,
-            updatedAt: yield* DateTime.nowAsDate,
-          })
-          .onConflictDoUpdate({
-            target: userDotfiles.userId,
-            set: { startAgentsAfterInstall: value, updatedAt: yield* DateTime.nowAsDate },
-          })
-          .pipe(Effect.orDie);
-        return value;
-      },
-    );
+    const setStartAgentsAfterInstall = Effect.fnUntraced(function* (
+      userId: string,
+      value: boolean,
+    ) {
+      yield* db
+        .insert(userDotfiles)
+        .values({
+          userId,
+          repository: null,
+          startAgentsAfterInstall: value,
+          updatedAt: yield* DateTime.nowAsDate,
+        })
+        .onConflictDoUpdate({
+          target: userDotfiles.userId,
+          set: { startAgentsAfterInstall: value, updatedAt: yield* DateTime.nowAsDate },
+        })
+        .pipe(Effect.orDie);
+      return value;
+    });
 
     return { repository, setRepository, startAgentsAfterInstall, setStartAgentsAfterInstall };
   }),

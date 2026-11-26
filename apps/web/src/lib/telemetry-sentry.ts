@@ -1,4 +1,5 @@
 import { redactDetail } from "@mend/network";
+import { pathOf, templatePath } from "@mend/telemetry/url-template";
 import {
   breadcrumbsIntegration,
   browserApiErrorsIntegration,
@@ -53,6 +54,75 @@ const QUERY_ATTRIBUTES: ReadonlySet<string> = new Set([
   "url.query",
   "url.fragment",
 ]);
+
+/**
+ * Reads the page repeats on a timer whatever the person does: the session's Executor calls every
+ * five seconds. A span for each would stretch the page's load to its thirty-second cap and bury
+ * what the person did under them, so they leave without one (the call still carries the trace).
+ */
+const BACKGROUND_READS: ReadonlySet<string> = new Set(["executor.calls"]);
+
+/** The procedures a tRPC request batches, from its path: `/trpc/a.b,c.d` names `a.b` and `c.d`. */
+const proceduresOf = (path: string): ReadonlyArray<string> | null => {
+  const match = /^\/trpc\/([^/?#]+)/.exec(path);
+  return match?.[1] === undefined ? null : decodeURIComponent(match[1]).split(",");
+};
+
+/** Whether the page makes a span for a request to `url`: none for a background read. */
+export const spansRequest = (url: string): boolean => {
+  const procedures = proceduresOf(pathOf(url) ?? url);
+  return procedures === null || !procedures.every((procedure) => BACKGROUND_READS.has(procedure));
+};
+
+const stringAttribute = (attributes: Readonly<Record<string, unknown>>, key: string) => {
+  const value = attributes[key];
+  if (typeof value === "string") return value;
+  if (typeof value === "object" && value !== null && "value" in value) {
+    const inner = value.value;
+    if (typeof inner === "string") return inner;
+  }
+  return undefined;
+};
+
+/**
+ * A request's span as a trace reads it, and a page timing's (below): `POST /trpc/sessions.detail +3`, the first procedure a
+ * batch carries and how many more (all of them in `mend.trpc.procedures`), or
+ * `GET /api/sessions/:sessionId/output`: never the page's origin, its port, an ID or a query.
+ */
+const requestNamed = (
+  name: string,
+  attributes: Record<string, unknown>,
+): { readonly name: string; readonly attributes: Record<string, unknown> } => {
+  const op = stringAttribute(attributes, "sentry.op");
+  // The page's own timings (DNS, connect, request, response, load) describe the page they timed:
+  // by its path, not the origin and port it was served from.
+  if (op?.startsWith("browser.") === true) {
+    const page = pathOf(stringAttribute(attributes, "url.full") ?? "");
+    return page === undefined
+      ? { name, attributes }
+      : { name, attributes: { ...attributes, "sentry.description": templatePath(page) } };
+  }
+  if (op !== "http.client") return { name, attributes };
+  const method = stringAttribute(attributes, "http.request.method") ?? name.split(" ")[0] ?? "GET";
+  const path = pathOf(stringAttribute(attributes, "url.full") ?? name.split(" ")[1] ?? "");
+  if (path === undefined) return { name, attributes };
+  const procedures = proceduresOf(path);
+  const [first, ...rest] = procedures ?? [];
+  const template =
+    first === undefined
+      ? templatePath(path)
+      : `/trpc/${first}${rest.length === 0 ? "" : ` +${rest.length}`}`;
+  const description = `${method} ${template}`;
+  return {
+    name: description,
+    attributes: {
+      ...attributes,
+      "sentry.description": description,
+      "url.template": first === undefined ? template : `/trpc/${procedures?.join(",") ?? ""}`,
+      ...(procedures === null ? {} : { "mend.trpc.procedures": procedures.join(",") }),
+    },
+  };
+};
 
 /**
  * An answer from Mend's server, a refusal or a failure it already reported with its own cause
@@ -181,6 +251,7 @@ export const sentryOptions = (
     browserTracingIntegration({
       instrumentPageLoad: false,
       instrumentNavigation: false,
+      shouldCreateSpanForRequest: spansRequest,
       ignoreResourceSpans: [
         "resource.script",
         "resource.css",
@@ -197,11 +268,10 @@ export const sentryOptions = (
     breadcrumb.data === undefined
       ? breadcrumb
       : { ...breadcrumb, data: scrubAttributes(breadcrumb.data) },
-  beforeSendSpan: (span) => ({
-    ...span,
-    name: withoutQueries(span.name),
-    attributes: scrubAttributes(span.attributes),
-  }),
+  beforeSendSpan: (span) => {
+    const named = requestNamed(withoutQueries(span.name), scrubAttributes(span.attributes));
+    return { ...span, ...named };
+  },
   ...overrides,
 });
 

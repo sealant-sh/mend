@@ -34,7 +34,7 @@ export const InstanceRolesRepoLive: Layer.Layer<InstanceRolesRepo, never, MendDB
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const isOperator = Effect.fn("InstanceRolesRepo.isOperator")(function* (userId: string) {
+    const isOperator = Effect.fnUntraced(function* (userId: string) {
       const [row] = yield* db
         .select({ userId: instanceRoles.userId })
         .from(instanceRoles)
@@ -44,7 +44,7 @@ export const InstanceRolesRepoLive: Layer.Layer<InstanceRolesRepo, never, MendDB
       return row !== undefined;
     });
 
-    const operators = Effect.fn("InstanceRolesRepo.operators")(function* () {
+    const operators = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select({ userId: instanceRoles.userId })
         .from(instanceRoles)
@@ -54,7 +54,7 @@ export const InstanceRolesRepoLive: Layer.Layer<InstanceRolesRepo, never, MendDB
       return rows.map((row) => row.userId);
     });
 
-    const operatorCount = Effect.fn("InstanceRolesRepo.operatorCount")(function* () {
+    const operatorCount = Effect.fnUntraced(function* () {
       const [row] = yield* db
         .select({ total: count() })
         .from(instanceRoles)
@@ -63,7 +63,7 @@ export const InstanceRolesRepoLive: Layer.Layer<InstanceRolesRepo, never, MendDB
       return row?.total ?? 0;
     });
 
-    const grantOperator = Effect.fn("InstanceRolesRepo.grantOperator")(function* (
+    const grantOperator = Effect.fnUntraced(function* (
       userId: string,
       grantedByUserId: string | null,
     ) {
@@ -74,9 +74,7 @@ export const InstanceRolesRepoLive: Layer.Layer<InstanceRolesRepo, never, MendDB
         .pipe(Effect.orDie);
     });
 
-    const revokeOperator = Effect.fn("InstanceRolesRepo.revokeOperator")(function* (
-      userId: string,
-    ) {
+    const revokeOperator = Effect.fnUntraced(function* (userId: string) {
       yield* db
         .transaction((tx) =>
           Effect.gen(function* () {

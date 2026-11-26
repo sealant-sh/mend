@@ -79,7 +79,7 @@ export const FoldersRepoLive: Layer.Layer<FoldersRepo, never, MendDB> = Layer.ef
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const create = Effect.fn("FoldersRepo.create")(function* (folder: NewFolder) {
+    const create = Effect.fnUntraced(function* (folder: NewFolder) {
       const [row] = yield* db
         .insert(folders)
         .values(folder)
@@ -95,7 +95,7 @@ export const FoldersRepoLive: Layer.Layer<FoldersRepo, never, MendDB> = Layer.ef
       return toFolder(row);
     });
 
-    const byId = Effect.fn("FoldersRepo.byId")(function* (id: FolderId) {
+    const byId = Effect.fnUntraced(function* (id: FolderId) {
       const [row] = yield* db
         .select()
         .from(folders)
@@ -106,9 +106,7 @@ export const FoldersRepoLive: Layer.Layer<FoldersRepo, never, MendDB> = Layer.ef
       return toFolder(row);
     });
 
-    const listForOrganization = Effect.fn("FoldersRepo.listForOrganization")(function* (
-      organizationId: OrganizationId,
-    ) {
+    const listForOrganization = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const rows = yield* db
         .select()
         .from(folders)
@@ -118,7 +116,7 @@ export const FoldersRepoLive: Layer.Layer<FoldersRepo, never, MendDB> = Layer.ef
       return rows.map(toFolder);
     });
 
-    const rename = Effect.fn("FoldersRepo.rename")(function* (id: FolderId, name: string) {
+    const rename = Effect.fnUntraced(function* (id: FolderId, name: string) {
       const [row] = yield* db
         .update(folders)
         .set({ name, updatedAt: new Date() })
@@ -135,7 +133,7 @@ export const FoldersRepoLive: Layer.Layer<FoldersRepo, never, MendDB> = Layer.ef
       return toFolder(row);
     });
 
-    const remove = Effect.fn("FoldersRepo.remove")(function* (id: FolderId) {
+    const remove = Effect.fnUntraced(function* (id: FolderId) {
       const [usage] = yield* db
         .select({ projects: count() })
         .from(projectFolders)
@@ -147,9 +145,7 @@ export const FoldersRepoLive: Layer.Layer<FoldersRepo, never, MendDB> = Layer.ef
       yield* db.delete(folders).where(eq(folders.id, id)).pipe(Effect.orDie);
     });
 
-    const listForProject = Effect.fn("FoldersRepo.listForProject")(function* (
-      projectId: ProjectId,
-    ) {
+    const listForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* db
         .select({ folder: folders, selection: projectFolders })
         .from(projectFolders)
@@ -165,7 +161,7 @@ export const FoldersRepoLive: Layer.Layer<FoldersRepo, never, MendDB> = Layer.ef
       );
     });
 
-    const setForProject = Effect.fn("FoldersRepo.setForProject")(function* (
+    const setForProject = Effect.fnUntraced(function* (
       projectId: ProjectId,
       selections: ReadonlyArray<{
         readonly folderId: FolderId;

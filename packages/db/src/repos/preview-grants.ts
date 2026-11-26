@@ -88,7 +88,7 @@ export const PreviewGrantsRepoLive: Layer.Layer<PreviewGrantsRepo, never, MendDB
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const create = Effect.fn("PreviewGrantsRepo.create")(function* (input: {
+    const create = Effect.fnUntraced(function* (input: {
       readonly subject: PreviewGrantSubject;
       readonly previewId: PreviewId;
       readonly origin: string;
@@ -107,9 +107,7 @@ export const PreviewGrantsRepoLive: Layer.Layer<PreviewGrantsRepo, never, MendDB
       return grant;
     });
 
-    const standing = Effect.fn("PreviewGrantsRepo.standing")(function* (
-      keys: ReadonlyArray<PreviewGrantKey>,
-    ) {
+    const standing = Effect.fnUntraced(function* (keys: ReadonlyArray<PreviewGrantKey>) {
       if (keys.length === 0) return [];
       const now = yield* DateTime.nowAsDate;
       const hashes = keys.map((key) => hashGrant(key.grant));
@@ -187,9 +185,7 @@ export const PreviewGrantsRepoLive: Layer.Layer<PreviewGrantsRepo, never, MendDB
       });
     });
 
-    const cleanup = Effect.fn("PreviewGrantsRepo.cleanup")(function* (options?: {
-      readonly batch?: number;
-    }) {
+    const cleanup = Effect.fnUntraced(function* (options?: { readonly batch?: number }) {
       const batch = options?.batch ?? 500;
       const now = yield* DateTime.nowAsDate;
       let after = "";

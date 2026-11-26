@@ -107,7 +107,7 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
     SessionHistoryRepo,
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
-      const operation = Effect.fn("SessionHistoryRepo.operation")(function* (
+      const operation = Effect.fnUntraced(function* (
         organizationId: OrganizationId,
         actorId: string,
         commandId: string,
@@ -119,9 +119,7 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
         );
         return rows[0] === undefined ? null : decodeOperation(rows[0].operation);
       });
-      const observations = Effect.fn("SessionHistoryRepo.observations")(function* (
-        sessionId: SessionId,
-      ) {
+      const observations = Effect.fnUntraced(function* (sessionId: SessionId) {
         const rows = yield* sql<{
           readonly observation: unknown;
         }>`SELECT observation FROM session_turn_boundaries WHERE session_id = ${sessionId} ORDER BY id`.pipe(

@@ -52,9 +52,7 @@ export const PushDevicesRepoLive: Layer.Layer<PushDevicesRepo, never, PgClient.P
           return device.length > 0;
         });
 
-      const register: PushDevicesRepo["Service"]["register"] = Effect.fn(
-        "PushDevicesRepo.register",
-      )((input) =>
+      const register: PushDevicesRepo["Service"]["register"] = (input) =>
         sql
           .withTransaction(
             Effect.gen(function* () {
@@ -74,12 +72,9 @@ export const PushDevicesRepoLive: Layer.Layer<PushDevicesRepo, never, PgClient.P
               });
             }),
           )
-          .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error))),
-      );
+          .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
 
-      const listForUsers = Effect.fn("PushDevicesRepo.listForUsers")(function* (
-        userIds: ReadonlyArray<string>,
-      ) {
+      const listForUsers = Effect.fnUntraced(function* (userIds: ReadonlyArray<string>) {
         if (userIds.length === 0) return [];
         const rows = yield* sql`
           SELECT p.token, p.platform, d.user_id AS "userId"
@@ -92,11 +87,11 @@ export const PushDevicesRepoLive: Layer.Layer<PushDevicesRepo, never, PgClient.P
         return decodeDevices(rows);
       });
 
-      const remove = Effect.fn("PushDevicesRepo.remove")(function* (token: string) {
+      const remove = Effect.fnUntraced(function* (token: string) {
         yield* sql`DELETE FROM push_devices WHERE token = ${token}`.pipe(Effect.orDie);
       });
 
-      const forget = Effect.fn("PushDevicesRepo.forget")(function* (deviceTokenId: string) {
+      const forget = Effect.fnUntraced(function* (deviceTokenId: string) {
         yield* sql`DELETE FROM push_devices WHERE device_token_id = ${deviceTokenId}`.pipe(
           Effect.orDie,
         );

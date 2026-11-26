@@ -329,10 +329,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         controlPlane = answer;
         return answer;
       });
-      const controlPlaneObstacle = controlPlaneAnswer.pipe(
-        Effect.map((answer) => answer.obstacle),
-        Effect.withSpan("PersonLayoutPlatform.controlPlaneObstacle"),
-      );
+      const controlPlaneObstacle = controlPlaneAnswer.pipe(Effect.map((answer) => answer.obstacle));
 
       return {
         controlPlaneObstacle,
