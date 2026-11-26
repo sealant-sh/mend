@@ -35,9 +35,7 @@ export const SessionControlEventsRepoLive: Layer.Layer<SessionControlEventsRepo,
     Effect.gen(function* () {
       const db = yield* MendDB;
 
-      const record = Effect.fn("SessionControlEventsRepo.record")(function* (
-        event: NewSessionControlEvent,
-      ) {
+      const record = Effect.fnUntraced(function* (event: NewSessionControlEvent) {
         yield* db
           .insert(sessionControlEvents)
           .values({ id: SessionControlEventId.make(crypto.randomUUID()), ...event })
@@ -50,9 +48,7 @@ export const SessionControlEventsRepoLive: Layer.Layer<SessionControlEventsRepo,
           );
       });
 
-      const listForSession = Effect.fn("SessionControlEventsRepo.listForSession")(function* (
-        sessionId: SessionId,
-      ) {
+      const listForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
         const rows = yield* db
           .select()
           .from(sessionControlEvents)

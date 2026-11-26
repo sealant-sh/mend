@@ -38,7 +38,7 @@ export const PullRequestProofUploadsRepoLive: Layer.Layer<
   PullRequestProofUploadsRepo,
   Effect.gen(function* () {
     const db = yield* MendDB;
-    const listForChange = Effect.fn("PullRequestProofUploadsRepo.listForChange")(
+    const listForChange = Effect.fnUntraced(
       function* (changeId: ChangeId, repository: string) {
         return yield* db
           .select({ upload: pullRequestProofUploads })
@@ -54,7 +54,7 @@ export const PullRequestProofUploadsRepoLive: Layer.Layer<
       },
       Effect.mapError((cause) => new PullRequestProofStorageError({ cause })),
     );
-    const record = Effect.fn("PullRequestProofUploadsRepo.record")(
+    const record = Effect.fnUntraced(
       function* (input: Parameters<typeof PullRequestProofUploadsRepo.Service.record>[0]) {
         yield* db
           .insert(pullRequestProofUploads)

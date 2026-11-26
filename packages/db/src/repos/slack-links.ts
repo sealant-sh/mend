@@ -120,10 +120,7 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const bySlackUser = Effect.fn("SlackLinksRepo.bySlackUser")(function* (
-      teamId: string,
-      slackUserId: string,
-    ) {
+    const bySlackUser = Effect.fnUntraced(function* (teamId: string, slackUserId: string) {
       const [row] = yield* db
         .select()
         .from(slackLinks)
@@ -133,7 +130,7 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
       return row === undefined ? null : toLink(row);
     });
 
-    const listForUser = Effect.fn("SlackLinksRepo.listForUser")(function* (userId: string) {
+    const listForUser = Effect.fnUntraced(function* (userId: string) {
       const rows = yield* db
         .select()
         .from(slackLinks)
@@ -143,9 +140,7 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
       return rows.map(toLink);
     });
 
-    const listForOrganization = Effect.fn("SlackLinksRepo.listForOrganization")(function* (
-      organizationId: OrganizationId,
-    ) {
+    const listForOrganization = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const rows = yield* db
         .select()
         .from(slackLinks)
@@ -155,10 +150,7 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
       return rows.map(toLink);
     });
 
-    const unlink = Effect.fn("SlackLinksRepo.unlink")(function* (
-      teamId: string,
-      slackUserId: string,
-    ) {
+    const unlink = Effect.fnUntraced(function* (teamId: string, slackUserId: string) {
       const [row] = yield* db
         .delete(slackLinks)
         .where(and(eq(slackLinks.teamId, teamId), eq(slackLinks.slackUserId, slackUserId)))
@@ -167,7 +159,7 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
       return row === undefined ? null : toLink(row);
     });
 
-    const mintCode = Effect.fn("SlackLinksRepo.mintCode")(function* (input: {
+    const mintCode = Effect.fnUntraced(function* (input: {
       readonly teamId: string;
       readonly slackUserId: string;
       readonly request: SlackPendingMention;
@@ -192,7 +184,7 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
       return { code, expiresAt };
     });
 
-    const peekCode = Effect.fn("SlackLinksRepo.peekCode")(function* (code: string, now?: Date) {
+    const peekCode = Effect.fnUntraced(function* (code: string, now?: Date) {
       const [row] = yield* db
         .select({
           organizationId: slackInstalls.organizationId,
@@ -210,7 +202,7 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
       return row ?? null;
     });
 
-    const redeemCode = Effect.fn("SlackLinksRepo.redeemCode")(function* (input: {
+    const redeemCode = Effect.fnUntraced(function* (input: {
       readonly code: string;
       readonly userId: string;
       readonly now?: Date;

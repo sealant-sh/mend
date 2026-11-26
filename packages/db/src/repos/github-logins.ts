@@ -53,7 +53,7 @@ const makeGithubLoginsRepo: Effect.Effect<GithubLoginsRepo["Service"], never, Me
   function* () {
     const db = yield* MendDB;
     return GithubLoginsRepo.of({
-      held: Effect.fn("GithubLoginsRepo.held")(function* (userId: string) {
+      held: Effect.fnUntraced(function* (userId: string) {
         const rows = yield* db
           .select()
           .from(userGithubLogins)
@@ -64,7 +64,7 @@ const makeGithubLoginsRepo: Effect.Effect<GithubLoginsRepo["Service"], never, Me
         );
         return held.toSorted((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
       }),
-      keep: Effect.fn("GithubLoginsRepo.keep")(function* (
+      keep: Effect.fnUntraced(function* (
         userId: string,
         login: Omit<HeldGithubLogin, "updatedAt">,
       ) {
@@ -77,10 +77,7 @@ const makeGithubLoginsRepo: Effect.Effect<GithubLoginsRepo["Service"], never, Me
           })
           .pipe(Effect.orDie);
       }),
-      forgetAccount: Effect.fn("GithubLoginsRepo.forgetAccount")(function* (
-        userId: string,
-        accountId: string,
-      ) {
+      forgetAccount: Effect.fnUntraced(function* (userId: string, accountId: string) {
         return removed(
           yield* db
             .delete(userGithubLogins)
@@ -91,7 +88,7 @@ const makeGithubLoginsRepo: Effect.Effect<GithubLoginsRepo["Service"], never, Me
             .pipe(Effect.orDie),
         );
       }),
-      forgetRefused: Effect.fn("GithubLoginsRepo.forgetRefused")(function* (
+      forgetRefused: Effect.fnUntraced(function* (
         userId: string,
         accountId: string,
         sealedToken: string,

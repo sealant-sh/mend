@@ -579,10 +579,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
         .pipe(Effect.orDie);
     });
 
-    const forLaunch = Effect.fn("AgentMemoryRepo.forLaunch")(function* (
-      userId: string,
-      projectId: ProjectId,
-    ) {
+    const forLaunch = Effect.fnUntraced(function* (userId: string, projectId: ProjectId) {
       const rows = yield* db
         .select()
         .from(agentMemoryFiles)
@@ -592,10 +589,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
       return rows.map(toStored);
     });
 
-    const list = Effect.fn("AgentMemoryRepo.list")(function* (
-      userId: string,
-      projectId: ProjectId,
-    ) {
+    const list = Effect.fnUntraced(function* (userId: string, projectId: ProjectId) {
       const rows = yield* db
         .select()
         .from(agentMemoryFiles)
@@ -605,11 +599,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
       return rows.map(toEntry);
     });
 
-    const read = Effect.fn("AgentMemoryRepo.read")(function* (
-      userId: string,
-      projectId: ProjectId,
-      path: string,
-    ) {
+    const read = Effect.fnUntraced(function* (userId: string, projectId: ProjectId, path: string) {
       const [row] = yield* db
         .select()
         .from(agentMemoryFiles)
@@ -624,7 +614,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
           };
     });
 
-    const remove = Effect.fn("AgentMemoryRepo.remove")(function* (
+    const remove = Effect.fnUntraced(function* (
       userId: string,
       projectId: ProjectId,
       path: string,
@@ -650,7 +640,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    const readBack = Effect.fn("AgentMemoryRepo.readBack")(function* (input: {
+    const readBack = Effect.fnUntraced(function* (input: {
       readonly userId: string;
       readonly projectId: ProjectId;
       readonly sessionId: string;
@@ -757,7 +747,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    const importFiles = Effect.fn("AgentMemoryRepo.importFiles")(function* (input: {
+    const importFiles = Effect.fnUntraced(function* (input: {
       readonly userId: string;
       readonly projectId: ProjectId;
       readonly files: ReadonlyArray<MemoryFile>;
@@ -992,7 +982,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    const homeOf = Effect.fn("AgentMemoryRepo.homeOf")(function* (worktreeId: WorktreeId) {
+    const homeOf = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const [row] = yield* db
         .select()
         .from(agentMemoryHomes)
@@ -1018,7 +1008,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
       };
     });
 
-    const recordPendingHome = Effect.fn("AgentMemoryRepo.recordPendingHome")(function* (
+    const recordPendingHome = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       home: AgentMemoryHome,
       epoch: number,
@@ -1038,7 +1028,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
         .pipe(Effect.orDie);
     });
 
-    const notePendingHomePosition = Effect.fn("AgentMemoryRepo.notePendingHomePosition")(function* (
+    const notePendingHomePosition = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       workspaceId: string,
       epoch: number,
@@ -1058,10 +1048,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
         .pipe(Effect.orDie);
     });
 
-    const settleHome = Effect.fn("AgentMemoryRepo.settleHome")(function* (
-      worktreeId: WorktreeId,
-      epoch: number,
-    ) {
+    const settleHome = Effect.fnUntraced(function* (worktreeId: WorktreeId, epoch: number) {
       yield* db
         .update(agentMemoryHomes)
         .set({

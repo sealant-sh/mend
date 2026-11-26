@@ -572,7 +572,7 @@ const rawCapture = (
  * An explicit captureId reads only that retained historical capture, refusing lost/invalid
  * evidence instead of falling back to another capture. Derived packs are scoped to this worktree.
  */
-export const ensureCaptureCache = Effect.fn("ensureCaptureCache")(function* (
+export const ensureCaptureCache = Effect.fn("mend.session.ensure_capture_cache")(function* (
   projectId: ProjectId,
   worktreeId: WorktreeId,
   historical?: { readonly captureId: string },

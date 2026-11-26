@@ -76,7 +76,7 @@ const make: Effect.Effect<McpAppsRepo["Service"], never, MendDB | PgClient.PgCli
       sessionId: agentItems.sessionId,
       processId: agentItems.processId,
     };
-    const byItem = Effect.fn("McpAppsRepo.byItem")(function* (itemId: AgentItemId) {
+    const byItem = Effect.fnUntraced(function* (itemId: AgentItemId) {
       const [row] = yield* db
         .select(columns)
         .from(mcpAppSnapshots)
@@ -88,7 +88,7 @@ const make: Effect.Effect<McpAppsRepo["Service"], never, MendDB | PgClient.PgCli
         ? null
         : yield* parseSnapshot(row).pipe(Effect.mapError(storageFailed));
     });
-    const save = Effect.fn("McpAppsRepo.save")(function* (
+    const save = Effect.fnUntraced(function* (
       itemId: AgentItemId,
       target: McpAppTarget,
       document: McpAppDocument,
@@ -110,9 +110,7 @@ const make: Effect.Effect<McpAppsRepo["Service"], never, MendDB | PgClient.PgCli
         .pipe(Effect.mapError(storageFailed));
       if (item !== undefined) yield* notifyAgentConversation(db, pg, item.sessionId);
     });
-    const listForSession = Effect.fn("McpAppsRepo.listForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const listForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       // HTML stays out of the conversation's small reference list.
       const rows = yield* db
         .select({
@@ -144,10 +142,7 @@ const make: Effect.Effect<McpAppsRepo["Service"], never, MendDB | PgClient.PgCli
         Schema.decodeUnknownEffect(McpAppRef)({ ...row, ...row.metadata }),
       ).pipe(Effect.mapError(storageFailed));
     });
-    const descendsFrom = Effect.fn("McpAppsRepo.descendsFrom")(function* (
-      sessionId: SessionId,
-      ancestorId: SessionId,
-    ) {
+    const descendsFrom = Effect.fnUntraced(function* (sessionId: SessionId, ancestorId: SessionId) {
       const rows = yield* pg<{ readonly found: boolean }>`WITH RECURSIVE ancestors(id) AS (
         SELECT ${sessionId}::text
         UNION
@@ -157,7 +152,7 @@ const make: Effect.Effect<McpAppsRepo["Service"], never, MendDB | PgClient.PgCli
       );
       return rows[0]?.found === true;
     });
-    const setContext = Effect.fn("McpAppsRepo.setContext")(function* (
+    const setContext = Effect.fnUntraced(function* (
       sessionId: SessionId,
       itemId: AgentItemId,
       text: string,
@@ -184,9 +179,7 @@ const make: Effect.Effect<McpAppsRepo["Service"], never, MendDB | PgClient.PgCli
         })
         .pipe(Effect.mapError(storageFailed));
     });
-    const contextForSession = Effect.fn("McpAppsRepo.contextForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const contextForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* db
         .select({
           itemId: mcpAppSnapshots.itemId,

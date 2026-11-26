@@ -182,7 +182,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
       // makes the difference between "expired" and "not found" legible: a code
       // deleted at the expiry boundary reads back as a typo, so a recently
       // expired row is kept around to answer for itself.
-      const createPairing = Effect.fn("DevicesRepo.createPairing")(function* (input: {
+      const createPairing = Effect.fnUntraced(function* (input: {
         readonly userId: string;
         readonly code: string;
         readonly expiresAt: Date;
@@ -211,7 +211,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
       });
 
       // better-auth's `user` row for whoever a code or request resolved to.
-      const ownerOf = Effect.fn("DevicesRepo.ownerOf")(function* (userId: string) {
+      const ownerOf = Effect.fnUntraced(function* (userId: string) {
         const ownerRows = yield* sql<{
           readonly id: string;
           readonly email: string;
@@ -225,7 +225,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
 
       // The one place a device row is born — pairing claims, CLI collections and by-hand
       // tokens all end here.
-      const insertDeviceToken = Effect.fn("DevicesRepo.insertDeviceToken")(function* (input: {
+      const insertDeviceToken = Effect.fnUntraced(function* (input: {
         readonly userId: string;
         readonly name: string;
         readonly platform: string;
@@ -249,7 +249,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
 
       // Single use is the UPDATE's own WHERE clause: two claimants racing the
       // same code produce exactly one winner, and the loser reads as spent.
-      const claim = Effect.fn("DevicesRepo.claim")(function* (input: {
+      const claim = Effect.fnUntraced(function* (input: {
         readonly code: string;
         readonly name: string;
         readonly platform: string;
@@ -290,7 +290,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         return new ClaimedPairing({ user, device });
       });
 
-      const list = Effect.fn("DevicesRepo.list")(function* (userId: string) {
+      const list = Effect.fnUntraced(function* (userId: string) {
         const rows = yield* db
           .select(selectedDevice)
           .from(deviceTokens)
@@ -306,7 +306,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         return rows.map((row) => new PairedDevice(row));
       });
 
-      const revoke = Effect.fn("DevicesRepo.revoke")(function* (userId: string, id: string) {
+      const revoke = Effect.fnUntraced(function* (userId: string, id: string) {
         const [row] = yield* db
           .update(deviceTokens)
           .set({
@@ -326,9 +326,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         return new PairedDevice(row);
       });
 
-      const revokeAllForUser = Effect.fn("DevicesRepo.revokeAllForUser")(function* (
-        userId: string,
-      ) {
+      const revokeAllForUser = Effect.fnUntraced(function* (userId: string) {
         const rows = yield* db
           .update(deviceTokens)
           .set({ revokedAt: yield* DateTime.nowAsDate })
@@ -348,7 +346,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
 
       // Unknown or spent, told apart the same way a pairing code is: a row
       // that exists but cannot be acted on answers as itself.
-      const cliAuthMiss = Effect.fn("DevicesRepo.cliAuthMiss")(function* (userCode: string) {
+      const cliAuthMiss = Effect.fnUntraced(function* (userCode: string) {
         const [existing] = yield* db
           .select({ id: cliAuthRequests.id })
           .from(cliAuthRequests)
@@ -359,7 +357,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
           : Effect.fail(new CliAuthSpentError());
       });
 
-      const createCliAuth = Effect.fn("DevicesRepo.createCliAuth")(function* (input: {
+      const createCliAuth = Effect.fnUntraced(function* (input: {
         readonly deviceCodeHash: string;
         readonly userCode: string;
         readonly name: string;
@@ -393,7 +391,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
 
       // The approve page reads only requests still waiting on a decision — a
       // reloaded page after approval answers "spent", never the request again.
-      const getCliAuth = Effect.fn("DevicesRepo.getCliAuth")(function* (userCode: string) {
+      const getCliAuth = Effect.fnUntraced(function* (userCode: string) {
         const [row] = yield* db
           .select(selectedCliAuth)
           .from(cliAuthRequests)
@@ -410,7 +408,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         return new CliAuthRequest(row);
       });
 
-      const approveCliAuth = Effect.fn("DevicesRepo.approveCliAuth")(function* (input: {
+      const approveCliAuth = Effect.fnUntraced(function* (input: {
         readonly userCode: string;
         readonly userId: string;
       }) {
@@ -431,7 +429,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         return new CliAuthRequest(row);
       });
 
-      const denyCliAuth = Effect.fn("DevicesRepo.denyCliAuth")(function* (userCode: string) {
+      const denyCliAuth = Effect.fnUntraced(function* (userCode: string) {
         const [row] = yield* db
           .update(cliAuthRequests)
           .set({ deniedAt: yield* DateTime.nowAsDate })
@@ -452,7 +450,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
       // The token is born here, at collection — approval stores only who said
       // yes, so no credential ever waits in this table. Single collection is
       // the UPDATE's WHERE clause, like a pairing claim.
-      const collectCliAuth = Effect.fn("DevicesRepo.collectCliAuth")(function* (input: {
+      const collectCliAuth = Effect.fnUntraced(function* (input: {
         readonly deviceCodeHash: string;
         readonly platform: string;
         readonly tokenHash: string;

@@ -73,9 +73,7 @@ export const ProjectServiceRecipesRepoLive: Layer.Layer<
     const notify = (projectId: ProjectId) =>
       notifyEvent(pg, { type: "project", projectId }).pipe(Effect.ignore);
 
-    const listForProject = Effect.fn("ProjectServiceRecipesRepo.listForProject")(function* (
-      projectId: ProjectId,
-    ) {
+    const listForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* db
         .select()
         .from(projectServiceRecipes)
@@ -85,9 +83,7 @@ export const ProjectServiceRecipesRepoLive: Layer.Layer<
       return rows.map(toRecipe);
     });
 
-    const create = Effect.fn("ProjectServiceRecipesRepo.create")(function* (
-      input: NewProjectServiceRecipe,
-    ) {
+    const create = Effect.fnUntraced(function* (input: NewProjectServiceRecipe) {
       const inserted = yield* db
         .insert(projectServiceRecipes)
         .values(input)
@@ -102,10 +98,7 @@ export const ProjectServiceRecipesRepoLive: Layer.Layer<
       return toRecipe(row);
     });
 
-    const remove = Effect.fn("ProjectServiceRecipesRepo.remove")(function* (
-      projectId: ProjectId,
-      name: string,
-    ) {
+    const remove = Effect.fnUntraced(function* (projectId: ProjectId, name: string) {
       yield* db
         .delete(projectServiceRecipes)
         .where(

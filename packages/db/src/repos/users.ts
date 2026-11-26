@@ -40,19 +40,19 @@ export const UsersRepoLive: Layer.Layer<UsersRepo, never, PgClient.PgClient> = L
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
 
-    const count = Effect.fn("UsersRepo.count")(function* () {
+    const count = Effect.fnUntraced(function* () {
       const rows = yield* sql`SELECT count(*)::int AS count FROM "user"`.pipe(Effect.orDie);
       return rows[0] === undefined ? 0 : decodeCount(rows[0]).count;
     });
 
-    const byId = Effect.fn("UsersRepo.byId")(function* (id: string) {
+    const byId = Effect.fnUntraced(function* (id: string) {
       const rows = yield* sql`SELECT id, name, email FROM "user" WHERE id = ${id} LIMIT 1`.pipe(
         Effect.orDie,
       );
       return rows[0] === undefined ? null : decodeFacts(rows[0]);
     });
 
-    const byIds = Effect.fn("UsersRepo.byIds")(function* (ids: ReadonlyArray<string>) {
+    const byIds = Effect.fnUntraced(function* (ids: ReadonlyArray<string>) {
       if (ids.length === 0) return [];
       const rows = yield* sql`SELECT id, name, email FROM "user" WHERE id IN ${sql.in([
         ...new Set(ids),
@@ -60,7 +60,7 @@ export const UsersRepoLive: Layer.Layer<UsersRepo, never, PgClient.PgClient> = L
       return rows.map((row) => decodeFacts(row));
     });
 
-    const byEmail = Effect.fn("UsersRepo.byEmail")(function* (email: string) {
+    const byEmail = Effect.fnUntraced(function* (email: string) {
       const rows = yield* sql`
         SELECT id, name, email FROM "user" WHERE lower(email) = lower(${email.trim()}) LIMIT 1`.pipe(
         Effect.orDie,
@@ -68,7 +68,7 @@ export const UsersRepoLive: Layer.Layer<UsersRepo, never, PgClient.PgClient> = L
       return rows[0] === undefined ? null : decodeFacts(rows[0]);
     });
 
-    const oldest = Effect.fn("UsersRepo.oldest")(function* () {
+    const oldest = Effect.fnUntraced(function* () {
       const rows = yield* sql`
         SELECT id, name, email FROM "user" ORDER BY "createdAt" ASC, id ASC LIMIT 1`.pipe(
         Effect.orDie,
@@ -76,13 +76,13 @@ export const UsersRepoLive: Layer.Layer<UsersRepo, never, PgClient.PgClient> = L
       return rows[0] === undefined ? null : decodeFacts(rows[0]);
     });
 
-    const deactivate = Effect.fn("UsersRepo.deactivate")(function* (id: string) {
+    const deactivate = Effect.fnUntraced(function* (id: string) {
       yield* sql`
         UPDATE "user" SET "deactivatedAt" = now()
         WHERE id = ${id} AND "deactivatedAt" IS NULL`.pipe(Effect.orDie);
     });
 
-    const revokeAuthSessions = Effect.fn("UsersRepo.revokeAuthSessions")(function* (id: string) {
+    const revokeAuthSessions = Effect.fnUntraced(function* (id: string) {
       yield* sql`DELETE FROM "session" WHERE "userId" = ${id}`.pipe(Effect.orDie);
     });
 

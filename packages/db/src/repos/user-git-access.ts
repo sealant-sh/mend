@@ -27,7 +27,7 @@ export const UserGitAccessRepoLive: Layer.Layer<UserGitAccessRepo, never, MendDB
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const mode = Effect.fn("UserGitAccessRepo.mode")(function* (userId: string) {
+    const mode = Effect.fnUntraced(function* (userId: string) {
       const [row] = yield* db
         .select()
         .from(userGitAccess)
@@ -37,10 +37,7 @@ export const UserGitAccessRepoLive: Layer.Layer<UserGitAccessRepo, never, MendDB
       return row === undefined ? null : row.mode;
     });
 
-    const setMode = Effect.fn("UserGitAccessRepo.setMode")(function* (
-      userId: string,
-      value: GitAccessMode,
-    ) {
+    const setMode = Effect.fnUntraced(function* (userId: string, value: GitAccessMode) {
       yield* db
         .insert(userGitAccess)
         .values({ userId, mode: value })

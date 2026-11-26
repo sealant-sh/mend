@@ -105,7 +105,7 @@ export const AuditEventsRepoLive: Layer.Layer<AuditEventsRepo, never, MendDB> = 
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const record = Effect.fn("AuditEventsRepo.record")(function* (event: NewAuditEvent) {
+    const record = Effect.fnUntraced(function* (event: NewAuditEvent) {
       yield* db
         .insert(auditEvents)
         .values({
@@ -127,7 +127,7 @@ export const AuditEventsRepoLive: Layer.Layer<AuditEventsRepo, never, MendDB> = 
         );
     });
 
-    const listForOrganization = Effect.fn("AuditEventsRepo.listForOrganization")(function* (
+    const listForOrganization = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       page: { readonly beforeId: string | null; readonly limit: number },
     ) {
@@ -150,7 +150,7 @@ export const AuditEventsRepoLive: Layer.Layer<AuditEventsRepo, never, MendDB> = 
       return rows.map(eventOf);
     });
 
-    const recorded = Effect.fn("AuditEventsRepo.recorded")(function* (query: AuditLookup) {
+    const recorded = Effect.fnUntraced(function* (query: AuditLookup) {
       // The organization first, so the lookup walks that organization's index.
       const rows = yield* db
         .select({ id: auditEvents.id })
@@ -169,7 +169,7 @@ export const AuditEventsRepoLive: Layer.Layer<AuditEventsRepo, never, MendDB> = 
       return rows.length > 0;
     });
 
-    const latest = Effect.fn("AuditEventsRepo.latest")(function* (query: {
+    const latest = Effect.fnUntraced(function* (query: {
       readonly organizationId: OrganizationId;
       readonly action: AuditAction;
       readonly subjectId: string;

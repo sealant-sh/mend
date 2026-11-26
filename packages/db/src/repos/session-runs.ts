@@ -101,9 +101,7 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const activeForSession = Effect.fn("SessionRunsRepo.activeForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const activeForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [row] = yield* db
         .select()
         .from(sessionRuns)
@@ -165,13 +163,9 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
         ),
       );
 
-    const create = Effect.fn("SessionRunsRepo.create")((input: NewSessionRun) =>
-      createOnce(input, true),
-    );
+    const create = (input: NewSessionRun) => createOnce(input, true);
 
-    const bySealantRunId = Effect.fn("SessionRunsRepo.bySealantRunId")(function* (
-      id: SealantRunId,
-    ) {
+    const bySealantRunId = Effect.fnUntraced(function* (id: SealantRunId) {
       const [row] = yield* db
         .select()
         .from(sessionRuns)
@@ -181,9 +175,7 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
       return row === undefined ? null : toSessionRun(row);
     });
 
-    const listForSession = Effect.fn("SessionRunsRepo.listForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const listForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* db
         .select()
         .from(sessionRuns)
@@ -193,9 +185,7 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
       return rows.map(toSessionRun);
     });
 
-    const latestForSession = Effect.fn("SessionRunsRepo.latestForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const latestForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [row] = yield* db
         .select()
         .from(sessionRuns)
@@ -206,7 +196,7 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
       return row === undefined ? null : toSessionRun(row);
     });
 
-    const listActive = Effect.fn("SessionRunsRepo.listActive")(function* () {
+    const listActive = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select()
         .from(sessionRuns)
@@ -218,10 +208,7 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
       return rows.map(toSessionRun);
     });
 
-    const saveLastSeenSequence = Effect.fn("SessionRunsRepo.saveLastSeenSequence")(function* (
-      id: SealantRunId,
-      sequence: bigint,
-    ) {
+    const saveLastSeenSequence = Effect.fnUntraced(function* (id: SealantRunId, sequence: bigint) {
       yield* db
         .update(sessionRuns)
         .set({ lastSeenSequence: sequence, updatedAt: yield* DateTime.nowAsDate })
@@ -229,7 +216,7 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
         .pipe(Effect.orDie);
     });
 
-    const settle = Effect.fn("SessionRunsRepo.settle")(function* (
+    const settle = Effect.fnUntraced(function* (
       id: SealantRunId,
       outcome: SessionRunOutcome,
       summary: string | null,
@@ -242,7 +229,7 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
         .pipe(Effect.orDie);
     });
 
-    const restate = Effect.fn("SessionRunsRepo.restate")(function* (
+    const restate = Effect.fnUntraced(function* (
       id: SealantRunId,
       outcome: SessionRunOutcome,
       summary: string | null,

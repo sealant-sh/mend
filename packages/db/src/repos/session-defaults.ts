@@ -39,7 +39,7 @@ const make: Effect.Effect<SessionDefaultsRepo["Service"], never, MendDB> = Effec
       ? Effect.succeed(NO_SESSION_DEFAULTS)
       : decodeDefaults({ harness: row.harness, byHarness: row.byHarness }).pipe(Effect.orDie);
 
-  const forUser = Effect.fn("SessionDefaultsRepo.forUser")(function* (userId: string) {
+  const forUser = Effect.fnUntraced(function* (userId: string) {
     const [row] = yield* db
       .select()
       .from(userSessionDefaults)
@@ -49,10 +49,7 @@ const make: Effect.Effect<SessionDefaultsRepo["Service"], never, MendDB> = Effec
     return yield* fromRow(row);
   });
 
-  const set = Effect.fn("SessionDefaultsRepo.set")(function* (
-    userId: string,
-    defaults: SessionDefaults,
-  ) {
+  const set = Effect.fnUntraced(function* (userId: string, defaults: SessionDefaults) {
     const encoded = yield* encodeDefaults(defaults).pipe(Effect.orDie);
     const [row] = yield* db
       .insert(userSessionDefaults)
@@ -71,10 +68,7 @@ const make: Effect.Effect<SessionDefaultsRepo["Service"], never, MendDB> = Effec
     return yield* fromRow(row);
   });
 
-  const adopt = Effect.fn("SessionDefaultsRepo.adopt")(function* (
-    userId: string,
-    defaults: SessionDefaults,
-  ) {
+  const adopt = Effect.fnUntraced(function* (userId: string, defaults: SessionDefaults) {
     const encoded = yield* encodeDefaults(defaults).pipe(Effect.orDie);
     const inserted = yield* db
       .insert(userSessionDefaults)

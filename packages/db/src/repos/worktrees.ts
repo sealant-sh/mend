@@ -161,7 +161,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
       const db = yield* MendDB;
       const pg = yield* PgClient.PgClient;
 
-      const create = Effect.fn("WorktreesRepo.create")(function* (worktree: NewWorktreeRow) {
+      const create = Effect.fnUntraced(function* (worktree: NewWorktreeRow) {
         const [project] = yield* db
           .select({
             uses: projects.newWorktreesUseProjectResources,
@@ -197,7 +197,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return toWorktree(row);
       });
 
-      const byId = Effect.fn("WorktreesRepo.byId")(function* (id: WorktreeId) {
+      const byId = Effect.fnUntraced(function* (id: WorktreeId) {
         const [row] = yield* db
           .select()
           .from(worktrees)
@@ -208,10 +208,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return toWorktree(row);
       });
 
-      const byName = Effect.fn("WorktreesRepo.byName")(function* (
-        projectId: ProjectId,
-        name: string,
-      ) {
+      const byName = Effect.fnUntraced(function* (projectId: ProjectId, name: string) {
         const [row] = yield* db
           .select()
           .from(worktrees)
@@ -221,7 +218,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return row === undefined ? null : toWorktree(row);
       });
 
-      const byHandoffCheckpoint = Effect.fn("WorktreesRepo.byHandoffCheckpoint")(function* (
+      const byHandoffCheckpoint = Effect.fnUntraced(function* (
         projectId: ProjectId,
         checkpoint: Sha,
       ) {
@@ -239,9 +236,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return row === undefined ? null : toWorktree(row);
       });
 
-      const handoffPacks = Effect.fn("WorktreesRepo.handoffPacks")(function* (
-        excludingProject?: ProjectId,
-      ) {
+      const handoffPacks = Effect.fnUntraced(function* (excludingProject?: ProjectId) {
         const rows = yield* db
           .select({ deltaPack: sql<string>`${worktrees.handoff}->>'deltaPack'` })
           .from(worktrees)
@@ -257,10 +252,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return rows.map((row) => row.deltaPack);
       });
 
-      const byDirectory = Effect.fn("WorktreesRepo.byDirectory")(function* (
-        projectId: ProjectId,
-        directory: string,
-      ) {
+      const byDirectory = Effect.fnUntraced(function* (projectId: ProjectId, directory: string) {
         const [row] = yield* db
           .select()
           .from(worktrees)
@@ -270,9 +262,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return row === undefined ? null : toWorktree(row);
       });
 
-      const listForProject = Effect.fn("WorktreesRepo.listForProject")(function* (
-        projectId: ProjectId,
-      ) {
+      const listForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
         const rows = yield* db
           .select()
           .from(worktrees)
@@ -282,9 +272,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return rows.map(toWorktree);
       });
 
-      const listByIds = Effect.fn("WorktreesRepo.listByIds")(function* (
-        ids: ReadonlyArray<WorktreeId>,
-      ) {
+      const listByIds = Effect.fnUntraced(function* (ids: ReadonlyArray<WorktreeId>) {
         if (ids.length === 0) return [];
         const rows = yield* db
           .select()
@@ -294,7 +282,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return rows.map(toWorktree);
       });
 
-      const setBase = Effect.fn("WorktreesRepo.setBase")(function* (
+      const setBase = Effect.fnUntraced(function* (
         id: WorktreeId,
         baseSha: Sha,
         baseRef: string | null,
@@ -306,7 +294,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
           .pipe(Effect.orDie);
       });
 
-      const setAccessPolicy = Effect.fn("WorktreesRepo.setAccessPolicy")(function* (
+      const setAccessPolicy = Effect.fnUntraced(function* (
         id: WorktreeId,
         pin: WorktreeAccessPolicyPin,
       ) {
@@ -321,11 +309,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         }
       });
 
-      const rename = Effect.fn("WorktreesRepo.rename")(function* (
-        id: WorktreeId,
-        name: string,
-        branch: string,
-      ) {
+      const rename = Effect.fnUntraced(function* (id: WorktreeId, name: string, branch: string) {
         const [row] = yield* db
           .update(worktrees)
           .set({ name, branch, updatedAt: yield* DateTime.nowAsDate })
@@ -337,10 +321,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         }
       });
 
-      const setBranch = Effect.fn("WorktreesRepo.setBranch")(function* (
-        id: WorktreeId,
-        branch: string,
-      ) {
+      const setBranch = Effect.fnUntraced(function* (id: WorktreeId, branch: string) {
         yield* pg
           .withTransaction(
             Effect.gen(function* () {
@@ -372,7 +353,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
           .pipe(Effect.orDie);
       });
 
-      const remove = Effect.fn("WorktreesRepo.remove")(function* (id: WorktreeId) {
+      const remove = Effect.fnUntraced(function* (id: WorktreeId) {
         return yield* pg
           .withTransaction(
             Effect.gen(function* () {
@@ -398,7 +379,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
           .pipe(Effect.orDie);
       });
 
-      const changeOwnerOf = Effect.fn("WorktreesRepo.changeOwnerOf")(function* (id: WorktreeId) {
+      const changeOwnerOf = Effect.fnUntraced(function* (id: WorktreeId) {
         const [row] = yield* db
           .select({ owner: worktrees.changeOwnerUserId })
           .from(worktrees)
@@ -408,17 +389,13 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return row?.owner ?? null;
       });
 
-      const nestedRepositories = Effect.fn("WorktreesRepo.nestedRepositories")(function* (
-        id: WorktreeId,
-      ) {
+      const nestedRepositories = Effect.fnUntraced(function* (id: WorktreeId) {
         return yield* pg<{ readonly path: string; readonly branch: string }>`
           SELECT path, branch FROM worktree_nested_repositories
           WHERE worktree_id = ${id} ORDER BY path`.pipe(Effect.orDie);
       });
 
-      const newestLiveSessionId = Effect.fn("WorktreesRepo.newestLiveSessionId")(function* (
-        id: WorktreeId,
-      ) {
+      const newestLiveSessionId = Effect.fnUntraced(function* (id: WorktreeId) {
         const [row] = yield* db
           .select({ id: agentSessions.id })
           .from(agentSessions)

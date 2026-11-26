@@ -2,6 +2,7 @@ import { Config, Duration, Effect, Layer, Logger, Option, Tracer } from "effect"
 import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
 import { OtlpExporter, OtlpLogger, OtlpSerialization, OtlpTracer } from "effect/observability";
 
+import { enrichingSerialization } from "./enrich.ts";
 import { ErrorReporter, makeSentryReporter, type SentryReporterOptions } from "./errors.ts";
 import { scrubbingSerialization } from "./scrub.ts";
 import { type TelemetrySettings, TelemetrySettingsError, telemetrySettings } from "./settings.ts";
@@ -40,6 +41,45 @@ export const sampledRoots =
             ),
           ...(tracer.context === undefined ? {} : { context: tracer.context }),
         });
+
+/**
+ * Spans a library opens around a single call of its own, which say nothing their one child does
+ * not: drizzle's `drizzle.operation` around each insert's query. Their children hang off the
+ * span above instead.
+ */
+const WRAPPER_SPANS: ReadonlySet<string> = new Set(["drizzle.operation"]);
+
+/** A span that is its parent: what it records goes nowhere, and its children are its parent's. */
+const parentAsSpan = (
+  parent: Tracer.AnySpan,
+  options: Parameters<Tracer.Tracer["span"]>[0],
+): Tracer.Span => ({
+  _tag: "Span",
+  name: options.name,
+  spanId: parent.spanId,
+  traceId: parent.traceId,
+  parent: parent._tag === "Span" ? parent.parent : Option.none(),
+  annotations: options.annotations,
+  status: { _tag: "Started", startTime: options.startTime },
+  attributes: new Map(),
+  links: [],
+  sampled: parent.sampled,
+  kind: options.kind,
+  end: () => undefined,
+  attribute: () => undefined,
+  event: () => undefined,
+  addLinks: () => undefined,
+});
+
+/** `tracer` without `WRAPPER_SPANS`: each becomes its parent, so its child is the parent's. */
+export const withoutWrapperSpans = (tracer: Tracer.Tracer): Tracer.Tracer =>
+  Tracer.make({
+    span: (options) =>
+      WRAPPER_SPANS.has(options.name) && Option.isSome(options.parent)
+        ? parentAsSpan(options.parent.value, options)
+        : tracer.span(options),
+    ...(tracer.context === undefined ? {} : { context: tracer.context }),
+  });
 
 /** Everything that drains at shutdown, for the signal handler that cannot wait for finalizers. */
 const flushes = new Set<(timeoutMillis: number) => Promise<void>>();
@@ -107,9 +147,8 @@ export const enabledTelemetryLayer = (
   };
   const tracer = Layer.effect(
     Tracer.Tracer,
-    Effect.map(
-      OtlpTracer.make({ ...shared, url: `${settings.otlp.baseUrl}/v1/traces` }),
-      sampledRoots(settings.tracesSampleRate),
+    Effect.map(OtlpTracer.make({ ...shared, url: `${settings.otlp.baseUrl}/v1/traces` }), (otlp) =>
+      withoutWrapperSpans(sampledRoots(settings.tracesSampleRate)(otlp)),
     ),
   );
   const logger = Logger.layer(
@@ -146,7 +185,10 @@ export const enabledTelemetryLayer = (
   return Layer.mergeAll(tracer, logger, flushOnSignal, Layer.succeed(ErrorReporter, reporter)).pipe(
     Layer.provide(OtlpExporter.layerFlusher),
     Layer.provide(
-      Layer.succeed(OtlpSerialization.OtlpSerialization, scrubbingSerialization(jsonSerialization)),
+      Layer.succeed(
+        OtlpSerialization.OtlpSerialization,
+        enrichingSerialization(scrubbingSerialization(jsonSerialization)),
+      ),
     ),
     Layer.provide(transports.otlp),
   );

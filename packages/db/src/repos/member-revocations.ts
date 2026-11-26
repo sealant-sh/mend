@@ -73,9 +73,7 @@ export const MemberRevocationsRepoLive: Layer.Layer<
     const devices = yield* DevicesRepo;
     const slackLinks = yield* SlackLinksRepo;
 
-    const beginRemoval: MemberRevocationsRepo["Service"]["beginRemoval"] = Effect.fn(
-      "MemberRevocationsRepo.beginRemoval",
-    )((input) =>
+    const beginRemoval: MemberRevocationsRepo["Service"]["beginRemoval"] = (input) =>
       db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -163,12 +161,9 @@ export const MemberRevocationsRepoLive: Layer.Layer<
             });
           }).pipe(Effect.interruptible),
         )
-        .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error))),
-    );
+        .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
 
-    const announce = Effect.fn("MemberRevocationsRepo.announce")(function* (
-      removed: MemberRevocation,
-    ) {
+    const announce = Effect.fnUntraced(function* (removed: MemberRevocation) {
       const events: ReadonlyArray<MendEvent> = [
         { type: "organization", organizationId: removed.organizationId },
         ...removed.unshared.flatMap(

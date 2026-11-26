@@ -18,6 +18,7 @@ import {
   firstVisibleOutput,
   reportCaught,
   sentryOptions,
+  spansRequest,
   traceAction,
 } from "./telemetry-sentry.ts";
 import type { TraceRef } from "./telemetry.ts";
@@ -142,6 +143,53 @@ describe("an action and what follows it", () => {
       navigation.end();
     });
     expect(seen).toBe((ref as TraceRef | null)?.spanId);
+  });
+
+  it("names a request for its procedures or its route, never its origin, port or IDs", () => {
+    const { beforeSendSpan } = sentryOptions({
+      dsn: "https://6f570eb21e7adee8a5de60116db1b2a7@sentry.example/4",
+      environment: "test",
+      release: null,
+      tracesSampleRate: 1,
+    });
+    // As the SDK hands them over: named for the address the page fetched.
+    const request = (method: string, url: string) =>
+      beforeSendSpan?.({
+        trace_id: "0af7651916cd43dd8448eb211c80319c",
+        span_id: "b7ad6b7169203331",
+        name: `${method} ${url}`,
+        start_timestamp: 1,
+        end_timestamp: 2,
+        status: "ok",
+        is_segment: false,
+        attributes: {
+          "sentry.op": { value: "http.client", type: "string" },
+          "http.request.method": { value: method, type: "string" },
+          "url.full": { value: url, type: "string" },
+        },
+      });
+    const batch = request(
+      "POST",
+      "http://localhost:45877/trpc/sessions.detail,sessions.pages,sessions.items?batch=1&input=%7B%7D",
+    );
+    expect(batch?.name).toBe("POST /trpc/sessions.detail +2");
+    expect(batch?.attributes).toMatchObject({
+      "sentry.description": "POST /trpc/sessions.detail +2",
+      "mend.trpc.procedures": "sessions.detail,sessions.pages,sessions.items",
+    });
+    const send = request(
+      "POST",
+      "http://localhost:45877/api/sessions/852bcfd6-bcde-45d8-970e-17161c13515c/messages",
+    );
+    expect(send?.name).toBe("POST /api/sessions/:sessionId/messages");
+    expect(send?.attributes["sentry.description"]).toBe("POST /api/sessions/:sessionId/messages");
+    expect(JSON.stringify([batch?.name, send?.name])).not.toContain("45877");
+  });
+
+  it("makes no span for a read the page repeats on a timer", () => {
+    expect(spansRequest("http://localhost:3105/trpc/executor.calls?batch=1")).toBe(false);
+    expect(spansRequest("http://localhost:3105/trpc/executor.calls,sessions.detail")).toBe(true);
+    expect(spansRequest("/api/health")).toBe(true);
   });
 
   it("measures a turn's first visible output as its own span, with the turn's id and a link to its send", async () => {

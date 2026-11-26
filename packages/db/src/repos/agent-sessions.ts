@@ -862,38 +862,36 @@ void sessionSeamIntact;
  * Disable the owner's shared control in the caller's transaction, without notifications: with
  * everyone, and every grant to one person (docs/adr/0026, decision 7).
  */
-export const disableOwnerSharedControl = Effect.fn("SessionsRepo.disableOwnerSharedControl")(
-  function* (
-    db: Pick<MendDatabase, "update" | "delete">,
-    userId: string,
-    organizationId: OrganizationId,
-  ) {
-    const unshared = yield* db
-      .update(agentSessions)
-      .set({
-        sharedControlEnabledByUserId: null,
-        sharedControlEnabledAt: null,
-        updatedAt: yield* DateTime.nowAsDate,
-      })
-      .where(
-        and(
-          eq(agentSessions.ownerUserId, userId),
-          or(
-            isNotNull(agentSessions.sharedControlEnabledAt),
-            sql`cardinality(${agentSessions.sharedControlUserIds}) > 0`,
-          ),
-          sql`${agentSessions.projectId} IN (SELECT ${projects.id} FROM ${projects} WHERE ${projects.organizationId} = ${organizationId})`,
+export const disableOwnerSharedControl = Effect.fnUntraced(function* (
+  db: Pick<MendDatabase, "update" | "delete">,
+  userId: string,
+  organizationId: OrganizationId,
+) {
+  const unshared = yield* db
+    .update(agentSessions)
+    .set({
+      sharedControlEnabledByUserId: null,
+      sharedControlEnabledAt: null,
+      updatedAt: yield* DateTime.nowAsDate,
+    })
+    .where(
+      and(
+        eq(agentSessions.ownerUserId, userId),
+        or(
+          isNotNull(agentSessions.sharedControlEnabledAt),
+          sql`cardinality(${agentSessions.sharedControlUserIds}) > 0`,
         ),
-      )
-      .returning({ id: agentSessions.id, projectId: agentSessions.projectId })
-      .pipe(Effect.orDie);
-    yield* endGrantsOf(
-      db,
-      unshared.map((session) => session.id),
-    );
-    return unshared;
-  },
-);
+        sql`${agentSessions.projectId} IN (SELECT ${projects.id} FROM ${projects} WHERE ${projects.organizationId} = ${organizationId})`,
+      ),
+    )
+    .returning({ id: agentSessions.id, projectId: agentSessions.projectId })
+    .pipe(Effect.orDie);
+  yield* endGrantsOf(
+    db,
+    unshared.map((session) => session.id),
+  );
+  return unshared;
+});
 
 /** The row's relaunch plan is still the one its writer read (null: none). */
 const plannedAs = (expected: string | null) =>
@@ -908,7 +906,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       const db = yield* MendDB;
       const pg = yield* PgClient.PgClient;
 
-      const projectIdOf = Effect.fn("SessionsRepo.projectIdOf")(function* (id: SessionId) {
+      const projectIdOf = Effect.fnUntraced(function* (id: SessionId) {
         const [row] = yield* db
           .select({ projectId: agentSessions.projectId })
           .from(agentSessions)
@@ -918,12 +916,12 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return row?.projectId ?? "";
       });
 
-      const notify = Effect.fn("SessionsRepo.notify")(function* (id: SessionId) {
+      const notify = Effect.fnUntraced(function* (id: SessionId) {
         const projectId = yield* projectIdOf(id);
         yield* notifyEvent(pg, { type: "session", sessionId: id, projectId });
       });
 
-      const create = Effect.fn("SessionsRepo.create")(function* (session: NewSession) {
+      const create = Effect.fnUntraced(function* (session: NewSession) {
         const [row] = yield* db
           .insert(agentSessions)
           .values({ ...session, recordHistoryComplete: true })
@@ -940,7 +938,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return created;
       });
 
-      const byId = Effect.fn("SessionsRepo.byId")(function* (id: SessionId) {
+      const byId = Effect.fnUntraced(function* (id: SessionId) {
         const [row] = yield* db
           .select()
           .from(agentSessions)
@@ -951,9 +949,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return toSession(row);
       });
 
-      const listForProject = Effect.fn("SessionsRepo.listForProject")(function* (
-        projectId: ProjectId,
-      ) {
+      const listForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
         const rows = yield* db
           .select()
           .from(agentSessions)
@@ -963,7 +959,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.map(toSession);
       });
 
-      const listForInbox = Effect.fn("SessionsRepo.listForInbox")(function* (
+      const listForInbox = Effect.fnUntraced(function* (
         projectIds: ReadonlyArray<ProjectId>,
         userId: string,
         endedLimit: number,
@@ -1065,9 +1061,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .map(toSession);
       });
 
-      const listForWorktree = Effect.fn("SessionsRepo.listForWorktree")(function* (
-        worktreeId: WorktreeId,
-      ) {
+      const listForWorktree = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
         const rows = yield* db
           .select()
           .from(agentSessions)
@@ -1082,7 +1076,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         db.select({ id: projects.id }).from(projects).where(projectListed),
       );
 
-      const listActive = Effect.fn("SessionsRepo.listActive")(function* () {
+      const listActive = Effect.fnUntraced(function* () {
         const rows = yield* db
           .select()
           .from(agentSessions)
@@ -1123,7 +1117,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           order by e.executor_started_at desc nulls last limit 1)`,
       };
 
-      const liveMarkNow = Effect.fn("SessionsRepo.liveMarkNow")(function* () {
+      const liveMarkNow = Effect.fnUntraced(function* () {
         const [row] = yield* pg<{ readonly mark: string }>`
           SELECT COALESCE(pg_sequence_last_value('session_live_marks'), 0)::text AS mark`.pipe(
           Effect.orDie,
@@ -1131,7 +1125,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return Number(row?.mark ?? 0);
       });
 
-      const listActiveView = Effect.fn("SessionsRepo.listActiveView")(function* () {
+      const listActiveView = Effect.fnUntraced(function* () {
         const rows = yield* db
           .select(sessionViewColumns)
           .from(agentSessions)
@@ -1146,9 +1140,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.map(toSessionView);
       });
 
-      const listForProjectView = Effect.fn("SessionsRepo.listForProjectView")(function* (
-        projectId: ProjectId,
-      ) {
+      const listForProjectView = Effect.fnUntraced(function* (projectId: ProjectId) {
         const rows = yield* db
           .select(sessionViewColumns)
           .from(agentSessions)
@@ -1158,7 +1150,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.map(toSessionView);
       });
 
-      const viewById = Effect.fn("SessionsRepo.viewById")(function* (id: SessionId) {
+      const viewById = Effect.fnUntraced(function* (id: SessionId) {
         const [row] = yield* db
           .select(sessionViewColumns)
           .from(agentSessions)
@@ -1169,7 +1161,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return toSessionView(row);
       });
 
-      const listUnsettled = Effect.fn("SessionsRepo.listUnsettled")(function* () {
+      const listUnsettled = Effect.fnUntraced(function* () {
         const rows = yield* db
           .select()
           .from(agentSessions)
@@ -1185,7 +1177,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.map(toSession);
       });
 
-      const recentOwnersForProject = Effect.fn("SessionsRepo.recentOwnersForProject")(function* (
+      const recentOwnersForProject = Effect.fnUntraced(function* (
         projectId: ProjectId,
         since: Date,
         excludeLabel: string,
@@ -1209,9 +1201,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.flatMap((row) => (row.ownerUserId === null ? [] : [row.ownerUserId]));
       });
 
-      const listUnsettledForOwner = Effect.fn("SessionsRepo.listUnsettledForOwner")(function* (
-        userId: string,
-      ) {
+      const listUnsettledForOwner = Effect.fnUntraced(function* (userId: string) {
         const rows = yield* db
           .select()
           .from(agentSessions)
@@ -1227,21 +1217,19 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.map(toSession);
       });
 
-      const countUnsettledForOrganization = Effect.fn("SessionsRepo.countUnsettledForOrganization")(
-        function* (organizationId: OrganizationId) {
-          const rows = yield* db
-            .select({ count: sql<number>`count(*)::int` })
-            .from(agentSessions)
-            .innerJoin(projects, and(projectListed, eq(projects.id, agentSessions.projectId)))
-            .where(
-              and(eq(projects.organizationId, organizationId), isNull(agentSessions.settledAt)),
-            )
-            .pipe(Effect.orDie);
-          return rows[0]?.count ?? 0;
-        },
-      );
+      const countUnsettledForOrganization = Effect.fnUntraced(function* (
+        organizationId: OrganizationId,
+      ) {
+        const rows = yield* db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(agentSessions)
+          .innerJoin(projects, and(projectListed, eq(projects.id, agentSessions.projectId)))
+          .where(and(eq(projects.organizationId, organizationId), isNull(agentSessions.settledAt)))
+          .pipe(Effect.orDie);
+        return rows[0]?.count ?? 0;
+      });
 
-      const listRecentlySettled = Effect.fn("SessionsRepo.listRecentlySettled")(function* () {
+      const listRecentlySettled = Effect.fnUntraced(function* () {
         const rows = yield* db
           .select()
           .from(agentSessions)
@@ -1258,7 +1246,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.map(toSession);
       });
 
-      const setSealantIds = Effect.fn("SessionsRepo.setSealantIds")(function* (
+      const setSealantIds = Effect.fnUntraced(function* (
         id: SessionId,
         sealantRunId: SealantRunId | null,
         workspaceId: SealantWorkspaceId,
@@ -1284,32 +1272,33 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const recordWorkspaceTtlRenewal = Effect.fn("SessionsRepo.recordWorkspaceTtlRenewal")(
-        function* (
-          id: SessionId,
-          workspaceId: SealantWorkspaceId,
-          expiresAt: Date | null,
-          renewedAt: Date,
-        ) {
-          const rows = yield* db
-            .update(agentSessions)
-            .set({
-              workspaceExpiresAt: expiresAt,
-              workspaceTtlRenewedAt: renewedAt,
-              workspaceTtlRenewalFailedAt: null,
-              workspaceTtlRenewalError: null,
-              updatedAt: renewedAt,
-            })
-            .where(and(eq(agentSessions.id, id), eq(agentSessions.sealantWorkspaceId, workspaceId)))
-            .returning({ id: agentSessions.id })
-            .pipe(Effect.orDie);
-          if (rows.length > 0) yield* notify(id);
-        },
-      );
+      const recordWorkspaceTtlRenewal = Effect.fnUntraced(function* (
+        id: SessionId,
+        workspaceId: SealantWorkspaceId,
+        expiresAt: Date | null,
+        renewedAt: Date,
+      ) {
+        const rows = yield* db
+          .update(agentSessions)
+          .set({
+            workspaceExpiresAt: expiresAt,
+            workspaceTtlRenewedAt: renewedAt,
+            workspaceTtlRenewalFailedAt: null,
+            workspaceTtlRenewalError: null,
+            updatedAt: renewedAt,
+          })
+          .where(and(eq(agentSessions.id, id), eq(agentSessions.sealantWorkspaceId, workspaceId)))
+          .returning({ id: agentSessions.id })
+          .pipe(Effect.orDie);
+        if (rows.length > 0) yield* notify(id);
+      });
 
-      const recordWorkspaceTtlRenewalFailure = Effect.fn(
-        "SessionsRepo.recordWorkspaceTtlRenewalFailure",
-      )(function* (id: SessionId, workspaceId: SealantWorkspaceId, error: string, failedAt: Date) {
+      const recordWorkspaceTtlRenewalFailure = Effect.fnUntraced(function* (
+        id: SessionId,
+        workspaceId: SealantWorkspaceId,
+        error: string,
+        failedAt: Date,
+      ) {
         const rows = yield* db
           .update(agentSessions)
           .set({
@@ -1323,7 +1312,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         if (rows.length > 0) yield* notify(id);
       });
 
-      const setSealantSessionId = Effect.fn("SessionsRepo.setSealantSessionId")(function* (
+      const setSealantSessionId = Effect.fnUntraced(function* (
         id: SessionId,
         sealantSessionId: string,
       ) {
@@ -1334,10 +1323,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const setWorkspaceImage = Effect.fn("SessionsRepo.setWorkspaceImage")(function* (
-        id: SessionId,
-        image: WorkspaceImage,
-      ) {
+      const setWorkspaceImage = Effect.fnUntraced(function* (id: SessionId, image: WorkspaceImage) {
         yield* db
           .update(agentSessions)
           .set({ workspaceImage: image, updatedAt: yield* DateTime.nowAsDate })
@@ -1345,10 +1331,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const setDotfiles = Effect.fn("SessionsRepo.setDotfiles")(function* (
-        id: SessionId,
-        dotfiles: SessionDotfiles,
-      ) {
+      const setDotfiles = Effect.fnUntraced(function* (id: SessionId, dotfiles: SessionDotfiles) {
         yield* db
           .update(agentSessions)
           .set({ dotfiles, updatedAt: yield* DateTime.nowAsDate })
@@ -1356,7 +1339,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const setBoatKey = Effect.fn("SessionsRepo.setBoatKey")(function* (
+      const setBoatKey = Effect.fnUntraced(function* (
         id: SessionId,
         boatKey: BoatKeyChoice | null,
       ) {
@@ -1367,10 +1350,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const setHasTranscript = Effect.fn("SessionsRepo.setHasTranscript")(function* (
-        id: SessionId,
-        hasTranscript: boolean,
-      ) {
+      const setHasTranscript = Effect.fnUntraced(function* (id: SessionId, hasTranscript: boolean) {
         yield* db
           .update(agentSessions)
           .set({ hasTranscript, updatedAt: yield* DateTime.nowAsDate })
@@ -1378,9 +1358,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const listSettledUnclassified = Effect.fn("SessionsRepo.listSettledUnclassified")(function* (
-        limit: number,
-      ) {
+      const listSettledUnclassified = Effect.fnUntraced(function* (limit: number) {
         const rows = yield* db
           .select()
           .from(agentSessions)
@@ -1397,10 +1375,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.map(toSession);
       });
 
-      const setProviderSessionId = Effect.fn("SessionsRepo.setProviderSessionId")(function* (
-        id: SessionId,
-        providerId: string,
-      ) {
+      const setProviderSessionId = Effect.fnUntraced(function* (id: SessionId, providerId: string) {
         yield* db
           .update(agentSessions)
           .set({ providerSessionId: providerId, updatedAt: yield* DateTime.nowAsDate })
@@ -1408,9 +1383,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const nativeIngestCursor = Effect.fn("SessionsRepo.nativeIngestCursor")(function* (
-        id: SessionId,
-      ) {
+      const nativeIngestCursor = Effect.fnUntraced(function* (id: SessionId) {
         const [row] = yield* db
           .select({ nativeIngestCursor: agentSessions.nativeIngestCursor })
           .from(agentSessions)
@@ -1420,10 +1393,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return row?.nativeIngestCursor ?? null;
       });
 
-      const setMode = Effect.fn("SessionsRepo.setMode")(function* (
-        id: SessionId,
-        mode: SessionMode,
-      ) {
+      const setMode = Effect.fnUntraced(function* (id: SessionId, mode: SessionMode) {
         const rows = yield* db
           .update(agentSessions)
           .set({ mode, updatedAt: yield* DateTime.nowAsDate })
@@ -1435,7 +1405,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           yield* notifyEvent(pg, { type: "session", sessionId: id, projectId: row.projectId });
       });
 
-      const setNativeIngestCursor = Effect.fn("SessionsRepo.setNativeIngestCursor")(function* (
+      const setNativeIngestCursor = Effect.fnUntraced(function* (
         id: SessionId,
         cursor: NativeIngestCursor,
       ) {
@@ -1446,7 +1416,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const setReferenceMounts = Effect.fn("SessionsRepo.setReferenceMounts")(function* (
+      const setReferenceMounts = Effect.fnUntraced(function* (
         id: SessionId,
         mounts: ReadonlyArray<SessionReferenceMount>,
       ) {
@@ -1457,7 +1427,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const setExtraMounts = Effect.fn("SessionsRepo.setExtraMounts")(function* (
+      const setExtraMounts = Effect.fnUntraced(function* (
         id: SessionId,
         mounts: ReadonlyArray<SessionExtraMount>,
       ) {
@@ -1468,10 +1438,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const setStatus = Effect.fn("SessionsRepo.setStatus")(function* (
-        id: SessionId,
-        status: SessionStatus,
-      ) {
+      const setStatus = Effect.fnUntraced(function* (id: SessionId, status: SessionStatus) {
         yield* db
           .update(agentSessions)
           .set({
@@ -1487,10 +1454,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
-      const saveLastSeenSequence = Effect.fn("SessionsRepo.saveLastSeenSequence")(function* (
-        id: SessionId,
-        sequence: bigint,
-      ) {
+      const saveLastSeenSequence = Effect.fnUntraced(function* (id: SessionId, sequence: bigint) {
         yield* db
           .update(agentSessions)
           .set({ lastSeenSequence: sequence, updatedAt: yield* DateTime.nowAsDate })
@@ -1498,7 +1462,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const notifyProgress = Effect.fn("SessionsRepo.notifyProgress")(function* (
+      const notifyProgress = Effect.fnUntraced(function* (
         id: SessionId,
         sequence: bigint,
         line: string,
@@ -1513,7 +1477,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         });
       });
 
-      const settle = Effect.fn("SessionsRepo.settle")(function* (
+      const settle = Effect.fnUntraced(function* (
         id: SessionId,
         outcome: SessionOutcome,
         summary: string | null,
@@ -1542,10 +1506,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
-      const setSummary = Effect.fn("SessionsRepo.setSummary")(function* (
-        id: SessionId,
-        summary: string | null,
-      ) {
+      const setSummary = Effect.fnUntraced(function* (id: SessionId, summary: string | null) {
         yield* db
           .update(agentSessions)
           .set({ summary, updatedAt: yield* DateTime.nowAsDate })
@@ -1554,7 +1515,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
-      const noteMemoryKills = Effect.fn("SessionsRepo.noteMemoryKills")(function* (
+      const noteMemoryKills = Effect.fnUntraced(function* (
         id: SessionId,
         sealantWorkspaceId: string,
         kills: number,
@@ -1574,7 +1535,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.length > 0;
       });
 
-      const restate = Effect.fn("SessionsRepo.restate")(function* (
+      const restate = Effect.fnUntraced(function* (
         id: SessionId,
         outcome: SessionOutcome,
         summary: string | null,
@@ -1588,10 +1549,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       });
 
       /** A session is a continuous piece of work; the harness is the tool currently driving it. */
-      const setLabel = Effect.fn("SessionsRepo.setLabel")(function* (
-        id: SessionId,
-        label: string | null,
-      ) {
+      const setLabel = Effect.fnUntraced(function* (id: SessionId, label: string | null) {
         yield* db
           .update(agentSessions)
           .set({ label, updatedAt: yield* DateTime.nowAsDate })
@@ -1600,7 +1558,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
-      const setSharedControl = Effect.fn("SessionsRepo.setSharedControl")(function* (
+      const setSharedControl = Effect.fnUntraced(function* (
         id: SessionId,
         enabledByUserId: string | null,
       ) {
@@ -1654,10 +1612,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
        * so a user-typed label (or an earlier naming) always wins the race.
        * Returns whether the write landed.
        */
-      const setLabelIfUnset = Effect.fn("SessionsRepo.setLabelIfUnset")(function* (
-        id: SessionId,
-        label: string,
-      ) {
+      const setLabelIfUnset = Effect.fnUntraced(function* (id: SessionId, label: string) {
         const rows = yield* db
           .update(agentSessions)
           .set({ label, updatedAt: yield* DateTime.nowAsDate })
@@ -1669,7 +1624,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return true;
       });
 
-      const remove = Effect.fn("SessionsRepo.remove")(function* (id: SessionId) {
+      const remove = Effect.fnUntraced(function* (id: SessionId) {
         return yield* pg
           .withTransaction(
             Effect.gen(function* () {
@@ -1691,10 +1646,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const setHarness = Effect.fn("SessionsRepo.setHarness")(function* (
-        id: SessionId,
-        harness: string,
-      ) {
+      const setHarness = Effect.fnUntraced(function* (id: SessionId, harness: string) {
         yield* db
           .update(agentSessions)
           .set({ harness, updatedAt: yield* DateTime.nowAsDate })
@@ -1703,7 +1655,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
-      const setLaunchOptions = Effect.fn("SessionsRepo.setLaunchOptions")(function* (
+      const setLaunchOptions = Effect.fnUntraced(function* (
         id: SessionId,
         options: { readonly model: string | null; readonly effort: EffortLevel | null },
       ) {
@@ -1719,10 +1671,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
-      const reopen = Effect.fn("SessionsRepo.reopen")(function* (
-        id: SessionId,
-        status: "running" | "idle",
-      ) {
+      const reopen = Effect.fnUntraced(function* (id: SessionId, status: "running" | "idle") {
         yield* db
           .update(agentSessions)
           .set({
@@ -1747,10 +1696,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
-      const claimIdleStop = Effect.fn("SessionsRepo.claimIdleStop")(function* (
-        id: SessionId,
-        retryBefore: Date,
-      ) {
+      const claimIdleStop = Effect.fnUntraced(function* (id: SessionId, retryBefore: Date) {
         // Turn admission takes the same lock (`AgentConversationRepo.submitTurn`), and each
         // statement here reads after it is held: a turn queued before the claim is seen by the
         // NOT EXISTS below, and one asked after it reads the claim and is refused.
@@ -1780,7 +1726,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return claimed.length > 0;
       });
 
-      const releaseIdleStop = Effect.fn("SessionsRepo.releaseIdleStop")(function* (id: SessionId) {
+      const releaseIdleStop = Effect.fnUntraced(function* (id: SessionId) {
         yield* db
           .update(agentSessions)
           .set({ idleStoppedAt: null, stopSummary: null })
@@ -1788,10 +1734,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const setStopSummary = Effect.fn("SessionsRepo.setStopSummary")(function* (
-        id: SessionId,
-        summary: string | null,
-      ) {
+      const setStopSummary = Effect.fnUntraced(function* (id: SessionId, summary: string | null) {
         yield* db
           .update(agentSessions)
           .set({ stopSummary: summary })
@@ -1799,7 +1742,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const touchTerminal = Effect.fn("SessionsRepo.touchTerminal")(function* (id: SessionId) {
+      const touchTerminal = Effect.fnUntraced(function* (id: SessionId) {
         yield* db
           .update(agentSessions)
           .set({ terminalActiveAt: yield* DateTime.nowAsDate })
@@ -1807,9 +1750,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const terminalActivity = Effect.fn("SessionsRepo.terminalActivity")(function* (
-        ids: ReadonlyArray<SessionId>,
-      ) {
+      const terminalActivity = Effect.fnUntraced(function* (ids: ReadonlyArray<SessionId>) {
         if (ids.length === 0) return new Map<SessionId, Date>();
         const rows = yield* db
           .select({ id: agentSessions.id, at: agentSessions.terminalActiveAt })
@@ -1821,40 +1762,41 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return new Map(rows.flatMap((row) => (row.at === null ? [] : [[row.id, row.at] as const])));
       });
 
-      const recordCaptureObservation = Effect.fn("SessionsRepo.recordCaptureObservation")(
-        function* (id: SessionId, observation: CaptureObservation) {
-          yield* db
-            .update(agentSessions)
-            .set({
-              capturePending: observation.pending,
-              capturePendingBytes: observation.pendingBytes,
-              captureRefused: observation.refused,
-              captureRegisteredAt: observation.registeredAt,
-              captureObservedAt: observation.observedAt,
-              ...(observation.incompleteReason === undefined
-                ? {}
-                : { captureIncompleteReason: observation.incompleteReason }),
-              ...(observation.incompleteDetail === undefined
-                ? {}
-                : { captureIncompleteDetail: observation.incompleteDetail }),
-              ...(observation.failing === undefined
-                ? {}
-                : observation.failing === null
-                  ? { captureFailingSince: null, captureFailingError: null }
-                  : {
-                      // The first time it was seen failing stays, whatever later readings say.
-                      captureFailingSince: sql`COALESCE(${agentSessions.captureFailingSince}, ${observation.failing.since})`,
-                      captureFailingError: observation.failing.error,
-                    }),
-              ...overdueColumns(observation),
-            })
-            .where(eq(agentSessions.id, id))
-            .pipe(Effect.orDie);
-          yield* notify(id);
-        },
-      );
+      const recordCaptureObservation = Effect.fnUntraced(function* (
+        id: SessionId,
+        observation: CaptureObservation,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({
+            capturePending: observation.pending,
+            capturePendingBytes: observation.pendingBytes,
+            captureRefused: observation.refused,
+            captureRegisteredAt: observation.registeredAt,
+            captureObservedAt: observation.observedAt,
+            ...(observation.incompleteReason === undefined
+              ? {}
+              : { captureIncompleteReason: observation.incompleteReason }),
+            ...(observation.incompleteDetail === undefined
+              ? {}
+              : { captureIncompleteDetail: observation.incompleteDetail }),
+            ...(observation.failing === undefined
+              ? {}
+              : observation.failing === null
+                ? { captureFailingSince: null, captureFailingError: null }
+                : {
+                    // The first time it was seen failing stays, whatever later readings say.
+                    captureFailingSince: sql`COALESCE(${agentSessions.captureFailingSince}, ${observation.failing.since})`,
+                    captureFailingError: observation.failing.error,
+                  }),
+            ...overdueColumns(observation),
+          })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+        yield* notify(id);
+      });
 
-      const beginCaptureDrain = Effect.fn("SessionsRepo.beginCaptureDrain")(function* (
+      const beginCaptureDrain = Effect.fnUntraced(function* (
         id: SessionId,
         reason: CaptureDrainReason,
         at: Date,
@@ -1900,7 +1842,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             Effect.map((rows) => (rows.length === 0 ? "gone" : "moved")),
           );
 
-      const planRelaunch = Effect.fn("SessionsRepo.planRelaunch")(function* (
+      const planRelaunch = Effect.fnUntraced(function* (
         id: SessionId,
         expected: string | null,
         resume: string,
@@ -1923,7 +1865,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return "written";
       });
 
-      const swapRelaunch = Effect.fn("SessionsRepo.swapRelaunch")(function* (
+      const swapRelaunch = Effect.fnUntraced(function* (
         id: SessionId,
         expected: string | null,
         next: string | null,
@@ -1939,7 +1881,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return "written";
       });
 
-      const clearRelaunch = Effect.fn("SessionsRepo.clearRelaunch")(function* (id: SessionId) {
+      const clearRelaunch = Effect.fnUntraced(function* (id: SessionId) {
         yield* db
           .update(agentSessions)
           .set({ captureDrainResume: null })
@@ -1947,9 +1889,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const stopCaptureDrain = Effect.fn("SessionsRepo.stopCaptureDrain")(function* (
-        id: SessionId,
-      ) {
+      const stopCaptureDrain = Effect.fnUntraced(function* (id: SessionId) {
         const rows = yield* db
           .update(agentSessions)
           .set({
@@ -1966,7 +1906,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         }
       });
 
-      const relaunchOf = Effect.fn("SessionsRepo.relaunchOf")(function* (id: SessionId) {
+      const relaunchOf = Effect.fnUntraced(function* (id: SessionId) {
         const [row] = yield* db
           .select({ resume: agentSessions.captureDrainResume })
           .from(agentSessions)
@@ -1976,10 +1916,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return row?.resume ?? null;
       });
 
-      const markFinalFlush = Effect.fn("SessionsRepo.markFinalFlush")(function* (
-        id: SessionId,
-        workspaceId: string,
-      ) {
+      const markFinalFlush = Effect.fnUntraced(function* (id: SessionId, workspaceId: string) {
         yield* db
           .update(agentSessions)
           .set({ captureFinalWorkspaceId: workspaceId })
@@ -1987,9 +1924,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const finalFlushedWorkspace = Effect.fn("SessionsRepo.finalFlushedWorkspace")(function* (
-        id: SessionId,
-      ) {
+      const finalFlushedWorkspace = Effect.fnUntraced(function* (id: SessionId) {
         const [row] = yield* db
           .select({ workspaceId: agentSessions.captureFinalWorkspaceId })
           .from(agentSessions)
@@ -1999,7 +1934,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return row?.workspaceId ?? null;
       });
 
-      const recordCaptureSaved = Effect.fn("SessionsRepo.recordCaptureSaved")(function* (
+      const recordCaptureSaved = Effect.fnUntraced(function* (
         id: SessionId,
         saved: CaptureSavedObservation,
       ) {
@@ -2015,7 +1950,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const captureSavedOf = Effect.fn("SessionsRepo.captureSavedOf")(function* (id: SessionId) {
+      const captureSavedOf = Effect.fnUntraced(function* (id: SessionId) {
         const [row] = yield* db
           .select({
             workspaceId: agentSessions.captureSavedWorkspaceId,
@@ -2031,7 +1966,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return { workspaceId: row.workspaceId, at: row.at, n: row.n, epoch: row.epoch };
       });
 
-      const recordCaptureUnsaved = Effect.fn("SessionsRepo.recordCaptureUnsaved")(function* (
+      const recordCaptureUnsaved = Effect.fnUntraced(function* (
         id: SessionId,
         unsaved: CaptureUnsavedObservation,
       ) {
@@ -2046,9 +1981,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const captureUnsavedOf = Effect.fn("SessionsRepo.captureUnsavedOf")(function* (
-        id: SessionId,
-      ) {
+      const captureUnsavedOf = Effect.fnUntraced(function* (id: SessionId) {
         const [row] = yield* db
           .select({
             workspaceId: agentSessions.captureUnsavedWorkspaceId,
@@ -2063,7 +1996,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return { workspaceId: row.workspaceId, at: row.at, words: row.words ?? "not saved" };
       });
 
-      const recordExecutorEvidence = Effect.fn("SessionsRepo.recordExecutorEvidence")(function* (
+      const recordExecutorEvidence = Effect.fnUntraced(function* (
         workspaceId: string,
         answer: ExecutorCaptureAnswer,
       ) {
@@ -2103,9 +2036,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         }
       });
 
-      const executorEvidenceOf = Effect.fn("SessionsRepo.executorEvidenceOf")(function* (
-        workspaceId: string,
-      ) {
+      const executorEvidenceOf = Effect.fnUntraced(function* (workspaceId: string) {
         const [row] = yield* db
           .select()
           .from(executorCaptureEvidence)
@@ -2115,10 +2046,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return row === undefined ? null : evidenceOfRow(workspaceId, row);
       });
 
-      const openEvidenceFence = Effect.fn("SessionsRepo.openEvidenceFence")(function* (
-        workspaceId: string,
-        holder: string,
-      ) {
+      const openEvidenceFence = Effect.fnUntraced(function* (workspaceId: string, holder: string) {
         const [row] = yield* db
           .insert(executorEvidenceFences)
           .values({ workspaceId, holder })
@@ -2128,7 +2056,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return row.ticket;
       });
 
-      const closeEvidenceFence = Effect.fn("SessionsRepo.closeEvidenceFence")(function* (
+      const closeEvidenceFence = Effect.fnUntraced(function* (
         ticket: number,
         outcome: "unanswered" | "unpublished",
       ) {
@@ -2146,9 +2074,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const evidenceFenced = Effect.fn("SessionsRepo.evidenceFenced")(function* (
-        workspaceId: string,
-      ) {
+      const evidenceFenced = Effect.fnUntraced(function* (workspaceId: string) {
         const rows = yield* db
           .select({ ticket: executorEvidenceFences.ticket })
           .from(executorEvidenceFences)
@@ -2158,9 +2084,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.length > 0;
       });
 
-      const publishExecutorReading = Effect.fn("SessionsRepo.publishExecutorReading")(function* (
-        reading: ExecutorReading,
-      ) {
+      const publishExecutorReading = Effect.fnUntraced(function* (reading: ExecutorReading) {
         const { observation, answer, workspaceId } = reading;
         const t = executorCaptureEvidence;
         const version = yield* db
@@ -2261,17 +2185,15 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return version;
       });
 
-      const captureObservedPositionOf = Effect.fn("SessionsRepo.captureObservedPositionOf")(
-        function* (id: SessionId) {
-          const [row] = yield* db
-            .select({ position: agentSessions.captureObservedPosition })
-            .from(agentSessions)
-            .where(eq(agentSessions.id, id))
-            .limit(1)
-            .pipe(Effect.orDie);
-          return row?.position ?? null;
-        },
-      );
+      const captureObservedPositionOf = Effect.fnUntraced(function* (id: SessionId) {
+        const [row] = yield* db
+          .select({ position: agentSessions.captureObservedPosition })
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row?.position ?? null;
+      });
 
       /** An `executor_capture_evidence` row as the evidence it holds. */
       const evidenceOfRow = (
@@ -2301,21 +2223,16 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         } satisfies ExecutorCaptureEvidence;
       };
 
-      const recordCaptureDrainProgress = Effect.fn("SessionsRepo.recordCaptureDrainProgress")(
-        function* (id: SessionId, at: Date) {
-          yield* db
-            .update(agentSessions)
-            .set({ captureDrainProgressAt: at, captureNotSavedAt: null })
-            .where(and(eq(agentSessions.id, id), isNotNull(agentSessions.captureDrain)))
-            .pipe(Effect.orDie);
-          yield* notify(id);
-        },
-      );
+      const recordCaptureDrainProgress = Effect.fnUntraced(function* (id: SessionId, at: Date) {
+        yield* db
+          .update(agentSessions)
+          .set({ captureDrainProgressAt: at, captureNotSavedAt: null })
+          .where(and(eq(agentSessions.id, id), isNotNull(agentSessions.captureDrain)))
+          .pipe(Effect.orDie);
+        yield* notify(id);
+      });
 
-      const markCaptureNotSaved = Effect.fn("SessionsRepo.markCaptureNotSaved")(function* (
-        id: SessionId,
-        at: Date,
-      ) {
+      const markCaptureNotSaved = Effect.fnUntraced(function* (id: SessionId, at: Date) {
         const rows = yield* db
           .update(agentSessions)
           .set({ captureNotSavedAt: at, updatedAt: at })
@@ -2333,7 +2250,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return true;
       });
 
-      const endCaptureDrain = Effect.fn("SessionsRepo.endCaptureDrain")(function* (
+      const endCaptureDrain = Effect.fnUntraced(function* (
         id: SessionId,
         discarded?: CaptureDiscard,
       ) {
@@ -2363,7 +2280,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
-      const listCaptureDrains = Effect.fn("SessionsRepo.listCaptureDrains")(function* () {
+      const listCaptureDrains = Effect.fnUntraced(function* () {
         const rows = yield* db
           .select()
           .from(agentSessions)
@@ -2381,10 +2298,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.map(toSession);
       });
 
-      const setExecutorStartedAt = Effect.fn("SessionsRepo.setExecutorStartedAt")(function* (
-        id: SessionId,
-        at: Date,
-      ) {
+      const setExecutorStartedAt = Effect.fnUntraced(function* (id: SessionId, at: Date) {
         yield* db
           .update(agentSessions)
           .set({ executorStartedAt: at })
@@ -2392,7 +2306,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const recordAcceptedWorkspace = Effect.fn("SessionsRepo.recordAcceptedWorkspace")(function* (
+      const recordAcceptedWorkspace = Effect.fnUntraced(function* (
         id: SessionId,
         workspaceId: SealantWorkspaceId,
         executorStartedAt: Date,
@@ -2417,7 +2331,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
-      const recordExecutorResource = Effect.fn("SessionsRepo.recordExecutorResource")(function* (
+      const recordExecutorResource = Effect.fnUntraced(function* (
         id: SessionId,
         workspaceId: SealantWorkspaceId,
         resourceId: string,
@@ -2429,10 +2343,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const recordExecutorCreate = Effect.fn("SessionsRepo.recordExecutorCreate")(function* (
-        id: SessionId,
-        key: string,
-      ) {
+      const recordExecutorCreate = Effect.fnUntraced(function* (id: SessionId, key: string) {
         yield* db
           .update(agentSessions)
           .set({ executorCreateKey: key })
@@ -2440,10 +2351,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const clearExecutorCreate = Effect.fn("SessionsRepo.clearExecutorCreate")(function* (
-        id: SessionId,
-        key: string,
-      ) {
+      const clearExecutorCreate = Effect.fnUntraced(function* (id: SessionId, key: string) {
         yield* db
           .update(agentSessions)
           .set({ executorCreateKey: null })
@@ -2451,9 +2359,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
-      const executorCreateOf = Effect.fn("SessionsRepo.executorCreateOf")(function* (
-        id: SessionId,
-      ) {
+      const executorCreateOf = Effect.fnUntraced(function* (id: SessionId) {
         const [row] = yield* db
           .select({ key: agentSessions.executorCreateKey })
           .from(agentSessions)
@@ -2463,7 +2369,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return row?.key ?? null;
       });
 
-      const listExecutorCreates = Effect.fn("SessionsRepo.listExecutorCreates")(function* () {
+      const listExecutorCreates = Effect.fnUntraced(function* () {
         const rows = yield* db
           .select({ sessionId: agentSessions.id, key: agentSessions.executorCreateKey })
           .from(agentSessions)
@@ -2474,9 +2380,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         );
       });
 
-      const executorResourceOf = Effect.fn("SessionsRepo.executorResourceOf")(function* (
-        id: SessionId,
-      ) {
+      const executorResourceOf = Effect.fnUntraced(function* (id: SessionId) {
         const [row] = yield* db
           .select({
             workspaceId: agentSessions.sealantWorkspaceId,
@@ -2491,9 +2395,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return { workspaceId: row.workspaceId, resourceId: row.resourceId, launchId: row.launchId };
       });
 
-      const executorLaunchOf = Effect.fn("SessionsRepo.executorLaunchOf")(function* (
-        id: SessionId,
-      ) {
+      const executorLaunchOf = Effect.fnUntraced(function* (id: SessionId) {
         const [row] = yield* db
           .select({
             workspaceId: agentSessions.sealantWorkspaceId,
@@ -2507,9 +2409,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return { workspaceId: row.workspaceId, launchId: row.launchId };
       });
 
-      const executorSessionOf = Effect.fn("SessionsRepo.executorSessionOf")(function* (
-        workspaceId: SealantWorkspaceId,
-      ) {
+      const executorSessionOf = Effect.fnUntraced(function* (workspaceId: SealantWorkspaceId) {
         const [row] = yield* db
           .select()
           .from(agentSessions)
@@ -2525,7 +2425,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return row === undefined ? null : toSession(row);
       });
 
-      const launchersOf = Effect.fn("SessionsRepo.launchersOf")(function* (
+      const launchersOf = Effect.fnUntraced(function* (
         workspaceIds: ReadonlyArray<SealantWorkspaceId>,
       ) {
         if (workspaceIds.length === 0) return new Map<string, string>();
@@ -2555,7 +2455,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return launchers;
       });
 
-      const executorAccessOf = Effect.fn("SessionsRepo.executorAccessOf")(function* (
+      const executorAccessOf = Effect.fnUntraced(function* (
         workspaceId: SealantWorkspaceId,
         askerUserId: string,
       ) {
@@ -2592,10 +2492,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         } satisfies ExecutorAccess;
       });
 
-      const requestRemoval = Effect.fn("SessionsRepo.requestRemoval")(function* (
-        id: SessionId,
-        at: Date,
-      ) {
+      const requestRemoval = Effect.fnUntraced(function* (id: SessionId, at: Date) {
         yield* db
           .update(agentSessions)
           .set({
@@ -2607,7 +2504,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
-      const listRemovalRequested = Effect.fn("SessionsRepo.listRemovalRequested")(function* () {
+      const listRemovalRequested = Effect.fnUntraced(function* () {
         const rows = yield* db
           .select()
           .from(agentSessions)

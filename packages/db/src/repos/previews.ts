@@ -484,26 +484,21 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
             }),
           );
 
-      const ensureForWorktree = Effect.fn("PreviewsRepo.ensureForWorktree")(function* (
-        id: WorktreeId,
-      ) {
+      const ensureForWorktree = Effect.fnUntraced(function* (id: WorktreeId) {
         const first = yield* snapshot((tx) => readPreviews(tx, id));
         if (first.unnamed.length === 0) return first.views;
         yield* allocate(id, first.unnamed);
         return (yield* snapshot((tx) => readPreviews(tx, id))).views;
       }, Effect.catchTags(queryErrorsDie));
 
-      const readForWorktree = Effect.fn("PreviewsRepo.readForWorktree")(
+      const readForWorktree = Effect.fnUntraced(
         function* (id: WorktreeId) {
           return (yield* snapshot((tx) => readPreviews(tx, id))).views;
         },
         Effect.catchTags({ ...queryErrorsDie, WorktreeNotFoundError: () => Effect.succeed([]) }),
       );
 
-      const ensureNamed = Effect.fn("PreviewsRepo.ensureNamed")(function* (
-        id: WorktreeId,
-        serviceName: string,
-      ) {
+      const ensureNamed = Effect.fnUntraced(function* (id: WorktreeId, serviceName: string) {
         const kept = () =>
           db
             .select({ id: previews.id })
@@ -536,13 +531,11 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
           }),
         );
 
-      const resolveByLabel = Effect.fn("PreviewsRepo.resolveByLabel")(function* (
-        label: PreviewLabel,
-      ) {
+      const resolveByLabel = Effect.fnUntraced(function* (label: PreviewLabel) {
         return yield* resolveWhere(eq(previews.label, label));
       }, Effect.catchTags(queryErrorsDie));
 
-      const resolveById = Effect.fn("PreviewsRepo.resolveById")(function* (id: PreviewId) {
+      const resolveById = Effect.fnUntraced(function* (id: PreviewId) {
         return yield* resolveWhere(eq(previews.id, id));
       }, Effect.catchTags(queryErrorsDie));
 
@@ -559,11 +552,11 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
             ),
           );
 
-      const byId = Effect.fn("PreviewsRepo.byId")(function* (id: PreviewId) {
+      const byId = Effect.fnUntraced(function* (id: PreviewId) {
         return yield* rowWhere(eq(previews.id, id));
       });
 
-      const byIds = Effect.fn("PreviewsRepo.byIds")(function* (ids: ReadonlyArray<PreviewId>) {
+      const byIds = Effect.fnUntraced(function* (ids: ReadonlyArray<PreviewId>) {
         if (ids.length === 0) return new Map<PreviewId, Preview>();
         const rows = yield* db
           .select()
@@ -573,7 +566,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         return new Map(found.map((preview) => [preview.id, preview]));
       }, Effect.orDie);
 
-      const byLabel = Effect.fn("PreviewsRepo.byLabel")(function* (label: PreviewLabel) {
+      const byLabel = Effect.fnUntraced(function* (label: PreviewLabel) {
         return yield* rowWhere(eq(previews.label, label));
       });
 
@@ -584,7 +577,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
           ),
         );
 
-      const projectPreview = Effect.fn("PreviewsRepo.projectPreview")(function* (id: ProjectId) {
+      const projectPreview = Effect.fnUntraced(function* (id: ProjectId) {
         const [row] = yield* db
           .select()
           .from(previews)
@@ -592,10 +585,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         return row === undefined ? null : yield* decodeProjectPreview(row);
       }, Effect.orDie);
 
-      const ensureProject = Effect.fn("PreviewsRepo.ensureProject")(function* (
-        id: ProjectId,
-        serviceName: string,
-      ) {
+      const ensureProject = Effect.fnUntraced(function* (id: ProjectId, serviceName: string) {
         return yield* db.transaction((tx) =>
           Effect.gen(function* () {
             const [project] = yield* tx
@@ -622,7 +612,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         );
       }, Effect.catchTags(queryErrorsDie));
 
-      const useProject = Effect.fn("PreviewsRepo.useProject")(function* (
+      const useProject = Effect.fnUntraced(function* (
         id: ProjectId,
         target: ProjectPreviewSelection,
       ) {
@@ -673,13 +663,13 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         );
       }, Effect.catchTags(queryErrorsDie));
 
-      const controlOf = Effect.fn("PreviewsRepo.controlOf")(function* (id: PreviewId) {
+      const controlOf = Effect.fnUntraced(function* (id: PreviewId) {
         return yield* readControl(db, id).pipe(Effect.orDie);
       });
 
       const nextControlSeq = () => takeSeq(db).pipe(Effect.orDie);
 
-      const changeControl = Effect.fn("PreviewsRepo.changeControl")(function* (
+      const changeControl = Effect.fnUntraced(function* (
         id: PreviewId,
         request: PreviewControlRequest,
       ) {
@@ -719,9 +709,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         );
       }, Effect.catchTags(queryErrorsDie));
 
-      const previewsOfService = Effect.fn("PreviewsRepo.previewsOfService")(function* (
-        serviceId: ServiceId,
-      ) {
+      const previewsOfService = Effect.fnUntraced(function* (serviceId: ServiceId) {
         return yield* snapshot((tx) =>
           Effect.gen(function* () {
             const rows = yield* tx
@@ -757,17 +745,15 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
       const previewOfService = (id: ServiceId) =>
         Effect.map(previewsOfService(id), (ids) => ids[0] ?? null);
 
-      const gatewaySnapshots = Effect.fn("PreviewsRepo.gatewaySnapshots")(function* (
-        ids: ReadonlyArray<PreviewId>,
-      ) {
+      const gatewaySnapshots = Effect.fnUntraced(function* (ids: ReadonlyArray<PreviewId>) {
         return yield* snapshot((tx) => readGatewaySnapshots(tx, ids));
       }, Effect.catchTags(queryErrorsDie));
 
-      const gatewaySnapshot = Effect.fn("PreviewsRepo.gatewaySnapshot")(function* (id: PreviewId) {
+      const gatewaySnapshot = Effect.fnUntraced(function* (id: PreviewId) {
         return (yield* gatewaySnapshots([id])).get(id) ?? null;
       });
 
-      const assignTailnetPort = Effect.fn("PreviewsRepo.assignTailnetPort")(function* (
+      const assignTailnetPort = Effect.fnUntraced(function* (
         id: PreviewId,
         ports: ReadonlyArray<number>,
       ) {
@@ -863,9 +849,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         );
       }, Effect.catchTags(queryErrorsDie));
 
-      const touchTailnetPorts = Effect.fn("PreviewsRepo.touchTailnetPorts")(function* (
-        ids: ReadonlyArray<PreviewId>,
-      ) {
+      const touchTailnetPorts = Effect.fnUntraced(function* (ids: ReadonlyArray<PreviewId>) {
         if (ids.length === 0) return;
         yield* db
           .update(previewPorts)
@@ -873,10 +857,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
           .where(inArray(previewPorts.previewId, [...new Set(ids)]));
       }, Effect.orDie);
 
-      const tailnetPortReused = Effect.fn("PreviewsRepo.tailnetPortReused")(function* (
-        port: number,
-        id: PreviewId,
-      ) {
+      const tailnetPortReused = Effect.fnUntraced(function* (port: number, id: PreviewId) {
         const [row] = yield* db
           .select({ reused: previewPorts.reused })
           .from(previewPorts)
@@ -884,9 +865,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         return row?.reused ?? false;
       }, Effect.orDie);
 
-      const tailnetPorts = Effect.fn("PreviewsRepo.tailnetPorts")(function* (
-        ids: ReadonlyArray<PreviewId>,
-      ) {
+      const tailnetPorts = Effect.fnUntraced(function* (ids: ReadonlyArray<PreviewId>) {
         if (ids.length === 0) return new Map<PreviewId, number>();
         const rows = yield* db
           .select({ previewId: previewPorts.previewId, port: previewPorts.port })
@@ -897,7 +876,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         );
       }, Effect.orDie);
 
-      const byTailnetPort = Effect.fn("PreviewsRepo.byTailnetPort")(function* (port: number) {
+      const byTailnetPort = Effect.fnUntraced(function* (port: number) {
         const [row] = yield* db
           .select({
             preview: previews,
@@ -914,10 +893,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         } satisfies TailnetPortHolder;
       }, Effect.orDie);
 
-      const renewTailnetPort = Effect.fn("PreviewsRepo.renewTailnetPort")(function* (
-        port: number,
-        id: PreviewId,
-      ) {
+      const renewTailnetPort = Effect.fnUntraced(function* (port: number, id: PreviewId) {
         return yield* db.transaction((tx) =>
           Effect.gen(function* () {
             yield* tx.execute(sql`select pg_advisory_xact_lock(hashtext('mend:preview-ports'))`);

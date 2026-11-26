@@ -87,7 +87,7 @@ export const BoatKeysRepoLive: Layer.Layer<BoatKeysRepo, never, MendDB> = Layer.
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const launchKey = Effect.fn("BoatKeysRepo.launchKey")(function* (
+    const launchKey = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       userId: string | null,
     ) {
@@ -118,9 +118,7 @@ export const BoatKeysRepoLive: Layer.Layer<BoatKeysRepo, never, MendDB> = Layer.
       return key;
     });
 
-    const peopleWithKeys = Effect.fn("BoatKeysRepo.peopleWithKeys")(function* (
-      organizationId: OrganizationId,
-    ) {
+    const peopleWithKeys = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const rows = yield* db
         .select({ userId: boatKeys.ownerUserId, connectedAt: boatKeys.connectedAt })
         .from(boatKeys)
@@ -132,7 +130,7 @@ export const BoatKeysRepoLive: Layer.Layer<BoatKeysRepo, never, MendDB> = Layer.
       );
     });
 
-    const byOwner = Effect.fn("BoatKeysRepo.byOwner")(function* (owner: BoatKeyOwner) {
+    const byOwner = Effect.fnUntraced(function* (owner: BoatKeyOwner) {
       const [row] = yield* db
         .select()
         .from(boatKeys)
@@ -142,7 +140,7 @@ export const BoatKeysRepoLive: Layer.Layer<BoatKeysRepo, never, MendDB> = Layer.
       return row === undefined ? null : toBoatKey(row);
     });
 
-    const connect = Effect.fn("BoatKeysRepo.connect")(function* (key: NewBoatKey) {
+    const connect = Effect.fnUntraced(function* (key: NewBoatKey) {
       const [row] = yield* db
         .insert(boatKeys)
         .values({
@@ -164,7 +162,7 @@ export const BoatKeysRepoLive: Layer.Layer<BoatKeysRepo, never, MendDB> = Layer.
       return toBoatKey(row);
     });
 
-    const markReplaced = Effect.fn("BoatKeysRepo.markReplaced")(function* (owner: BoatKeyOwner) {
+    const markReplaced = Effect.fnUntraced(function* (owner: BoatKeyOwner) {
       const [row] = yield* db
         .update(boatKeys)
         .set({ keyReplacedAt: yield* DateTime.nowAsDate })
@@ -174,7 +172,7 @@ export const BoatKeysRepoLive: Layer.Layer<BoatKeysRepo, never, MendDB> = Layer.
       return row === undefined ? null : toBoatKey(row);
     });
 
-    const remove = Effect.fn("BoatKeysRepo.remove")(function* (owner: BoatKeyOwner) {
+    const remove = Effect.fnUntraced(function* (owner: BoatKeyOwner) {
       const [row] = yield* db.delete(boatKeys).where(ownerIs(owner)).returning().pipe(Effect.orDie);
       return row === undefined ? null : toBoatKey(row);
     });

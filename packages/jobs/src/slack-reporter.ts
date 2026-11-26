@@ -404,7 +404,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       });
 
     /** Read everything the thread could show about a session, or null for one it does not. */
-    const lookAt = Effect.fn("SlackReporter.lookAt")(function* (sessionId: SessionId) {
+    const lookAt = Effect.fnUntraced(function* (sessionId: SessionId) {
       // The thread first, then the session: a status line read here is never newer than the
       // state read after it, so a compare-and-set against it cannot move the message backwards.
       const thread = yield* threads.forSession(sessionId);

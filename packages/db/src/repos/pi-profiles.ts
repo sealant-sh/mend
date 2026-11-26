@@ -101,15 +101,12 @@ export const PiProfilesRepoLive: Layer.Layer<PiProfilesRepo, never, MendDB> = La
           Effect.map((rows) => rows[0] ?? null),
         );
 
-    const forUser = Effect.fn("PiProfilesRepo.forUser")(function* (userId: string) {
+    const forUser = Effect.fnUntraced(function* (userId: string) {
       const row = yield* readRow(userId);
       return row === null ? null : { profile: toProfile(row), files: row.files };
     });
 
-    const save = Effect.fn("PiProfilesRepo.save")(function* (
-      userId: string,
-      input: ReadonlyArray<ProfileFile>,
-    ) {
+    const save = Effect.fnUntraced(function* (userId: string, input: ReadonlyArray<ProfileFile>) {
       const issue = validatePiProfile(input);
       if (issue !== null) return yield* new PiProfileInvalidError({ message: issue });
       const files = sortFiles(input);
@@ -136,7 +133,7 @@ export const PiProfilesRepoLive: Layer.Layer<PiProfilesRepo, never, MendDB> = La
       return { profile: toProfile(row), changed: true };
     });
 
-    const remove = Effect.fn("PiProfilesRepo.remove")(function* (userId: string) {
+    const remove = Effect.fnUntraced(function* (userId: string) {
       const rows = yield* db
         .delete(userPiProfiles)
         .where(eq(userPiProfiles.userId, userId))

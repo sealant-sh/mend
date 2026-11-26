@@ -140,7 +140,7 @@ export const dropAsksOfSettled = (db: Pick<MendDatabase, "delete">, sessionId: S
  * End every grant of the session, in the caller's transaction: the switch for everyone turned off
  * means only the owner steers. Open asks stay; turning it off answers nobody. Answers who lost it.
  */
-export const endGrantsOf = Effect.fn("SessionSharedControl.endGrantsOf")(function* (
+export const endGrantsOf = Effect.fnUntraced(function* (
   db: Pick<MendDatabase, "delete" | "update">,
   sessionIds: ReadonlyArray<SessionId>,
 ) {
@@ -167,7 +167,7 @@ export const endGrantsOf = Effect.fn("SessionSharedControl.endGrantsOf")(functio
  * A member leaves an organization: every ask and grant they hold on its sessions ends, in the
  * caller's transaction. Answers the sessions it touched.
  */
-export const endSharedControlOfMember = Effect.fn("SessionSharedControl.endOfMember")(function* (
+export const endSharedControlOfMember = Effect.fnUntraced(function* (
   db: Pick<MendDatabase, "delete" | "update">,
   userId: string,
   organizationId: OrganizationId,
@@ -260,7 +260,7 @@ export const SessionSharedControlRepoLive: Layer.Layer<
         }
       });
 
-    const people = Effect.fn("SessionSharedControlRepo.people")(function* (sessionId: SessionId) {
+    const people = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* db
         .select()
         .from(sessionSharedControl)
@@ -270,7 +270,7 @@ export const SessionSharedControlRepoLive: Layer.Layer<
       return rows.map(toPerson);
     });
 
-    const asksOnOwnSessions = Effect.fn("SessionSharedControlRepo.asksOnOwnSessions")(function* (
+    const asksOnOwnSessions = Effect.fnUntraced(function* (
       ownerUserId: string,
       sessionIds: ReadonlyArray<SessionId>,
     ) {
@@ -298,7 +298,7 @@ export const SessionSharedControlRepoLive: Layer.Layer<
       return asks;
     });
 
-    const ask = Effect.fn("SessionSharedControlRepo.ask")((sessionId: SessionId, userId: string) =>
+    const ask = (sessionId: SessionId, userId: string) =>
       step(sessionId, userId, (tx, session) =>
         Effect.gen(function* () {
           if (session.settledAt !== null) return { kind: "refused", reason: "ended" } as const;
@@ -317,8 +317,7 @@ export const SessionSharedControlRepoLive: Layer.Layer<
             changed: inserted.length > 0,
           } as const;
         }),
-      ),
-    );
+      );
 
     /** Delete `userId`'s row in `state`, or refuse with `missing`. */
     const remove = (
@@ -360,48 +359,43 @@ export const SessionSharedControlRepoLive: Layer.Layer<
         }),
       );
 
-    const withdraw = Effect.fn("SessionSharedControlRepo.withdraw")(
-      (sessionId: SessionId, userId: string) => remove(sessionId, userId, "asked", "not-asked"),
-    );
-    const decline = Effect.fn("SessionSharedControlRepo.decline")(
-      (sessionId: SessionId, userId: string) => remove(sessionId, userId, "asked", "not-asked"),
-    );
-    const takeBack = Effect.fn("SessionSharedControlRepo.takeBack")(
-      (sessionId: SessionId, userId: string) => remove(sessionId, userId, "granted", "not-granted"),
-    );
+    const withdraw = (sessionId: SessionId, userId: string) =>
+      remove(sessionId, userId, "asked", "not-asked");
+    const decline = (sessionId: SessionId, userId: string) =>
+      remove(sessionId, userId, "asked", "not-asked");
+    const takeBack = (sessionId: SessionId, userId: string) =>
+      remove(sessionId, userId, "granted", "not-granted");
 
-    const grant = Effect.fn("SessionSharedControlRepo.grant")(
-      (sessionId: SessionId, userId: string, grantedByUserId: string) =>
-        step(sessionId, userId, (tx, session) =>
-          Effect.gen(function* () {
-            const now = yield* DateTime.nowAsDate;
-            const granted = yield* tx
-              .update(sessionSharedControl)
-              .set({ state: "granted", grantedAt: now, grantedByUserId })
-              .where(
-                and(
-                  eq(sessionSharedControl.sessionId, sessionId),
-                  eq(sessionSharedControl.userId, userId),
-                  eq(sessionSharedControl.state, "asked"),
-                ),
-              )
-              .returning({ userId: sessionSharedControl.userId });
-            if (granted.length === 0) return { kind: "refused", reason: "not-asked" } as const;
-            yield* tx
-              .update(agentSessions)
-              .set({
-                sharedControlUserIds: session.sharedControlUserIds.includes(userId)
-                  ? session.sharedControlUserIds
-                  : [...session.sharedControlUserIds, userId],
-                // Once shared, always so for this session (docs/adr/0016, decision 9).
-                sharedControlEverAt: sql`COALESCE(${agentSessions.sharedControlEverAt}, now())`,
-                updatedAt: now,
-              })
-              .where(eq(agentSessions.id, sessionId));
-            return { kind: "done", projectId: session.projectId, changed: true } as const;
-          }),
-        ),
-    );
+    const grant = (sessionId: SessionId, userId: string, grantedByUserId: string) =>
+      step(sessionId, userId, (tx, session) =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.nowAsDate;
+          const granted = yield* tx
+            .update(sessionSharedControl)
+            .set({ state: "granted", grantedAt: now, grantedByUserId })
+            .where(
+              and(
+                eq(sessionSharedControl.sessionId, sessionId),
+                eq(sessionSharedControl.userId, userId),
+                eq(sessionSharedControl.state, "asked"),
+              ),
+            )
+            .returning({ userId: sessionSharedControl.userId });
+          if (granted.length === 0) return { kind: "refused", reason: "not-asked" } as const;
+          yield* tx
+            .update(agentSessions)
+            .set({
+              sharedControlUserIds: session.sharedControlUserIds.includes(userId)
+                ? session.sharedControlUserIds
+                : [...session.sharedControlUserIds, userId],
+              // Once shared, always so for this session (docs/adr/0016, decision 9).
+              sharedControlEverAt: sql`COALESCE(${agentSessions.sharedControlEverAt}, now())`,
+              updatedAt: now,
+            })
+            .where(eq(agentSessions.id, sessionId));
+          return { kind: "done", projectId: session.projectId, changed: true } as const;
+        }),
+      );
 
     return SessionSharedControlRepo.of({
       people,

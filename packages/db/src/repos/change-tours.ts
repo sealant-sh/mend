@@ -47,10 +47,7 @@ export const ChangeToursRepoLive: Layer.Layer<ChangeToursRepo, never, MendDB | P
       const db = yield* MendDB;
       const sql = yield* PgClient.PgClient;
 
-      const notify = Effect.fn("ChangeToursRepo.notify")(function* (
-        changeId: ChangeId,
-        sessionId: SessionId,
-      ) {
+      const notify = Effect.fnUntraced(function* (changeId: ChangeId, sessionId: SessionId) {
         const [row] = yield* db
           .select({ projectId: worktreeChanges.projectId, worktreeId: worktreeChanges.worktreeId })
           .from(worktreeChanges)
@@ -66,7 +63,7 @@ export const ChangeToursRepoLive: Layer.Layer<ChangeToursRepo, never, MendDB | P
         });
       });
 
-      const upsert = Effect.fn("ChangeToursRepo.upsert")(function* (tour: NewChangeTour) {
+      const upsert = Effect.fnUntraced(function* (tour: NewChangeTour) {
         const stops = yield* decodeEncodedStops(
           toPostgresJsonb(yield* encodeStops(tour.stops).pipe(Effect.orDie)),
         ).pipe(Effect.orDie);
@@ -95,7 +92,7 @@ export const ChangeToursRepoLive: Layer.Layer<ChangeToursRepo, never, MendDB | P
         return created;
       });
 
-      const byChange = Effect.fn("ChangeToursRepo.byChange")(function* (changeId: ChangeId) {
+      const byChange = Effect.fnUntraced(function* (changeId: ChangeId) {
         const [row] = yield* db
           .select()
           .from(changeTours)

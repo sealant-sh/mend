@@ -135,15 +135,13 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const record = Effect.fn("SlackThreadsRepo.record")(function* (input: NewSlackThreadSession) {
+    const record = Effect.fnUntraced(function* (input: NewSlackThreadSession) {
       const [row] = yield* db.insert(slackThreads).values(input).returning().pipe(Effect.orDie);
       if (row === undefined) return yield* Effect.die("slack thread insert returned no row");
       return row;
     });
 
-    const latestInThread = Effect.fn("SlackThreadsRepo.latestInThread")(function* (
-      thread: SlackThreadRef,
-    ) {
+    const latestInThread = Effect.fnUntraced(function* (thread: SlackThreadRef) {
       const [row] = yield* db
         .select()
         .from(slackThreads)
@@ -160,7 +158,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
       return row ?? null;
     });
 
-    const forSession = Effect.fn("SlackThreadsRepo.forSession")(function* (sessionId: SessionId) {
+    const forSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [row] = yield* db
         .select()
         .from(slackThreads)
@@ -170,7 +168,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
       return row ?? null;
     });
 
-    const setStatusTs = Effect.fn("SlackThreadsRepo.setStatusTs")(function* (
+    const setStatusTs = Effect.fnUntraced(function* (
       sessionId: SessionId,
       statusTs: string,
       reported: SlackReportedStatus,
@@ -182,7 +180,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
         .pipe(Effect.orDie);
     });
 
-    const claimStatus = Effect.fn("SlackThreadsRepo.claimStatus")(function* (
+    const claimStatus = Effect.fnUntraced(function* (
       sessionId: SessionId,
       from: { readonly state: SlackSessionState | null; readonly status: string | null },
       to: SlackReportedStatus,
@@ -207,9 +205,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
       return moved.length === 1;
     });
 
-    const ownsRequestReaction = Effect.fn("SlackThreadsRepo.ownsRequestReaction")(function* (
-      sessionId: SessionId,
-    ) {
+    const ownsRequestReaction = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [own] = yield* db
         .select({
           teamId: slackThreads.teamId,
@@ -238,7 +234,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
     });
 
     const source = alias(agentSessions, "source");
-    const sessionsReached = Effect.fn("SlackThreadsRepo.sessionsReached")(function* (
+    const sessionsReached = Effect.fnUntraced(function* (
       by:
         | { readonly worktreeId: WorktreeId }
         | { readonly worktreeOf: SessionId }
@@ -266,10 +262,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
       return rows.map((row) => row.sessionId);
     });
 
-    const claimPost = Effect.fn("SlackThreadsRepo.claimPost")(function* (
-      sessionId: SessionId,
-      key: string,
-    ) {
+    const claimPost = Effect.fnUntraced(function* (sessionId: SessionId, key: string) {
       const inserted = yield* db
         .insert(slackThreadPosts)
         .values({ sessionId, key })
@@ -279,7 +272,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
       return inserted.length === 1;
     });
 
-    const listForOwner = Effect.fn("SlackThreadsRepo.listForOwner")(function* (input: {
+    const listForOwner = Effect.fnUntraced(function* (input: {
       readonly teamId: string;
       readonly ownerUserId: string;
       readonly limit: number;

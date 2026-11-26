@@ -134,7 +134,7 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const mint = Effect.fn("UpgradeTicketsRepo.mint")(function* (input: UpgradeTicketMintInput) {
+    const mint = Effect.fnUntraced(function* (input: UpgradeTicketMintInput) {
       const now = input.now ?? (yield* DateTime.nowAsDate);
       // Expired rows are dead weight, and minting is the only thing that grows the table.
       yield* db.delete(upgradeTickets).where(lt(upgradeTickets.expiresAt, now)).pipe(Effect.orDie);
@@ -156,7 +156,7 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
       return { ticket, expiresAt };
     });
 
-    const consume = Effect.fn("UpgradeTicketsRepo.consume")(function* (input: {
+    const consume = Effect.fnUntraced(function* (input: {
       readonly ticket: string;
       readonly target: UpgradeTicketTarget;
       readonly scope: string;
@@ -189,9 +189,7 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
       };
     });
 
-    const credentialStands = Effect.fn("UpgradeTicketsRepo.credentialStands")(function* (
-      credential: TicketCredential | null,
-    ) {
+    const credentialStands = Effect.fnUntraced(function* (credential: TicketCredential | null) {
       if (credential === null) return true;
       // A typed select, not `db.execute`: on drizzle-orm 1.0.0-rc.4 `execute` over @effect/sql-pg
       // resolves to pg's raw result object while its type still says an array of rows.

@@ -37,7 +37,7 @@ export const SlackEventClaimsRepoLive: Layer.Layer<SlackEventClaimsRepo, never, 
     Effect.gen(function* () {
       const db = yield* MendDB;
 
-      const claim = Effect.fn("SlackEventClaimsRepo.claim")(function* (input: {
+      const claim = Effect.fnUntraced(function* (input: {
         readonly eventId: string;
         readonly teamId: string;
         readonly now?: Date;
@@ -55,7 +55,7 @@ export const SlackEventClaimsRepoLive: Layer.Layer<SlackEventClaimsRepo, never, 
         return rows.length === 1;
       });
 
-      const sweep = Effect.fn("SlackEventClaimsRepo.sweep")(function* (before: Date) {
+      const sweep = Effect.fnUntraced(function* (before: Date) {
         const rows = yield* db
           .delete(slackEventClaims)
           .where(lt(slackEventClaims.claimedAt, before))

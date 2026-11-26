@@ -133,10 +133,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
     Effect.gen(function* () {
       const db = yield* MendDB;
 
-      const issue = Effect.fn("SessionChannelTokensRepo.issue")(function* (
-        sessionId: string,
-        launchId: string,
-      ) {
+      const issue = Effect.fnUntraced(function* (sessionId: string, launchId: string) {
         const token = mintSessionChannelToken();
         const tokenHash = hashSessionChannelToken(token);
         yield* db
@@ -152,10 +149,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
         return token;
       });
 
-      const issuePerson = Effect.fn("SessionChannelTokensRepo.issuePerson")(function* (
-        launchId: string,
-        accountId: string,
-      ) {
+      const issuePerson = Effect.fnUntraced(function* (launchId: string, accountId: string) {
         const token = mintSessionChannelToken();
         const tokenHash = hashSessionChannelToken(token);
         yield* db
@@ -172,10 +166,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
         return token;
       });
 
-      const issueWrite = Effect.fn("SessionChannelTokensRepo.issueWrite")(function* (
-        launchId: string,
-        accountId: string,
-      ) {
+      const issueWrite = Effect.fnUntraced(function* (launchId: string, accountId: string) {
         const token = mintSessionChannelToken();
         yield* db
           .insert(sessionChannelTokens)
@@ -212,10 +203,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
             Effect.map((rows) => rows[0] ?? null),
           );
 
-      const verify = Effect.fn("SessionChannelTokensRepo.verify")(function* (
-        sessionId: string,
-        token: string,
-      ) {
+      const verify = Effect.fnUntraced(function* (sessionId: string, token: string) {
         const row = yield* liveRowOf(token);
         return row !== null &&
           row.accountId === null &&
@@ -224,7 +212,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
           : null;
       });
 
-      const resolve = Effect.fn("SessionChannelTokensRepo.resolve")(function* (token: string) {
+      const resolve = Effect.fnUntraced(function* (token: string) {
         const row = yield* liveRowOf(token);
         if (row === null) return null;
         const writeOnly = isWriteTokenSession(row.sessionId);
@@ -241,7 +229,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
         };
       });
 
-      const revoke = Effect.fn("SessionChannelTokensRepo.revoke")(function* (sessionId: string) {
+      const revoke = Effect.fnUntraced(function* (sessionId: string) {
         yield* db
           .update(sessionChannelTokens)
           .set({ revokedAt: yield* DateTime.nowAsDate })
@@ -254,9 +242,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
           .pipe(Effect.orDie);
       });
 
-      const revokeLaunch = Effect.fn("SessionChannelTokensRepo.revokeLaunch")(function* (
-        launchId: string,
-      ) {
+      const revokeLaunch = Effect.fnUntraced(function* (launchId: string) {
         yield* db
           .update(sessionChannelTokens)
           .set({ revokedAt: yield* DateTime.nowAsDate })
@@ -269,7 +255,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
           .pipe(Effect.orDie);
       });
 
-      const revokePerson = Effect.fn("SessionChannelTokensRepo.revokePerson")(function* (
+      const revokePerson = Effect.fnUntraced(function* (
         launchId: string,
         accountId: string,
         issuedBefore: Date,
@@ -289,9 +275,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
           .pipe(Effect.orDie);
       });
 
-      const revokeToken = Effect.fn("SessionChannelTokensRepo.revokeToken")(function* (
-        token: string,
-      ) {
+      const revokeToken = Effect.fnUntraced(function* (token: string) {
         yield* db
           .update(sessionChannelTokens)
           .set({ revokedAt: yield* DateTime.nowAsDate })

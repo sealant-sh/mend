@@ -53,10 +53,7 @@ export const SlackDefaultsRepoLive: Layer.Layer<SlackDefaultsRepo, never, MendDB
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const channelDefault = Effect.fn("SlackDefaultsRepo.channelDefault")(function* (
-      teamId: string,
-      channelId: string,
-    ) {
+    const channelDefault = Effect.fnUntraced(function* (teamId: string, channelId: string) {
       const [row] = yield* db
         .select()
         .from(slackChannelDefaults)
@@ -66,7 +63,7 @@ export const SlackDefaultsRepoLive: Layer.Layer<SlackDefaultsRepo, never, MendDB
       return row ?? null;
     });
 
-    const setChannelDefault = Effect.fn("SlackDefaultsRepo.setChannelDefault")(function* (input: {
+    const setChannelDefault = Effect.fnUntraced(function* (input: {
       readonly teamId: string;
       readonly channelId: string;
       readonly projectId: ProjectId;
@@ -86,10 +83,7 @@ export const SlackDefaultsRepoLive: Layer.Layer<SlackDefaultsRepo, never, MendDB
       return row;
     });
 
-    const clearChannelDefault = Effect.fn("SlackDefaultsRepo.clearChannelDefault")(function* (
-      teamId: string,
-      channelId: string,
-    ) {
+    const clearChannelDefault = Effect.fnUntraced(function* (teamId: string, channelId: string) {
       const rows = yield* db
         .delete(slackChannelDefaults)
         .where(channel(teamId, channelId))
@@ -98,9 +92,7 @@ export const SlackDefaultsRepoLive: Layer.Layer<SlackDefaultsRepo, never, MendDB
       return rows.length > 0;
     });
 
-    const personalDefault = Effect.fn("SlackDefaultsRepo.personalDefault")(function* (
-      userId: string,
-    ) {
+    const personalDefault = Effect.fnUntraced(function* (userId: string) {
       const [row] = yield* db
         .select({ projectId: slackUserDefaults.projectId })
         .from(slackUserDefaults)
@@ -110,7 +102,7 @@ export const SlackDefaultsRepoLive: Layer.Layer<SlackDefaultsRepo, never, MendDB
       return row?.projectId ?? null;
     });
 
-    const setPersonalDefault = Effect.fn("SlackDefaultsRepo.setPersonalDefault")(function* (
+    const setPersonalDefault = Effect.fnUntraced(function* (
       userId: string,
       projectId: ProjectId | null,
     ) {

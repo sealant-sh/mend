@@ -74,7 +74,7 @@ export const SshKeyRevocationsRepoLive: Layer.Layer<SshKeyRevocationsRepo, never
     Effect.gen(function* () {
       const db = yield* MendDB;
 
-      const list = Effect.fn("SshKeyRevocationsRepo.list")(function* () {
+      const list = Effect.fnUntraced(function* () {
         const rows = yield* db
           .select()
           .from(sshKeyRevocations)
@@ -83,10 +83,7 @@ export const SshKeyRevocationsRepoLive: Layer.Layer<SshKeyRevocationsRepo, never
         return rows.map(toRevocation);
       });
 
-      const claimDue = Effect.fn("SshKeyRevocationsRepo.claimDue")(function* (
-        limit: number,
-        leaseMs: number,
-      ) {
+      const claimDue = Effect.fnUntraced(function* (limit: number, leaseMs: number) {
         const due = db
           .select({ userId: sshKeyRevocations.userId })
           .from(sshKeyRevocations)
@@ -103,11 +100,11 @@ export const SshKeyRevocationsRepoLive: Layer.Layer<SshKeyRevocationsRepo, never
         return rows.map(toRevocation);
       });
 
-      const settle = Effect.fn("SshKeyRevocationsRepo.settle")(function* (id: string) {
+      const settle = Effect.fnUntraced(function* (id: string) {
         yield* db.delete(sshKeyRevocations).where(eq(sshKeyRevocations.id, id)).pipe(Effect.orDie);
       });
 
-      const defer = Effect.fn("SshKeyRevocationsRepo.defer")(function* (
+      const defer = Effect.fnUntraced(function* (
         id: string,
         input: {
           readonly outstanding: number | null;

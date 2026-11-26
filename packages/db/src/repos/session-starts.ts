@@ -47,10 +47,7 @@ export const SessionStartsRepoLive: Layer.Layer<SessionStartsRepo, never, MendDB
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const claim = Effect.fn("SessionStartsRepo.claim")(function* (
-      ownerUserId: string,
-      key: string,
-    ) {
+    const claim = Effect.fnUntraced(function* (ownerUserId: string, key: string) {
       const rows = yield* db
         .insert(sessionStarts)
         .values({ ownerUserId, key })
@@ -60,7 +57,7 @@ export const SessionStartsRepoLive: Layer.Layer<SessionStartsRepo, never, MendDB
       return rows.length > 0;
     });
 
-    const made = Effect.fn("SessionStartsRepo.made")(function* (
+    const made = Effect.fnUntraced(function* (
       ownerUserId: string,
       key: string,
       sessionId: SessionId,
@@ -72,11 +69,7 @@ export const SessionStartsRepoLive: Layer.Layer<SessionStartsRepo, never, MendDB
         .pipe(Effect.orDie);
     });
 
-    const failed = Effect.fn("SessionStartsRepo.failed")(function* (
-      ownerUserId: string,
-      key: string,
-      failure: string,
-    ) {
+    const failed = Effect.fnUntraced(function* (ownerUserId: string, key: string, failure: string) {
       yield* db
         .update(sessionStarts)
         .set({ failure })
@@ -84,7 +77,7 @@ export const SessionStartsRepoLive: Layer.Layer<SessionStartsRepo, never, MendDB
         .pipe(Effect.orDie);
     });
 
-    const read = Effect.fn("SessionStartsRepo.read")(function* (ownerUserId: string, key: string) {
+    const read = Effect.fnUntraced(function* (ownerUserId: string, key: string) {
       const [row] = yield* db
         .select()
         .from(sessionStarts)
@@ -93,7 +86,7 @@ export const SessionStartsRepoLive: Layer.Layer<SessionStartsRepo, never, MendDB
       return row ?? null;
     });
 
-    const forgetBefore = Effect.fn("SessionStartsRepo.forgetBefore")(function* (before: Date) {
+    const forgetBefore = Effect.fnUntraced(function* (before: Date) {
       const rows = yield* db
         .delete(sessionStarts)
         .where(lt(sessionStarts.createdAt, before))

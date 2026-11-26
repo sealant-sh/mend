@@ -64,7 +64,7 @@ export const BriefsRepoLive: Layer.Layer<BriefsRepo, never, MendDB | PgClient.Pg
       const db = yield* MendDB;
       const pg = yield* PgClient.PgClient;
 
-      const issueIdOf = Effect.fn("BriefsRepo.issueIdOf")(function* (changeId: ChangeId) {
+      const issueIdOf = Effect.fnUntraced(function* (changeId: ChangeId) {
         const [row] = yield* db
           .select({ issueId: changes.issueId })
           .from(changes)
@@ -74,7 +74,7 @@ export const BriefsRepoLive: Layer.Layer<BriefsRepo, never, MendDB | PgClient.Pg
         return row?.issueId ?? "";
       });
 
-      const byChange = Effect.fn("BriefsRepo.byChange")(function* (changeId: ChangeId) {
+      const byChange = Effect.fnUntraced(function* (changeId: ChangeId) {
         const [row] = yield* db
           .select()
           .from(briefs)
@@ -85,7 +85,7 @@ export const BriefsRepoLive: Layer.Layer<BriefsRepo, never, MendDB | PgClient.Pg
         return yield* decodeBriefRow(row);
       });
 
-      const versions = Effect.fn("BriefsRepo.versions")(function* (changeId: ChangeId) {
+      const versions = Effect.fnUntraced(function* (changeId: ChangeId) {
         const rows = yield* db
           .select({ version: briefVersions })
           .from(briefVersions)
@@ -96,10 +96,7 @@ export const BriefsRepoLive: Layer.Layer<BriefsRepo, never, MendDB | PgClient.Pg
         return yield* Effect.forEach(rows, ({ version }) => decodeVersionRow(version));
       });
 
-      const publish = Effect.fn("BriefsRepo.publish")(function* (
-        changeId: ChangeId,
-        document: BriefDocument,
-      ) {
+      const publish = Effect.fnUntraced(function* (changeId: ChangeId, document: BriefDocument) {
         const encoded = yield* encodeDocument(document).pipe(Effect.orDie);
         const briefId = BriefId.make(crypto.randomUUID());
 

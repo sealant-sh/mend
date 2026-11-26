@@ -69,7 +69,7 @@ export const ProofArtifactsWithSlackDeliveryLive: Layer.Layer<
 );
 
 /** Recover settled captures from the last day after a lost enqueue or worker restart. */
-export const reconcileSlackProof = Effect.fn("reconcileSlackProof")(function* () {
+export const reconcileSlackProof = Effect.fn("mend.slack.reconcile_proof")(function* () {
   const deliveries = yield* SlackProofDeliveriesRepo;
   const jobs = yield* JobRunner;
   const now = yield* Clock.currentTimeMillis;

@@ -1176,7 +1176,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
               (cause) => new MendUnavailable({ operation, status: response.status, cause }),
             ),
           );
-        }).pipe(Effect.withSpan(`MendClient ${operation}`));
+        });
 
       /**
        * A JSON command as the person. 401 is a refused device and 404 is nothing there; any other
@@ -1225,7 +1225,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
               (cause) => new MendUnavailable({ operation, status: response.status, cause }),
             ),
           );
-        }).pipe(Effect.withSpan(`MendClient ${operation}`));
+        });
 
       const sessionDetail = (deviceToken: string, sessionId: string) =>
         read(
@@ -1335,7 +1335,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             status: response.status,
             tag: words._tag === "Some" ? (words.value._tag ?? null) : null,
           } as const;
-        }).pipe(Effect.withSpan(`MendClient ${operation}`));
+        });
 
       const worktreeBranches: MendClient["Service"]["worktreeBranches"] = (
         deviceToken,
@@ -1714,7 +1714,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
               (cause) => new MendUnavailable({ operation, status: response.status, cause }),
             ),
           );
-        }).pipe(Effect.withSpan(`MendClient ${operation}`));
+        });
       };
 
       const writeWorktreeFile: MendClient["Service"]["writeWorktreeFile"] = (token, id, input) =>

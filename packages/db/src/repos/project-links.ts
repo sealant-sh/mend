@@ -60,7 +60,7 @@ export const ProjectLinksRepoLive: Layer.Layer<ProjectLinksRepo, never, MendDB> 
       db.select({ id: projects.id }).from(projects).where(projectListed),
     );
 
-    const create = Effect.fn("ProjectLinksRepo.create")(function* (link: NewProjectLink) {
+    const create = Effect.fnUntraced(function* (link: NewProjectLink) {
       const [row] = yield* db
         .insert(projectLinks)
         .values({ id: ProjectLinkId.make(crypto.randomUUID()), ...link })
@@ -70,7 +70,7 @@ export const ProjectLinksRepoLive: Layer.Layer<ProjectLinksRepo, never, MendDB> 
       return toProjectLink(row);
     });
 
-    const byId = Effect.fn("ProjectLinksRepo.byId")(function* (id: ProjectLinkId) {
+    const byId = Effect.fnUntraced(function* (id: ProjectLinkId) {
       const [row] = yield* db
         .select()
         .from(projectLinks)
@@ -81,9 +81,7 @@ export const ProjectLinksRepoLive: Layer.Layer<ProjectLinksRepo, never, MendDB> 
       return toProjectLink(row);
     });
 
-    const listForProject = Effect.fn("ProjectLinksRepo.listForProject")(function* (
-      projectId: ProjectId,
-    ) {
+    const listForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* db
         .select()
         .from(projectLinks)
@@ -93,9 +91,7 @@ export const ProjectLinksRepoLive: Layer.Layer<ProjectLinksRepo, never, MendDB> 
       return rows.map(toProjectLink);
     });
 
-    const listAllForProject = Effect.fn("ProjectLinksRepo.listAllForProject")(function* (
-      projectId: ProjectId,
-    ) {
+    const listAllForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* db
         .select({
           link: projectLinks,
@@ -108,7 +104,7 @@ export const ProjectLinksRepoLive: Layer.Layer<ProjectLinksRepo, never, MendDB> 
       return rows.map((row) => ({ link: toProjectLink(row.link), targetListed: row.targetListed }));
     });
 
-    const remove = Effect.fn("ProjectLinksRepo.remove")(function* (id: ProjectLinkId) {
+    const remove = Effect.fnUntraced(function* (id: ProjectLinkId) {
       yield* db.delete(projectLinks).where(eq(projectLinks.id, id)).pipe(Effect.orDie);
     });
 

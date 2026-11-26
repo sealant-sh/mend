@@ -207,19 +207,17 @@ export const SkillsRepoLive: Layer.Layer<SkillsRepo, never, MendDB | PgClient.Pg
           ? notifyEvent(sqlClient, { type: "project", projectId: owner.projectId })
           : Effect.void;
 
-      const listForUser = Effect.fn("SkillsRepo.listForUser")(function* (userId: string) {
+      const listForUser = Effect.fnUntraced(function* (userId: string) {
         const rows = yield* readLibrary(db, { scope: "user", userId });
         return rows.map(toSkill);
       });
 
-      const listForProject = Effect.fn("SkillsRepo.listForProject")(function* (
-        projectId: ProjectId,
-      ) {
+      const listForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
         const rows = yield* readLibrary(db, { scope: "project", projectId });
         return rows.map(toSkill);
       });
 
-      const byId = Effect.fn("SkillsRepo.byId")(function* (skillId: SkillId) {
+      const byId = Effect.fnUntraced(function* (skillId: SkillId) {
         const [row] = yield* db
           .select()
           .from(skills)
@@ -247,10 +245,7 @@ export const SkillsRepoLive: Layer.Layer<SkillsRepo, never, MendDB | PgClient.Pg
           return created;
         });
 
-      const create = Effect.fn("SkillsRepo.create")(function* (
-        owner: SkillOwner,
-        input: SkillBundleInput,
-      ) {
+      const create = Effect.fnUntraced(function* (owner: SkillOwner, input: SkillBundleInput) {
         yield* validateBundle(input);
         const result = yield* db
           .transaction((tx) =>
@@ -271,7 +266,7 @@ export const SkillsRepoLive: Layer.Layer<SkillsRepo, never, MendDB | PgClient.Pg
         return result;
       });
 
-      const update = Effect.fn("SkillsRepo.update")(function* (
+      const update = Effect.fnUntraced(function* (
         skillId: SkillId,
         input: SkillBundleInput & { readonly expectedRevision: number },
       ) {
@@ -318,7 +313,7 @@ export const SkillsRepoLive: Layer.Layer<SkillsRepo, never, MendDB | PgClient.Pg
         return bundle;
       });
 
-      const remove = Effect.fn("SkillsRepo.remove")(function* (skillId: SkillId) {
+      const remove = Effect.fnUntraced(function* (skillId: SkillId) {
         const owner = yield* db
           .transaction((tx) =>
             Effect.gen(function* () {
@@ -337,7 +332,7 @@ export const SkillsRepoLive: Layer.Layer<SkillsRepo, never, MendDB | PgClient.Pg
         yield* notify(owner);
       });
 
-      const sync = Effect.fn("SkillsRepo.sync")(function* (
+      const sync = Effect.fnUntraced(function* (
         owner: SkillOwner,
         bundles: ReadonlyArray<SkillBundleInput>,
         options: { readonly prune: boolean },
@@ -406,7 +401,7 @@ export const SkillsRepoLive: Layer.Layer<SkillsRepo, never, MendDB | PgClient.Pg
         return report;
       });
 
-      const forLaunch = Effect.fn("SkillsRepo.forLaunch")(function* (
+      const forLaunch = Effect.fnUntraced(function* (
         ownerUserId: string | null,
         projectId: ProjectId,
       ) {

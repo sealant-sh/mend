@@ -201,11 +201,11 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const list = Effect.fn("McpServersRepo.list")(function* (userId: string) {
+    const list = Effect.fnUntraced(function* (userId: string) {
       return (yield* rowsOf(db, userId)).map(toServer);
     });
 
-    const forLaunch = Effect.fn("McpServersRepo.forLaunch")(function* (userId: string) {
+    const forLaunch = Effect.fnUntraced(function* (userId: string) {
       return (yield* rowsOf(db, userId))
         .filter((row) => row.enabled)
         .map((row) => ({
@@ -217,10 +217,7 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
         }));
     });
 
-    const savedOf = Effect.fn("McpServersRepo.savedOf")(function* (
-      userId: string,
-      name: McpServerName,
-    ) {
+    const savedOf = Effect.fnUntraced(function* (userId: string, name: McpServerName) {
       const [row] = yield* db
         .select({ transport: mcpServers.transport, sealedSecrets: mcpServers.sealedSecrets })
         .from(mcpServers)
@@ -229,7 +226,7 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
       return row === undefined ? null : savedOfRow(row);
     });
 
-    const save = Effect.fn("McpServersRepo.save")(function* (userId: string, input: McpServerSave) {
+    const save = Effect.fnUntraced(function* (userId: string, input: McpServerSave) {
       const issue = saveIssue(input);
       if (issue !== null) return yield* new McpServerInvalidError({ message: issue });
       return yield* db
@@ -284,7 +281,7 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    const remove = Effect.fn("McpServersRepo.remove")(function* (userId: string, name: string) {
+    const remove = Effect.fnUntraced(function* (userId: string, name: string) {
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -300,10 +297,7 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    const keepSignIn = Effect.fn("McpServersRepo.keepSignIn")(function* (
-      userId: string,
-      input: McpSignInObserved,
-    ) {
+    const keepSignIn = Effect.fnUntraced(function* (userId: string, input: McpSignInObserved) {
       const server = and(
         mine(userId),
         sql`lower(${mcpServers.name}) = lower(${input.serverName})`,
@@ -342,10 +336,7 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
         : ("older" satisfies McpSignInKept);
     });
 
-    const forgetSignIn = Effect.fn("McpServersRepo.forgetSignIn")(function* (
-      userId: string,
-      name: string,
-    ) {
+    const forgetSignIn = Effect.fnUntraced(function* (userId: string, name: string) {
       const [forgotten] = yield* db
         .update(mcpServers)
         .set(SIGN_IN_FORGOTTEN)

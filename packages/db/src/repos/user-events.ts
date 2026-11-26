@@ -27,17 +27,11 @@ export const UserEventsLive: Layer.Layer<UserEvents, never, PgClient.PgClient> =
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
 
-    const changed = Effect.fn("UserEvents.changed")(function* (
-      userId: string,
-      facet: UserEventFacet,
-    ) {
+    const changed = Effect.fnUntraced(function* (userId: string, facet: UserEventFacet) {
       yield* notifyEvent(sql, { type: "user", userId, facet });
     });
 
-    const leftOrganization = Effect.fn("UserEvents.leftOrganization")(function* (
-      userId: string,
-      organizationId: string,
-    ) {
+    const leftOrganization = Effect.fnUntraced(function* (userId: string, organizationId: string) {
       yield* notifyEvent(sql, { type: "user", userId, facet: "access", organizationId });
     });
 

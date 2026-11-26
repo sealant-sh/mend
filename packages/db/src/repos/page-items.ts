@@ -63,7 +63,7 @@ export const pageItemRow = (
   data: encodePageRef(page),
 });
 
-export const pagesWithoutItems = Effect.fn("SessionPagesRepo.pagesWithoutItems")(function* (
+export const pagesWithoutItems = Effect.fnUntraced(function* (
   tx: Tx,
   sessionId: SessionId,
   ids: ReadonlyArray<string>,

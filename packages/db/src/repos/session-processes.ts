@@ -193,7 +193,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
     const pg = yield* PgClient.PgClient;
 
     /** Pointer events only — clients re-read through the API. */
-    const notify = Effect.fn("SessionProcessesRepo.notify")(function* (sessionId: SessionId) {
+    const notify = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [row] = yield* db
         .select({ projectId: agentSessions.projectId })
         .from(agentSessions)
@@ -207,10 +207,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       });
     });
 
-    const create = Effect.fn("SessionProcessesRepo.create")(function* ({
-      launch,
-      ...input
-    }: NewSessionProcess) {
+    const create = Effect.fnUntraced(function* ({ launch, ...input }: NewSessionProcess) {
       return yield* pg
         .withTransaction(
           Effect.gen(function* () {
@@ -244,7 +241,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const setStatus = Effect.fn("SessionProcessesRepo.setStatus")(function* (
+    const setStatus = Effect.fnUntraced(function* (
       id: SessionProcessId,
       status: SessionProcessStatus,
     ) {
@@ -258,7 +255,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       if (first !== undefined) yield* notify(first.sessionId);
     });
 
-    const byId = Effect.fn("SessionProcessesRepo.byId")(function* (id: SessionProcessId) {
+    const byId = Effect.fnUntraced(function* (id: SessionProcessId) {
       const [row] = yield* db
         .select()
         .from(sessionProcesses)
@@ -268,7 +265,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return row === undefined ? null : toSessionProcess(row);
     });
 
-    const launchOf = Effect.fn("SessionProcessesRepo.launchOf")(function* (id: SessionProcessId) {
+    const launchOf = Effect.fnUntraced(function* (id: SessionProcessId) {
       const [row] = yield* db
         .select({
           cwd: sessionProcesses.launchCwd,
@@ -293,9 +290,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       );
     });
 
-    const byLaunchCorrelation = Effect.fn("SessionProcessesRepo.byLaunchCorrelation")(function* (
-      correlationId: string,
-    ) {
+    const byLaunchCorrelation = Effect.fnUntraced(function* (correlationId: string) {
       const [row] = yield* db
         .select()
         .from(sessionProcesses)
@@ -305,9 +300,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return row === undefined ? null : toSessionProcess(row);
     });
 
-    const listForSession = Effect.fn("SessionProcessesRepo.listForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const listForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* db
         .select()
         .from(sessionProcesses)
@@ -317,9 +310,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return rows.map(toSessionProcess);
     });
 
-    const listForSessions = Effect.fn("SessionProcessesRepo.listForSessions")(function* (
-      sessionIds: ReadonlyArray<SessionId>,
-    ) {
+    const listForSessions = Effect.fnUntraced(function* (sessionIds: ReadonlyArray<SessionId>) {
       if (sessionIds.length === 0) return [];
       const rows = yield* db
         .select()
@@ -330,9 +321,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return rows.map(toSessionProcess);
     });
 
-    const listForService = Effect.fn("SessionProcessesRepo.listForService")(function* (
-      serviceId: ServiceId,
-    ) {
+    const listForService = Effect.fnUntraced(function* (serviceId: ServiceId) {
       const rows = yield* db
         .select()
         .from(sessionProcesses)
@@ -342,9 +331,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return rows.map(toSessionProcess);
     });
 
-    const listLiveForWorkspace = Effect.fn("SessionProcessesRepo.listLiveForWorkspace")(function* (
-      workspaceId: SealantWorkspaceId,
-    ) {
+    const listLiveForWorkspace = Effect.fnUntraced(function* (workspaceId: SealantWorkspaceId) {
       const rows = yield* db
         .select()
         .from(sessionProcesses)
@@ -359,9 +346,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return rows.map(toSessionProcess);
     });
 
-    const existsForWorkspace = Effect.fn("SessionProcessesRepo.existsForWorkspace")(function* (
-      workspaceId: SealantWorkspaceId,
-    ) {
+    const existsForWorkspace = Effect.fnUntraced(function* (workspaceId: SealantWorkspaceId) {
       const rows = yield* db
         .select({ id: sessionProcesses.id })
         .from(sessionProcesses)
@@ -371,7 +356,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return rows.length > 0;
     });
 
-    const listRecentServices = Effect.fn("SessionProcessesRepo.listRecentServices")(function* () {
+    const listRecentServices = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select()
         .from(sessionProcesses)
@@ -382,7 +367,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return rows.map(toSessionProcess);
     });
 
-    const listLive = Effect.fn("SessionProcessesRepo.listLive")(function* () {
+    const listLive = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select()
         .from(sessionProcesses)
@@ -397,10 +382,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return rows.map(toSessionProcess);
     });
 
-    const setLabel = Effect.fn("SessionProcessesRepo.setLabel")(function* (
-      id: SessionProcessId,
-      label: string,
-    ) {
+    const setLabel = Effect.fnUntraced(function* (id: SessionProcessId, label: string) {
       const rows = yield* db
         .update(sessionProcesses)
         .set({ label, updatedAt: yield* DateTime.nowAsDate })
@@ -411,7 +393,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       if (first !== undefined) yield* notify(first.sessionId);
     });
 
-    const setProviderSessionId = Effect.fn("SessionProcessesRepo.setProviderSessionId")(function* (
+    const setProviderSessionId = Effect.fnUntraced(function* (
       id: SessionProcessId,
       providerSessionId: string,
     ) {
@@ -422,30 +404,29 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const claimProviderSessionId = Effect.fn("SessionProcessesRepo.claimProviderSessionId")(
-      function* (id: SessionProcessId, sessionId: SessionId, providerSessionId: string) {
-        const rows = yield* db
-          .update(sessionProcesses)
-          .set({ providerSessionId, updatedAt: yield* DateTime.nowAsDate })
-          .where(
-            and(
-              eq(sessionProcesses.id, id),
-              eq(sessionProcesses.sessionId, sessionId),
-              eq(sessionProcesses.kind, "agent-pty"),
-              isNull(sessionProcesses.providerSessionId),
-              isNull(sessionProcesses.exitedAt),
-            ),
-          )
-          .returning({ id: sessionProcesses.id })
-          .pipe(Effect.orDie);
-        return rows.length > 0;
-      },
-    );
-
-    const markFirstOutput = Effect.fn("SessionProcessesRepo.markFirstOutput")(function* (
+    const claimProviderSessionId = Effect.fnUntraced(function* (
       id: SessionProcessId,
-      at: Date,
+      sessionId: SessionId,
+      providerSessionId: string,
     ) {
+      const rows = yield* db
+        .update(sessionProcesses)
+        .set({ providerSessionId, updatedAt: yield* DateTime.nowAsDate })
+        .where(
+          and(
+            eq(sessionProcesses.id, id),
+            eq(sessionProcesses.sessionId, sessionId),
+            eq(sessionProcesses.kind, "agent-pty"),
+            isNull(sessionProcesses.providerSessionId),
+            isNull(sessionProcesses.exitedAt),
+          ),
+        )
+        .returning({ id: sessionProcesses.id })
+        .pipe(Effect.orDie);
+      return rows.length > 0;
+    });
+
+    const markFirstOutput = Effect.fnUntraced(function* (id: SessionProcessId, at: Date) {
       const rows = yield* db
         .update(sessionProcesses)
         .set({ firstOutputAt: at, updatedAt: yield* DateTime.nowAsDate })
@@ -458,9 +439,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return true;
     });
 
-    const markReached = Effect.fn("SessionProcessesRepo.markReached")(function* (
-      id: SessionProcessId,
-    ) {
+    const markReached = Effect.fnUntraced(function* (id: SessionProcessId) {
       yield* db
         .update(sessionProcesses)
         .set({ reachedAt: yield* DateTime.nowAsDate })
@@ -468,7 +447,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const reached = Effect.fn("SessionProcessesRepo.reached")(function* (id: SessionProcessId) {
+    const reached = Effect.fnUntraced(function* (id: SessionProcessId) {
       const [row] = yield* db
         .select({ reachedAt: sessionProcesses.reachedAt })
         .from(sessionProcesses)
@@ -477,10 +456,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return row?.reachedAt != null;
     });
 
-    const setHostPort = Effect.fn("SessionProcessesRepo.setHostPort")(function* (
-      id: SessionProcessId,
-      hostPort: number,
-    ) {
+    const setHostPort = Effect.fnUntraced(function* (id: SessionProcessId, hostPort: number) {
       const rows = yield* db
         .update(sessionProcesses)
         .set({ hostPort, updatedAt: yield* DateTime.nowAsDate })
@@ -491,7 +467,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       if (first !== undefined) yield* notify(first.sessionId);
     });
 
-    const setSealantSessionId = Effect.fn("SessionProcessesRepo.setSealantSessionId")(function* (
+    const setSealantSessionId = Effect.fnUntraced(function* (
       id: SessionProcessId,
       sealantSessionId: string,
       sealantRunId: SealantRunId | null,
@@ -503,7 +479,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const setWaiting = Effect.fn("SessionProcessesRepo.setWaiting")(function* (
+    const setWaiting = Effect.fnUntraced(function* (
       id: SessionProcessId,
       sessionId: SessionId,
       from: AgentWait | null,
@@ -536,7 +512,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return true;
     });
 
-    const markExited = Effect.fn("SessionProcessesRepo.markExited")(function* (
+    const markExited = Effect.fnUntraced(function* (
       id: SessionProcessId,
       outcome: "exited" | "stopped",
       exitCode: number | null,
@@ -552,7 +528,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       if (first !== undefined) yield* notify(first.sessionId);
     });
 
-    const reapLiveForWorkspace = Effect.fn("SessionProcessesRepo.reapLiveForWorkspace")(function* (
+    const reapLiveForWorkspace = Effect.fnUntraced(function* (
       workspaceId: SealantWorkspaceId,
       kinds?: ReadonlyArray<SessionProcessKind>,
     ) {

@@ -1134,7 +1134,7 @@ export const makeHarnessLayoutSteps = (deps: {
    * image records under the spec, and every launch after the build would otherwise find nothing
    * and run shared to learn it again.
    */
-  const recordedCapabilityOf = Effect.fn("HarnessLayoutSteps.recordedCapabilityOf")(function* (
+  const recordedCapabilityOf = Effect.fnUntraced(function* (
     image: WorkspaceImage,
     report: { readonly digest: string | null; readonly person: boolean | null },
     runtime: string,
@@ -1814,28 +1814,28 @@ export const makeHarnessLayoutSteps = (deps: {
     );
   });
 
-  const layoutOfLaunch: HarnessLayoutSteps["layoutOfLaunch"] = Effect.fn(
-    "HarnessLayoutSteps.layoutOfLaunch",
-  )(function* (launchId) {
-    if (launchId === null) return "shared";
-    const known = layoutByLaunch.get(launchId);
-    if (known !== undefined) return known;
-    if (nothingRecorded()) return "shared";
-    const record = yield* repo.launchLayout(launchId);
-    if (record !== null && record.source === "fallback") fallbacksFromStore.add(launchId);
-    // A person record is person, confirmed or still in prepare (decide wrote it before create;
-    // a fallback rewrites it as shared): the window between decide and prepare's confirm is
-    // person too, so nothing in it ever reads as a shared executor (review 3 of mend#553, P2-1).
-    // Anything else, a launch from before this release included, ran as root.
-    const layout: HarnessLayout =
-      record !== null && record.layout === "person" ? "person" : "shared";
-    // Compare-and-set: what settle wrote while the read was in flight (a fallback's shared, a
-    // confirm's person) is newer than the record read, and stays (review 4 of mend#553, P3-5).
-    const meanwhile = layoutByLaunch.get(launchId);
-    if (meanwhile !== undefined) return meanwhile;
-    layoutByLaunch.set(launchId, layout);
-    return layout;
-  });
+  const layoutOfLaunch: HarnessLayoutSteps["layoutOfLaunch"] = Effect.fnUntraced(
+    function* (launchId) {
+      if (launchId === null) return "shared";
+      const known = layoutByLaunch.get(launchId);
+      if (known !== undefined) return known;
+      if (nothingRecorded()) return "shared";
+      const record = yield* repo.launchLayout(launchId);
+      if (record !== null && record.source === "fallback") fallbacksFromStore.add(launchId);
+      // A person record is person, confirmed or still in prepare (decide wrote it before create;
+      // a fallback rewrites it as shared): the window between decide and prepare's confirm is
+      // person too, so nothing in it ever reads as a shared executor (review 3 of mend#553, P2-1).
+      // Anything else, a launch from before this release included, ran as root.
+      const layout: HarnessLayout =
+        record !== null && record.layout === "person" ? "person" : "shared";
+      // Compare-and-set: what settle wrote while the read was in flight (a fallback's shared, a
+      // confirm's person) is newer than the record read, and stays (review 4 of mend#553, P3-5).
+      const meanwhile = layoutByLaunch.get(launchId);
+      if (meanwhile !== undefined) return meanwhile;
+      layoutByLaunch.set(launchId, layout);
+      return layout;
+    },
+  );
 
   /** A home recorded as held although Mend cannot say what sealant wrote: a release reaches it. */
   const keepHeldFor = (workspaceId: string, launchId: string | null, identity: LinuxIdentity) => {

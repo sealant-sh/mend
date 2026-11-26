@@ -278,7 +278,7 @@ const otherOwnerRemains = (tx: Tx, organizationId: OrganizationId, userId: strin
     return (row?.owners ?? 0) > 0;
   });
 
-export const deleteMembership = Effect.fn("OrganizationsRepo.deleteMembership")(function* (
+export const deleteMembership = Effect.fnUntraced(function* (
   tx: Tx,
   organizationId: OrganizationId,
   userId: string,
@@ -356,10 +356,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       notifyEvent(sql, { type: "organization", organizationId });
 
     /** One membership joined with the account's facts; null when there is none. */
-    const memberRow = Effect.fn("OrganizationsRepo.memberRow")(function* (
-      organizationId: OrganizationId,
-      userId: string,
-    ) {
+    const memberRow = Effect.fnUntraced(function* (organizationId: OrganizationId, userId: string) {
       const rows = yield* sql`
         SELECT m.organization_id AS "organizationId", m.user_id AS "userId", u.name, u.email,
                m.role, m.created_at AS "joinedAt"
@@ -370,12 +367,12 @@ export const OrganizationsRepoLive: Layer.Layer<
       return rows[0] === undefined ? null : decodeMember(rows[0]);
     });
 
-    const countOrganizations = Effect.fn("OrganizationsRepo.count")(function* () {
+    const countOrganizations = Effect.fnUntraced(function* () {
       const [row] = yield* db.select({ total: count() }).from(organizations).pipe(Effect.orDie);
       return row?.total ?? 0;
     });
 
-    const sole = Effect.fn("OrganizationsRepo.sole")(function* () {
+    const sole = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select()
         .from(organizations)
@@ -389,7 +386,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return toOrganization(only);
     });
 
-    const byId = Effect.fn("OrganizationsRepo.byId")(function* (id: OrganizationId) {
+    const byId = Effect.fnUntraced(function* (id: OrganizationId) {
       const [row] = yield* db
         .select()
         .from(organizations)
@@ -400,7 +397,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return toOrganization(row);
     });
 
-    const create = Effect.fn("OrganizationsRepo.create")(function* (
+    const create = Effect.fnUntraced(function* (
       name: string,
       createdByUserId: string | null,
       ownerUserId?: string,
@@ -440,10 +437,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return created;
     });
 
-    const rename = Effect.fn("OrganizationsRepo.rename")(function* (
-      id: OrganizationId,
-      name: string,
-    ) {
+    const rename = Effect.fnUntraced(function* (id: OrganizationId, name: string) {
       const [row] = yield* db
         .update(organizations)
         .set({ name: name.trim(), updatedAt: yield* DateTime.nowAsDate })
@@ -470,7 +464,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       joinedAt: row.joinedAt,
     });
 
-    const memberships = Effect.fn("OrganizationsRepo.memberships")(function* (userId: string) {
+    const memberships = Effect.fnUntraced(function* (userId: string) {
       const rows = yield* db
         .select(membershipColumns)
         .from(organizationMembers)
@@ -485,7 +479,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return rows.map(toMembership);
     });
 
-    const membershipIn = Effect.fn("OrganizationsRepo.membershipIn")(function* (
+    const membershipIn = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       userId: string,
     ) {
@@ -529,10 +523,7 @@ export const OrganizationsRepoLive: Layer.Layer<
         );
 
     // The membership in the organization a live key was created in, or null once its person left.
-    const keyMembership = Effect.fn("OrganizationsRepo.keyMembership")(function* (
-      userId: string,
-      keyId: string,
-    ) {
+    const keyMembership = Effect.fnUntraced(function* (userId: string, keyId: string) {
       const now = yield* DateTime.nowAsDate;
       const [row] = yield* db
         .select(membershipColumns)
@@ -559,9 +550,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return row === undefined ? null : toMembership(row);
     });
 
-    const activeMembership = Effect.fn("OrganizationsRepo.activeMembership")(function* (
-      signIn: SignIn,
-    ) {
+    const activeMembership = Effect.fnUntraced(function* (signIn: SignIn) {
       const { userId, credential } = signIn;
       if (credential?.startsWith("key:") === true) {
         return yield* keyMembership(userId, credential.slice("key:".length));
@@ -584,7 +573,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return (yield* pinned(userId, credential)) ?? (yield* memberships(userId))[0] ?? null;
     });
 
-    const switchActive = Effect.fn("OrganizationsRepo.switchActive")(function* (
+    const switchActive = Effect.fnUntraced(function* (
       signIn: SignIn,
       organizationId: OrganizationId,
     ) {
@@ -635,16 +624,11 @@ export const OrganizationsRepoLive: Layer.Layer<
       return membership;
     });
 
-    const roleOf = Effect.fn("OrganizationsRepo.roleOf")(function* (
-      organizationId: OrganizationId,
-      userId: string,
-    ) {
+    const roleOf = Effect.fnUntraced(function* (organizationId: OrganizationId, userId: string) {
       return yield* roleIn(db, organizationId, userId);
     });
 
-    const members = Effect.fn("OrganizationsRepo.members")(function* (
-      organizationId: OrganizationId,
-    ) {
+    const members = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const rows = yield* sql`
         SELECT m.organization_id AS "organizationId", m.user_id AS "userId", u.name, u.email,
                m.role, m.created_at AS "joinedAt"
@@ -655,9 +639,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return rows.map((row) => decodeMember(row));
     });
 
-    const memberCount = Effect.fn("OrganizationsRepo.memberCount")(function* (
-      organizationId: OrganizationId,
-    ) {
+    const memberCount = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const [row] = yield* db
         .select({ total: count() })
         .from(organizationMembers)
@@ -666,7 +648,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return row?.total ?? 0;
     });
 
-    const listWithCounts = Effect.fn("OrganizationsRepo.listWithCounts")(function* () {
+    const listWithCounts = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select()
         .from(organizations)
@@ -696,7 +678,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       }));
     });
 
-    const addMember = Effect.fn("OrganizationsRepo.addMember")(function* (
+    const addMember = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       userId: string,
       role: OrganizationRole,
@@ -719,7 +701,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return member;
     });
 
-    const setRole = Effect.fn("OrganizationsRepo.setRole")(function* (
+    const setRole = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       userId: string,
       role: OrganizationRole,
@@ -758,7 +740,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return member;
     });
 
-    const removeMember = Effect.fn("OrganizationsRepo.removeMember")(function* (
+    const removeMember = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       userId: string,
       revocation: { readonly actorUserId: string; readonly revocationLeaseMs: number },
@@ -777,9 +759,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return { revocationId: owed ? revocationId : null };
     });
 
-    const createInvitation = Effect.fn("OrganizationsRepo.createInvitation")(function* (
-      invitation: NewInvitation,
-    ) {
+    const createInvitation = Effect.fnUntraced(function* (invitation: NewInvitation) {
       yield* byId(invitation.organizationId);
       // 32 random bytes, url-safe: the link is the whole secret.
       const token = randomBytes(32).toString("base64url");
@@ -802,9 +782,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return minted;
     });
 
-    const listInvitations = Effect.fn("OrganizationsRepo.listInvitations")(function* (
-      organizationId: OrganizationId,
-    ) {
+    const listInvitations = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const rows = yield* db
         .select()
         .from(organizationInvitations)
@@ -814,7 +792,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return rows.map(toInvitation);
     });
 
-    const revokeInvitation = Effect.fn("OrganizationsRepo.revokeInvitation")(function* (
+    const revokeInvitation = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       invitationId: InvitationId,
     ) {
@@ -850,9 +828,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return toInvitation(row);
     });
 
-    const invitationByToken = Effect.fn("OrganizationsRepo.invitationByToken")(function* (
-      token: string,
-    ) {
+    const invitationByToken = Effect.fnUntraced(function* (token: string) {
       const [row] = yield* db
         .select({ invitation: organizationInvitations, organization: organizations })
         .from(organizationInvitations)
@@ -870,7 +846,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return resolved;
     });
 
-    const acceptInvitation = Effect.fn("OrganizationsRepo.acceptInvitation")(function* (
+    const acceptInvitation = Effect.fnUntraced(function* (
       token: string,
       user: { readonly id: string; readonly email: string },
     ) {
@@ -930,9 +906,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       return { organization, member };
     });
 
-    const bootstrapFirstAccount = Effect.fn("OrganizationsRepo.bootstrapFirstAccount")(function* (
-      userId: string,
-    ) {
+    const bootstrapFirstAccount = Effect.fnUntraced(function* (userId: string) {
       // Bootstrap only exists on an instance with exactly one organization.
       const organization = yield* sole().pipe(
         Effect.catchTag("NotSoleOrganizationError", () => Effect.succeed(null)),

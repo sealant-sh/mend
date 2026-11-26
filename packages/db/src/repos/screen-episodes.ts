@@ -24,7 +24,7 @@ const doneActions = (entry: ScreenLogEntry): number =>
  * Grows the turn's `screen` item by an agent's entry, in the entry's transaction: one item per
  * screen and turn, spanning its entries, never holding a frame. False for an entry with no turn.
  */
-export const ensureScreenEpisode = Effect.fn("ScreensRepo.ensureScreenEpisode")(function* (
+export const ensureScreenEpisode = Effect.fnUntraced(function* (
   tx: Tx,
   sessionId: SessionId,
   entry: ScreenLogEntry,

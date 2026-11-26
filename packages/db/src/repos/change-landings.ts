@@ -166,7 +166,7 @@ export const ChangeLandingsRepoLive: Layer.Layer<
     const sql = yield* PgClient.PgClient;
 
     // The review page and the session page re-read the change on this pointer.
-    const notify = Effect.fn("ChangeLandingsRepo.notify")(function* (landing: ChangeLanding) {
+    const notify = Effect.fnUntraced(function* (landing: ChangeLanding) {
       const [row] = yield* db
         .select({ worktreeId: worktreeChanges.worktreeId, sessionId: worktreeChanges.sessionId })
         .from(worktreeChanges)
@@ -182,7 +182,7 @@ export const ChangeLandingsRepoLive: Layer.Layer<
       });
     });
 
-    const record = Effect.fn("ChangeLandingsRepo.record")(function* (landing: NewChangeLanding) {
+    const record = Effect.fnUntraced(function* (landing: NewChangeLanding) {
       const [row] = yield* db
         .insert(changeLandings)
         .values({
@@ -209,7 +209,7 @@ export const ChangeLandingsRepoLive: Layer.Layer<
       return recorded;
     });
 
-    const byId = Effect.fn("ChangeLandingsRepo.byId")(function* (id: ChangeLandingId) {
+    const byId = Effect.fnUntraced(function* (id: ChangeLandingId) {
       const [row] = yield* db
         .select()
         .from(changeLandings)
@@ -219,9 +219,7 @@ export const ChangeLandingsRepoLive: Layer.Layer<
       return row === undefined ? null : toLanding(row);
     });
 
-    const listForChange = Effect.fn("ChangeLandingsRepo.listForChange")(function* (
-      changeId: ChangeId,
-    ) {
+    const listForChange = Effect.fnUntraced(function* (changeId: ChangeId) {
       const rows = yield* db
         .select()
         .from(changeLandings)
@@ -231,9 +229,7 @@ export const ChangeLandingsRepoLive: Layer.Layer<
       return rows.map(toLanding);
     });
 
-    const latestForChange = Effect.fn("ChangeLandingsRepo.latestForChange")(function* (
-      changeId: ChangeId,
-    ) {
+    const latestForChange = Effect.fnUntraced(function* (changeId: ChangeId) {
       const [row] = yield* db
         .select()
         .from(changeLandings)
@@ -244,7 +240,7 @@ export const ChangeLandingsRepoLive: Layer.Layer<
       return row === undefined ? null : toLanding(row);
     });
 
-    const observePullRequest = Effect.fn("ChangeLandingsRepo.observePullRequest")(function* (
+    const observePullRequest = Effect.fnUntraced(function* (
       id: ChangeLandingId,
       pullRequest: LandedPullRequest,
     ) {
@@ -260,10 +256,7 @@ export const ChangeLandingsRepoLive: Layer.Layer<
       return observed;
     });
 
-    const claimTourDescription = Effect.fn("ChangeLandingsRepo.claimTourDescription")(function* (
-      id: ChangeLandingId,
-      tourId: string,
-    ) {
+    const claimTourDescription = Effect.fnUntraced(function* (id: ChangeLandingId, tourId: string) {
       const rows = yield* db
         .update(changeLandings)
         .set({ describedTourId: tourId })

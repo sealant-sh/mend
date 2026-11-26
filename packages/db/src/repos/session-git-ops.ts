@@ -44,7 +44,7 @@ export const SessionGitOpsRepoLive: Layer.Layer<SessionGitOpsRepo, never, MendDB
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const record = Effect.fn("SessionGitOpsRepo.record")(function* (op: NewSessionGitOp) {
+    const record = Effect.fnUntraced(function* (op: NewSessionGitOp) {
       const [row] = yield* db
         .insert(sessionGitOps)
         .values({ id: SessionGitOpId.make(crypto.randomUUID()), ...op })
@@ -54,7 +54,7 @@ export const SessionGitOpsRepoLive: Layer.Layer<SessionGitOpsRepo, never, MendDB
       return row;
     });
 
-    const finish = Effect.fn("SessionGitOpsRepo.finish")(function* (
+    const finish = Effect.fnUntraced(function* (
       id: SessionGitOpId,
       exitCode: number | null,
       refUpdates: ReadonlyArray<string> | null,
@@ -66,9 +66,7 @@ export const SessionGitOpsRepoLive: Layer.Layer<SessionGitOpsRepo, never, MendDB
         .pipe(Effect.orDie);
     });
 
-    const listForSession = Effect.fn("SessionGitOpsRepo.listForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const listForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       return yield* db
         .select()
         .from(sessionGitOps)

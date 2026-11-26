@@ -541,10 +541,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         );
       });
 
-      const resolve = Effect.fn("GitOpsRunner.resolve")(function* (
-        cache: RunnerCache,
-        ref: string,
-      ) {
+      const resolve = Effect.fnUntraced(function* (cache: RunnerCache, ref: string) {
         if (GIT_OBJECT_ID.test(ref)) return Sha.make(ref);
         const direct = cache.refs[ref];
         if (direct !== undefined) return Sha.make(direct);
@@ -558,7 +555,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
 
       // Ref arguments resolve through the handle before git sees them, so an operation is
       // immune to a sibling ensure rewriting packed-refs underneath it.
-      const diffRange = Effect.fn("GitOpsRunner.diffRange")(function* (
+      const diffRange = Effect.fnUntraced(function* (
         cache: RunnerCache,
         a: string,
         b: string,
@@ -568,7 +565,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return yield* store.diffRange(cache.path, shaA, shaB, options);
       });
 
-      const diffFileFacts = Effect.fn("GitOpsRunner.diffFileFacts")(function* (
+      const diffFileFacts = Effect.fnUntraced(function* (
         cache: RunnerCache,
         a: string,
         b: string,
@@ -578,7 +575,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return yield* store.diffFileFacts(cache.path, shaA, shaB, options);
       });
 
-      const diffFileFactsBounded = Effect.fn("GitOpsRunner.diffFileFactsBounded")(function* (
+      const diffFileFactsBounded = Effect.fnUntraced(function* (
         cache: RunnerCache,
         a: string,
         b: string,
@@ -588,16 +585,12 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return yield* store.diffFileFactsBounded(cache.path, shaA, shaB, options);
       });
 
-      const changedFiles = Effect.fn("GitOpsRunner.changedFiles")(function* (
-        cache: RunnerCache,
-        a: string,
-        b: string,
-      ) {
+      const changedFiles = Effect.fnUntraced(function* (cache: RunnerCache, a: string, b: string) {
         const [shaA, shaB] = yield* Effect.all([resolve(cache, a), resolve(cache, b)]);
         return yield* store.changedFiles(cache.path, shaA, shaB);
       });
 
-      const listTreeFiles = Effect.fn("GitOpsRunner.listTreeFiles")(function* (
+      const listTreeFiles = Effect.fnUntraced(function* (
         cache: RunnerCache,
         ref: string,
         limit: number,
@@ -607,7 +600,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return yield* store.listTreeFiles(cache.path, sha, limit, after);
       });
 
-      const readBlob = Effect.fn("GitOpsRunner.readBlob")(function* (
+      const readBlob = Effect.fnUntraced(function* (
         cache: RunnerCache,
         ref: string,
         relative: string,
@@ -617,7 +610,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return yield* store.readBlob(cache.path, sha, relative, maxBytes);
       });
 
-      const grep = Effect.fn("GitOpsRunner.grep")(function* (
+      const grep = Effect.fnUntraced(function* (
         cache: RunnerCache,
         ref: string,
         query: GrepQuery,
@@ -627,7 +620,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return yield* store.grep(cache.path, sha, query, limit);
       });
 
-      const headSha = Effect.fn("GitOpsRunner.headSha")(function* (cache: RunnerCache) {
+      const headSha = Effect.fnUntraced(function* (cache: RunnerCache) {
         return yield* resolve(cache, "HEAD");
       });
 

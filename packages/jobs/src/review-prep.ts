@@ -454,7 +454,7 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
       yield* queuePasses(sessionId);
     });
 
-    const readingNow = Effect.fn("ReviewPrep.readingNow")(function* (session: {
+    const readingNow = Effect.fnUntraced(function* (session: {
       readonly id: SessionId;
       readonly status: SessionStatus;
     }) {

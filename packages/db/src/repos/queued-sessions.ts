@@ -132,7 +132,7 @@ export const QueuedSessionsRepoLive: Layer.Layer<QueuedSessionsRepo, never, Mend
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const byId = Effect.fn("QueuedSessionsRepo.byId")(function* (id: QueuedSessionId) {
+    const byId = Effect.fnUntraced(function* (id: QueuedSessionId) {
       const [row] = yield* db
         .select()
         .from(queuedSessions)
@@ -141,7 +141,7 @@ export const QueuedSessionsRepoLive: Layer.Layer<QueuedSessionsRepo, never, Mend
       return row ?? null;
     });
 
-    const insert = Effect.fn("QueuedSessionsRepo.insert")(function* (session: NewQueuedSession) {
+    const insert = Effect.fnUntraced(function* (session: NewQueuedSession) {
       const [row] = yield* db
         .insert(queuedSessions)
         .values({ ...session, state: "waiting" })
@@ -154,7 +154,7 @@ export const QueuedSessionsRepoLive: Layer.Layer<QueuedSessionsRepo, never, Mend
       return { row: stored, inserted: false };
     });
 
-    const listUnstarted = Effect.fn("QueuedSessionsRepo.listUnstarted")(function* (
+    const listUnstarted = Effect.fnUntraced(function* (
       ownerUserId: string,
       organizationId: OrganizationId,
     ) {
@@ -172,7 +172,7 @@ export const QueuedSessionsRepoLive: Layer.Layer<QueuedSessionsRepo, never, Mend
         .pipe(Effect.orDie);
     });
 
-    const listLeftBehind = Effect.fn("QueuedSessionsRepo.listLeftBehind")(function* (
+    const listLeftBehind = Effect.fnUntraced(function* (
       states: ReadonlyArray<QueuedSessionState>,
       before: Date,
     ) {
@@ -186,7 +186,7 @@ export const QueuedSessionsRepoLive: Layer.Layer<QueuedSessionsRepo, never, Mend
         .pipe(Effect.orDie);
     });
 
-    const change = Effect.fn("QueuedSessionsRepo.change")(function* (
+    const change = Effect.fnUntraced(function* (
       id: QueuedSessionId,
       from: ReadonlyArray<QueuedSessionState>,
       to: QueuedSessionChange,
@@ -200,7 +200,7 @@ export const QueuedSessionsRepoLive: Layer.Layer<QueuedSessionsRepo, never, Mend
       return row ?? null;
     });
 
-    const remove = Effect.fn("QueuedSessionsRepo.remove")(function* (
+    const remove = Effect.fnUntraced(function* (
       id: QueuedSessionId,
       from: ReadonlyArray<QueuedSessionState>,
     ) {
@@ -212,7 +212,7 @@ export const QueuedSessionsRepoLive: Layer.Layer<QueuedSessionsRepo, never, Mend
       return row ?? null;
     });
 
-    const forgetStarted = Effect.fn("QueuedSessionsRepo.forgetStarted")(function* (before: Date) {
+    const forgetStarted = Effect.fnUntraced(function* (before: Date) {
       const rows = yield* db
         .delete(queuedSessions)
         .where(and(eq(queuedSessions.state, "started"), lt(queuedSessions.updatedAt, before)))

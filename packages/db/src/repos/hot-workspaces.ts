@@ -104,13 +104,13 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const create = Effect.fn("HotWorkspacesRepo.create")(function* (entry: NewHotWorkspace) {
+    const create = Effect.fnUntraced(function* (entry: NewHotWorkspace) {
       const [row] = yield* db.insert(hotWorkspaces).values(entry).returning().pipe(Effect.orDie);
       if (row === undefined) return yield* Effect.die("hot workspace insert returned no row");
       return toHotWorkspace(row);
     });
 
-    const byId = Effect.fn("HotWorkspacesRepo.byId")(function* (id: SessionId) {
+    const byId = Effect.fnUntraced(function* (id: SessionId) {
       const [row] = yield* db
         .select()
         .from(hotWorkspaces)
@@ -120,9 +120,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
       return row === undefined ? null : toHotWorkspace(row);
     });
 
-    const listForProject = Effect.fn("HotWorkspacesRepo.listForProject")(function* (
-      projectId: ProjectId,
-    ) {
+    const listForProject = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* db
         .select()
         .from(hotWorkspaces)
@@ -132,7 +130,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
       return rows.map(toHotWorkspace);
     });
 
-    const listAll = Effect.fn("HotWorkspacesRepo.listAll")(function* () {
+    const listAll = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select()
         .from(hotWorkspaces)
@@ -141,10 +139,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
       return rows.map(toHotWorkspace);
     });
 
-    const setReady = Effect.fn("HotWorkspacesRepo.setReady")(function* (
-      id: SessionId,
-      stamps: HotWorkspaceStamps,
-    ) {
+    const setReady = Effect.fnUntraced(function* (id: SessionId, stamps: HotWorkspaceStamps) {
       yield* db
         .update(hotWorkspaces)
         .set({ ...stamps, status: "ready", error: null, updatedAt: yield* DateTime.nowAsDate })
@@ -152,10 +147,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
         .pipe(Effect.orDie);
     });
 
-    const setBaseSha = Effect.fn("HotWorkspacesRepo.setBaseSha")(function* (
-      id: SessionId,
-      baseSha: Sha,
-    ) {
+    const setBaseSha = Effect.fnUntraced(function* (id: SessionId, baseSha: Sha) {
       yield* db
         .update(hotWorkspaces)
         .set({ baseSha, updatedAt: yield* DateTime.nowAsDate })
@@ -163,10 +155,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
         .pipe(Effect.orDie);
     });
 
-    const setFailed = Effect.fn("HotWorkspacesRepo.setFailed")(function* (
-      id: SessionId,
-      error: string,
-    ) {
+    const setFailed = Effect.fnUntraced(function* (id: SessionId, error: string) {
       yield* db
         .update(hotWorkspaces)
         .set({ status: "failed", error, updatedAt: yield* DateTime.nowAsDate })
@@ -174,7 +163,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
         .pipe(Effect.orDie);
     });
 
-    const retire = Effect.fn("HotWorkspacesRepo.retire")(function* (id: SessionId, error: string) {
+    const retire = Effect.fnUntraced(function* (id: SessionId, error: string) {
       const rows = yield* db
         .update(hotWorkspaces)
         .set({ status: "failed", error, updatedAt: yield* DateTime.nowAsDate })
@@ -184,7 +173,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
       return rows.length > 0;
     });
 
-    const claim = Effect.fn("HotWorkspacesRepo.claim")(function* (
+    const claim = Effect.fnUntraced(function* (
       projectId: ProjectId,
       fingerprint: string,
       ownerUserId: string,
@@ -214,7 +203,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
       return row === undefined ? null : toHotWorkspace(row);
     });
 
-    const remove = Effect.fn("HotWorkspacesRepo.remove")(function* (id: SessionId) {
+    const remove = Effect.fnUntraced(function* (id: SessionId) {
       yield* db.delete(hotWorkspaces).where(eq(hotWorkspaces.id, id)).pipe(Effect.orDie);
     });
 

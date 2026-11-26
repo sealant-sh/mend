@@ -25,9 +25,7 @@ const OPENING_MESSAGES = 3;
  * without what Mend added (the landing guard). Empty for a session nobody sent a message through
  * Mend (a terminal session typed into), whose first prompts only its transcript holds.
  */
-const openingMessagesFromRecord = Effect.fn("openingMessagesFromRecord")(function* (
-  sessionId: SessionId,
-) {
+const openingMessagesFromRecord = Effect.fnUntraced(function* (sessionId: SessionId) {
   const inputs = yield* (yield* AgentConversationRepo).openingMessages(sessionId, OPENING_MESSAGES);
   return inputs.map((input) => requestOfTurn(input).trim()).filter((text) => text !== "");
 });
@@ -40,7 +38,7 @@ const awaitTranscript = (why: string) => Effect.die(new Error(`${why} — retryi
  * session settled without one. While it can still get one, the job dies into its retry until the
  * person types it.
  */
-const openingMessagesFromTranscript = Effect.fn("openingMessagesFromTranscript")(function* (
+const openingMessagesFromTranscript = Effect.fnUntraced(function* (
   job: NameSessionJob,
   session: { readonly settledAt: Date | null },
 ) {
@@ -74,7 +72,7 @@ const openingMessagesFromTranscript = Effect.fn("openingMessagesFromTranscript")
  * on, says more. Every other no-name outcome is a quiet success: a renamed or deleted session, a
  * switched-off cascade, an unparseable harness on the transcript path.
  */
-export const nameSession = Effect.fn("nameSession")(function* (job: NameSessionJob) {
+export const nameSession = Effect.fn("mend.session.name")(function* (job: NameSessionJob) {
   const sessions = yield* SessionsRepo;
   const session = yield* sessions
     .byId(job.sessionId)

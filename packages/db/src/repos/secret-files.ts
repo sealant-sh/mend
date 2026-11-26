@@ -84,20 +84,18 @@ export const SecretFilesRepoLive: Layer.Layer<SecretFilesRepo, never, MendDB> = 
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const list = Effect.fn("SecretFilesRepo.list")(function* (userId: string) {
+    const list = Effect.fnUntraced(function* (userId: string) {
       return (yield* rowsOf(db, userId)).map(toFile);
     });
 
-    const sealedForLaunch = Effect.fn("SecretFilesRepo.sealedForLaunch")(function* (
-      userId: string,
-    ) {
+    const sealedForLaunch = Effect.fnUntraced(function* (userId: string) {
       return (yield* rowsOf(db, userId)).map((row) => ({
         path: row.path,
         sealedContents: row.sealedContents,
       }));
     });
 
-    const save = Effect.fn("SecretFilesRepo.save")(function* (
+    const save = Effect.fnUntraced(function* (
       userId: string,
       input: { readonly path: string; readonly sealedContents: string; readonly bytes: number },
     ) {
@@ -165,7 +163,7 @@ export const SecretFilesRepoLive: Layer.Layer<SecretFilesRepo, never, MendDB> = 
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    const remove = Effect.fn("SecretFilesRepo.remove")(function* (userId: string, path: string) {
+    const remove = Effect.fnUntraced(function* (userId: string, path: string) {
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {

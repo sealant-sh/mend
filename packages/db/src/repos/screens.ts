@@ -266,7 +266,7 @@ const heldRow = (tx: Tx, sessionId: SessionId) =>
     .for("update")
     .pipe(Effect.map((rows) => rows[0] ?? null));
 
-const releaseRow = Effect.fn("ScreensRepo.releaseRow")(function* (tx: Tx, row: Row, ended: Ended) {
+const releaseRow = Effect.fnUntraced(function* (tx: Tx, row: Row, ended: Ended) {
   const now = yield* DateTime.nowAsDate;
   yield* tx
     .update(screens)
@@ -279,11 +279,7 @@ const releaseRow = Effect.fn("ScreensRepo.releaseRow")(function* (tx: Tx, row: R
     .where(eq(screens.id, row.id));
 });
 
-const appendIn = Effect.fn("ScreensRepo.appendIn")(function* (
-  tx: Tx,
-  screenId: ScreenId,
-  written: Written,
-) {
+const appendIn = Effect.fnUntraced(function* (tx: Tx, screenId: ScreenId, written: Written) {
   const [counter] = yield* tx
     .update(screens)
     .set({ lastSeq: sql`${screens.lastSeq} + 1` })
@@ -322,7 +318,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
     const db = yield* MendDB;
     const pg = yield* PgClient.PgClient;
 
-    const reserve = Effect.fn("ScreensRepo.reserve")(function* (at: {
+    const reserve = Effect.fnUntraced(function* (at: {
       readonly sessionId: SessionId;
       readonly workspaceId: SealantWorkspaceId;
     }) {
@@ -372,7 +368,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return toScreen(reserved);
     });
 
-    const byId = Effect.fn("ScreensRepo.byId")(function* (id: ScreenId) {
+    const byId = Effect.fnUntraced(function* (id: ScreenId) {
       const [row] = yield* db
         .select()
         .from(screens)
@@ -382,7 +378,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return row === undefined ? null : toScreen(row);
     });
 
-    const ofSession = Effect.fn("ScreensRepo.ofSession")(function* (sessionId: SessionId) {
+    const ofSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [row] = yield* db
         .select()
         .from(screens)
@@ -392,9 +388,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return row === undefined ? null : toScreen(row);
     });
 
-    const latestForSession = Effect.fn("ScreensRepo.latestForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const latestForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const [row] = yield* db
         .select()
         .from(screens)
@@ -405,10 +399,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return row === undefined ? null : toScreen(row);
     });
 
-    const setLife = Effect.fn("ScreensRepo.setLife")(function* (
-      id: ScreenId,
-      change: ScreenLifeChange,
-    ) {
+    const setLife = Effect.fnUntraced(function* (id: ScreenId, change: ScreenLifeChange) {
       const [row] = yield* db
         .update(screens)
         .set({
@@ -423,7 +414,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return toScreen(row);
     });
 
-    const release = Effect.fn("ScreensRepo.release")(function* (id: ScreenId) {
+    const release = Effect.fnUntraced(function* (id: ScreenId) {
       yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -438,7 +429,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
         .pipe(Effect.orDie);
     });
 
-    const listHeld = Effect.fn("ScreensRepo.listHeld")(function* () {
+    const listHeld = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select()
         .from(screens)
@@ -448,7 +439,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return rows.map(toScreen);
     });
 
-    const held = Effect.fn("ScreensRepo.held")(function* () {
+    const held = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select()
         .from(screens)
@@ -457,7 +448,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return rows.map(toScreen);
     });
 
-    const control = Effect.fn("ScreensRepo.control")(function* (
+    const control = Effect.fnUntraced(function* (
       id: ScreenId,
       event: ScreenInputEvent,
       owner: string | null,
@@ -495,10 +486,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return decided;
     });
 
-    const append = Effect.fn("ScreensRepo.append")(function* ({
-      screenId,
-      ...written
-    }: NewScreenLogEntry) {
+    const append = Effect.fnUntraced(function* ({ screenId, ...written }: NewScreenLogEntry) {
       const appended = yield* db
         .transaction((tx) => appendIn(tx, screenId, written))
         .pipe(Effect.orDie);
@@ -506,7 +494,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return appended.entry;
     });
 
-    const log = Effect.fn("ScreensRepo.log")(function* (id: ScreenId) {
+    const log = Effect.fnUntraced(function* (id: ScreenId) {
       const rows = yield* db
         .select()
         .from(screenLog)
@@ -516,7 +504,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return rows.map(toEntry);
     });
 
-    const lastLoggedAt = Effect.fn("ScreensRepo.lastLoggedAt")(function* (
+    const lastLoggedAt = Effect.fnUntraced(function* (
       id: ScreenId,
       bodies: ReadonlyArray<ScreenLogBody["_tag"]>,
     ) {
@@ -536,7 +524,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return row?.at ?? null;
     });
 
-    const claim = Effect.fn("ScreensRepo.claim")(function* (call: {
+    const claim = Effect.fnUntraced(function* (call: {
       readonly screenId: ScreenId;
       readonly callKey: string;
       readonly args: ScreenCallArguments;
@@ -565,7 +553,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return claimOf({ argsSha256: first.argsSha256, settled: settledOf(first) }, argsSha256);
     });
 
-    const settle = Effect.fn("ScreensRepo.settle")(function* (call: {
+    const settle = Effect.fnUntraced(function* (call: {
       readonly screenId: ScreenId;
       readonly callKey: string;
       readonly outcome: ScreenCallOutcome;
@@ -613,7 +601,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return settled.call;
     });
 
-    const boot = Effect.fn("ScreensRepo.boot")(function* () {
+    const boot = Effect.fnUntraced(function* () {
       const settled = yield* db
         .update(screenCalls)
         .set({ outcome: "outcome_unknown", settledAt: yield* DateTime.nowAsDate })

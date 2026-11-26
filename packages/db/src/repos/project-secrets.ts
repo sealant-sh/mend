@@ -252,7 +252,7 @@ export const ProjectSecretsRepoLive: Layer.Layer<
         .orderBy(asc(projectSecrets.name))
         .pipe(Effect.orDie);
 
-    const snapshot = Effect.fn("ProjectSecretsRepo.snapshot")(function* (projectId: ProjectId) {
+    const snapshot = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* readJoined(projectId);
       const first = rows[0];
       if (first === undefined) return yield* new ProjectNotFoundError({ projectId });
@@ -262,9 +262,7 @@ export const ProjectSecretsRepoLive: Layer.Layer<
       });
     });
 
-    const sealedForLaunch = Effect.fn("ProjectSecretsRepo.sealedForLaunch")(function* (
-      projectId: ProjectId,
-    ) {
+    const sealedForLaunch = Effect.fnUntraced(function* (projectId: ProjectId) {
       const rows = yield* readJoined(projectId);
       const first = rows[0];
       if (first === undefined) return yield* new ProjectNotFoundError({ projectId });
@@ -290,7 +288,7 @@ export const ProjectSecretsRepoLive: Layer.Layer<
       };
     });
 
-    const create = Effect.fn("ProjectSecretsRepo.create")(function* (
+    const create = Effect.fnUntraced(function* (
       projectId: ProjectId,
       input: {
         readonly name: string;
@@ -353,7 +351,7 @@ export const ProjectSecretsRepoLive: Layer.Layer<
       return result;
     });
 
-    const update = Effect.fn("ProjectSecretsRepo.update")(function* (
+    const update = Effect.fnUntraced(function* (
       projectId: ProjectId,
       secretId: ProjectSecretId,
       input: {
@@ -400,7 +398,7 @@ export const ProjectSecretsRepoLive: Layer.Layer<
       return result;
     });
 
-    const remove = Effect.fn("ProjectSecretsRepo.remove")(function* (
+    const remove = Effect.fnUntraced(function* (
       projectId: ProjectId,
       secretId: ProjectSecretId,
       expectedRevision: number,
@@ -437,7 +435,7 @@ export const ProjectSecretsRepoLive: Layer.Layer<
       return result;
     });
 
-    const upsertByName = Effect.fn("ProjectSecretsRepo.upsertByName")(function* (
+    const upsertByName = Effect.fnUntraced(function* (
       projectId: ProjectId,
       input: { readonly name: string; readonly sealedValue: string },
     ) {
@@ -489,7 +487,7 @@ export const ProjectSecretsRepoLive: Layer.Layer<
       return result;
     });
 
-    const setDelivery = Effect.fn("ProjectSecretsRepo.setDelivery")(function* (
+    const setDelivery = Effect.fnUntraced(function* (
       projectId: ProjectId,
       secretId: ProjectSecretId,
       input: { readonly delivery: ProjectSecretDeliveryInput; readonly expectedRevision: number },
@@ -557,7 +555,7 @@ export const ProjectSecretsRepoLive: Layer.Layer<
       return result;
     });
 
-    const deliveryOf = Effect.fn("ProjectSecretsRepo.deliveryOf")(function* (
+    const deliveryOf = Effect.fnUntraced(function* (
       projectId: ProjectId,
       secretId: ProjectSecretId,
     ) {

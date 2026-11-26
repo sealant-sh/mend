@@ -39,7 +39,7 @@ export const HarnessModelsRepoLive: Layer.Layer<HarnessModelsRepo, never, MendDB
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const list = Effect.fn("HarnessModelsRepo.list")(function* () {
+    const list = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select()
         .from(harnessModels)
@@ -56,7 +56,7 @@ export const HarnessModelsRepoLive: Layer.Layer<HarnessModelsRepo, never, MendDB
       );
     });
 
-    const forHarness = Effect.fn("HarnessModelsRepo.forHarness")(function* (harness: string) {
+    const forHarness = Effect.fnUntraced(function* (harness: string) {
       const rows = yield* db
         .select()
         .from(harnessModels)

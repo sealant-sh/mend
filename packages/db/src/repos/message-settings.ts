@@ -18,7 +18,7 @@ const make: Effect.Effect<MessageSettingsRepo["Service"], never, MendDB> = Effec
   const db = yield* MendDB;
   const selected = { sendSteersRunningTurn: userMessageSettings.sendSteersRunningTurn };
   return {
-    forUser: Effect.fn("MessageSettingsRepo.forUser")(function* (userId: string) {
+    forUser: Effect.fnUntraced(function* (userId: string) {
       const [row] = yield* db
         .select(selected)
         .from(userMessageSettings)
@@ -26,10 +26,7 @@ const make: Effect.Effect<MessageSettingsRepo["Service"], never, MendDB> = Effec
         .pipe(Effect.orDie);
       return row === undefined ? DEFAULT_MESSAGE_SETTINGS : new MessageSettings(row);
     }),
-    set: Effect.fn("MessageSettingsRepo.set")(function* (
-      userId: string,
-      settings: MessageSettings,
-    ) {
+    set: Effect.fnUntraced(function* (userId: string, settings: MessageSettings) {
       const [row] = yield* db
         .insert(userMessageSettings)
         .values({ userId, ...settings })

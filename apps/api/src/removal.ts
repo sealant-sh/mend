@@ -133,7 +133,7 @@ export class Removal extends Context.Service<
  * anything the start's own rows would come after (a new worktree's directory). It dies as the
  * database's refusal would, so the error boundary answers both alike.
  */
-export const refuseStartWhileRemoving = Effect.fn("refuseStartWhileRemoving")(function* (place: {
+export const refuseStartWhileRemoving = Effect.fnUntraced(function* (place: {
   readonly projectId: ProjectId;
   readonly worktreeId: WorktreeId | null;
 }) {

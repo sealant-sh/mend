@@ -80,10 +80,7 @@ const refOf = (artifact: ProofArtifact, sessionId: SessionId) => {
 
 type Tx = Pick<MendDatabase, "select" | "insert" | "update" | "execute">;
 
-const writeItem = Effect.fn("ProofArtifactsRepo.writeItem")(function* (
-  tx: Tx,
-  artifact: ProofArtifact,
-) {
+const writeItem = Effect.fnUntraced(function* (tx: Tx, artifact: ProofArtifact) {
   if (artifact.sessionId === null || artifact.turnId === null) return false;
   yield* lockAgentConversation(tx, artifact.sessionId);
   const [turn] = yield* tx
@@ -133,7 +130,7 @@ export const ProofArtifactsRepoLive: Layer.Layer<
   Effect.gen(function* () {
     const db = yield* MendDB;
     const pg = yield* PgClient.PgClient;
-    const byId = Effect.fn("ProofArtifactsRepo.byId")(function* (id: ProofArtifactId) {
+    const byId = Effect.fnUntraced(function* (id: ProofArtifactId) {
       const [row] = yield* db
         .select()
         .from(proofArtifacts)
@@ -141,10 +138,7 @@ export const ProofArtifactsRepoLive: Layer.Layer<
         .limit(1);
       return row === undefined ? null : yield* decode(row);
     }, Effect.mapError(storageFailed));
-    const byCall = Effect.fn("ProofArtifactsRepo.byCall")(function* (
-      sessionId: SessionId,
-      callKey: string,
-    ) {
+    const byCall = Effect.fnUntraced(function* (sessionId: SessionId, callKey: string) {
       const [row] = yield* db
         .select()
         .from(proofArtifacts)
@@ -164,10 +158,7 @@ export const ProofArtifactsRepoLive: Layer.Layer<
           projectId: artifact.projectId,
         });
       });
-    const insert = Effect.fn("ProofArtifactsRepo.insert")(function* (
-      artifact: ProofArtifact,
-      callKey: string | null,
-    ) {
+    const insert = Effect.fnUntraced(function* (artifact: ProofArtifact, callKey: string | null) {
       const written = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -203,7 +194,7 @@ export const ProofArtifactsRepoLive: Layer.Layer<
       yield* notify(written.artifact, written.itemChanged);
       return written.artifact;
     });
-    const listForChange = Effect.fn("ProofArtifactsRepo.listForChange")(function* (id: ChangeId) {
+    const listForChange = Effect.fnUntraced(function* (id: ChangeId) {
       const rows = yield* db
         .select()
         .from(proofArtifacts)
@@ -211,7 +202,7 @@ export const ProofArtifactsRepoLive: Layer.Layer<
         .orderBy(asc(proofArtifacts.createdAt), asc(proofArtifacts.id));
       return yield* Effect.forEach(rows, decode);
     }, Effect.mapError(storageFailed));
-    const settleVideo = Effect.fn("ProofArtifactsRepo.settleVideo")(function* (
+    const settleVideo = Effect.fnUntraced(function* (
       id: ProofArtifactId,
       capture: SettledProofCapture,
     ) {
@@ -241,25 +232,23 @@ export const ProofArtifactsRepoLive: Layer.Layer<
       yield* notify(written.artifact, written.itemChanged);
       return written.artifact;
     });
-    const settleStaleRecordings = Effect.fn("ProofArtifactsRepo.settleStaleRecordings")(
-      function* () {
-        const rows = yield* db
-          .select({ id: proofArtifacts.id })
-          .from(proofArtifacts)
-          .where(sql`${proofArtifacts.capture}->>'_tag' = 'Recording'`)
-          .pipe(Effect.mapError(storageFailed));
-        yield* Effect.forEach(
-          rows,
-          ({ id }) =>
-            settleVideo(id, {
-              _tag: "NotCaptured",
-              kind: "video",
-              reason: "Mend restarted while recording",
-            }),
-          { discard: true },
-        );
-      },
-    );
+    const settleStaleRecordings = Effect.fnUntraced(function* () {
+      const rows = yield* db
+        .select({ id: proofArtifacts.id })
+        .from(proofArtifacts)
+        .where(sql`${proofArtifacts.capture}->>'_tag' = 'Recording'`)
+        .pipe(Effect.mapError(storageFailed));
+      yield* Effect.forEach(
+        rows,
+        ({ id }) =>
+          settleVideo(id, {
+            _tag: "NotCaptured",
+            kind: "video",
+            reason: "Mend restarted while recording",
+          }),
+        { discard: true },
+      );
+    });
     return {
       insert,
       byId,

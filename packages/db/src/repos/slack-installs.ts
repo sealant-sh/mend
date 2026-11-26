@@ -117,7 +117,7 @@ export const SlackInstallsRepoLive: Layer.Layer<SlackInstallsRepo, never, MendDB
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const list = Effect.fn("SlackInstallsRepo.list")(function* () {
+    const list = Effect.fnUntraced(function* () {
       const rows = yield* db
         .select()
         .from(slackInstalls)
@@ -126,9 +126,7 @@ export const SlackInstallsRepoLive: Layer.Layer<SlackInstallsRepo, never, MendDB
       return rows.map(toInstall);
     });
 
-    const byOrganization = Effect.fn("SlackInstallsRepo.byOrganization")(function* (
-      organizationId: OrganizationId,
-    ) {
+    const byOrganization = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const [row] = yield* db
         .select()
         .from(slackInstalls)
@@ -138,7 +136,7 @@ export const SlackInstallsRepoLive: Layer.Layer<SlackInstallsRepo, never, MendDB
       return row === undefined ? null : toInstall(row);
     });
 
-    const byTeam = Effect.fn("SlackInstallsRepo.byTeam")(function* (teamId: string) {
+    const byTeam = Effect.fnUntraced(function* (teamId: string) {
       const [row] = yield* db
         .select()
         .from(slackInstalls)
@@ -148,7 +146,7 @@ export const SlackInstallsRepoLive: Layer.Layer<SlackInstallsRepo, never, MendDB
       return row === undefined ? null : toInstall(row);
     });
 
-    const save = Effect.fn("SlackInstallsRepo.save")(function* (install: NewSlackInstall) {
+    const save = Effect.fnUntraced(function* (install: NewSlackInstall) {
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -201,7 +199,7 @@ export const SlackInstallsRepoLive: Layer.Layer<SlackInstallsRepo, never, MendDB
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    const updateSettings = Effect.fn("SlackInstallsRepo.updateSettings")(function* (
+    const updateSettings = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       settings: SlackInstallSettings,
     ) {
@@ -215,9 +213,7 @@ export const SlackInstallsRepoLive: Layer.Layer<SlackInstallsRepo, never, MendDB
       return toInstall(row);
     });
 
-    const remove = Effect.fn("SlackInstallsRepo.remove")(function* (
-      organizationId: OrganizationId,
-    ) {
+    const remove = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const [row] = yield* db
         .delete(slackInstalls)
         .where(eq(slackInstalls.organizationId, organizationId))

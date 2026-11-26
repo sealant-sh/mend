@@ -179,7 +179,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const byId = Effect.fn("CheckpointsRepo.byId")(function* (id: CheckpointId) {
+    const byId = Effect.fnUntraced(function* (id: CheckpointId) {
       const [row] = yield* db
         .select()
         .from(checkpoints)
@@ -189,10 +189,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       return row === undefined ? null : toCheckpoint(row);
     });
 
-    const captureIdOf = Effect.fn("CheckpointsRepo.captureIdOf")(function* (
-      id: CheckpointId,
-      worktreeId: WorktreeId,
-    ) {
+    const captureIdOf = Effect.fnUntraced(function* (id: CheckpointId, worktreeId: WorktreeId) {
       const [row] = yield* db
         .select({ captureId: checkpoints.captureId })
         .from(checkpoints)
@@ -202,10 +199,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       return row?.captureId ?? null;
     });
 
-    const byOrdinal = Effect.fn("CheckpointsRepo.byOrdinal")(function* (
-      worktreeId: WorktreeId,
-      ordinal: number,
-    ) {
+    const byOrdinal = Effect.fnUntraced(function* (worktreeId: WorktreeId, ordinal: number) {
       const [row] = yield* db
         .select()
         .from(checkpoints)
@@ -215,7 +209,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       return row === undefined ? null : toCheckpoint(row);
     });
 
-    const create = Effect.fn("CheckpointsRepo.create")(function* (checkpoint: NewCheckpoint) {
+    const create = Effect.fnUntraced(function* (checkpoint: NewCheckpoint) {
       const [created] = yield* db
         .insert(checkpoints)
         .values({
@@ -248,9 +242,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       });
     });
 
-    const listForWorktree = Effect.fn("CheckpointsRepo.listForWorktree")(function* (
-      worktreeId: WorktreeId,
-    ) {
+    const listForWorktree = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const rows = yield* db
         .select()
         .from(checkpoints)
@@ -260,9 +252,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       return rows.map(toCheckpoint);
     });
 
-    const latestForWorktree = Effect.fn("CheckpointsRepo.latestForWorktree")(function* (
-      worktreeId: WorktreeId,
-    ) {
+    const latestForWorktree = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const [row] = yield* db
         .select()
         .from(checkpoints)
@@ -273,10 +263,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       return row === undefined ? null : toCheckpoint(row);
     });
 
-    const latestForWorktreeAt = Effect.fn("CheckpointsRepo.latestForWorktreeAt")(function* (
-      worktreeId: WorktreeId,
-      at: Date,
-    ) {
+    const latestForWorktreeAt = Effect.fnUntraced(function* (worktreeId: WorktreeId, at: Date) {
       const [row] = yield* db
         .select()
         .from(checkpoints)
@@ -287,9 +274,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       return row === undefined ? null : toCheckpoint(row);
     });
 
-    const countForWorktree = Effect.fn("CheckpointsRepo.countForWorktree")(function* (
-      worktreeId: WorktreeId,
-    ) {
+    const countForWorktree = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const [row] = yield* db
         .select({ value: count() })
         .from(checkpoints)
@@ -298,9 +283,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       return row?.value ?? 0;
     });
 
-    const listForSession = Effect.fn("CheckpointsRepo.listForSession")(function* (
-      sessionId: SessionId,
-    ) {
+    const listForSession = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* db
         .select()
         .from(checkpoints)
@@ -331,9 +314,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
           ),
         );
 
-    const recordRestore = Effect.fn("CheckpointsRepo.recordRestore")(function* (
-      restore: NewCheckpointRestore,
-    ) {
+    const recordRestore = Effect.fnUntraced(function* (restore: NewCheckpointRestore) {
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -365,9 +346,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
         .pipe(Effect.orDie);
     });
 
-    const restoresForWorktree = Effect.fn("CheckpointsRepo.restoresForWorktree")(function* (
-      worktreeId: WorktreeId,
-    ) {
+    const restoresForWorktree = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const rows = yield* db
         .select()
         .from(checkpointRestores)
@@ -377,10 +356,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       return rows.map(toRestore);
     });
 
-    const takeRestoreNotes = Effect.fn("CheckpointsRepo.takeRestoreNotes")(function* (
-      sessionId: SessionId,
-      carrier: string,
-    ) {
+    const takeRestoreNotes = Effect.fnUntraced(function* (sessionId: SessionId, carrier: string) {
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
