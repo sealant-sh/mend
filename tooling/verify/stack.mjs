@@ -113,6 +113,7 @@ export const telemetryFlags = (env, environment = "verify-stack") => {
   const named = [
     ["--sentry-dsn", env.MEND_VERIFY_SENTRY_DSN],
     ["--sealant-sentry-dsn", env.MEND_VERIFY_SEALANT_SENTRY_DSN],
+    ["--sealantd-sentry-dsn", env.MEND_VERIFY_SEALANTD_SENTRY_DSN],
     ["--sentry-browser-dsn", env.MEND_VERIFY_SENTRY_BROWSER_DSN],
   ].filter(([, value]) => typeof value === "string" && value.trim() !== "");
   if (named.length === 0) return [];

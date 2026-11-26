@@ -808,6 +808,7 @@ const SERVER_PORT_OFFSET = 10_000;
 const TELEMETRY_FLAGS = [
   "--sentry-dsn",
   "--sealant-sentry-dsn",
+  "--sealantd-sentry-dsn",
   "--sentry-browser-dsn",
   "--sentry-environment",
 ];

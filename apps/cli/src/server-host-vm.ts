@@ -62,11 +62,11 @@ export const renderHostVmOverlay = (settings: {
 // ─── whether this server can run host-vm ────────────────────────────────────
 
 /**
- * The vm-runner setup runs `--self-test` with: sealantd 0.21.0-next.209's (the multi-arch index),
- * the image the server's sealant (0.40.0-next.947) runs host-vm workspaces with. Moves with that pin.
+ * The vm-runner setup runs `--self-test` with: sealantd 0.21.0-next.217's (the multi-arch index),
+ * the image the server's sealant (0.40.0-next.951) runs host-vm workspaces with. Moves with that pin.
  */
 export const VM_RUNNER_IMAGE =
-  "ghcr.io/sealant-sh/vm-runner-next:0.21.0-next.209@sha256:94218ada6421707edc7679851ace4d1a0897363640a5b42bcf887c7fe7866b42";
+  "ghcr.io/sealant-sh/vm-runner-next:0.21.0-next.217@sha256:5d980937731275b900421366e9df2bb43893d8c33b37634f87dcca8a6f32bd7b";
 
 /** The first Docker Engine whose bridge driver takes `gateway_mode_ipv4=isolated`. */
 const ISOLATED_GATEWAY_ENGINE = 28;

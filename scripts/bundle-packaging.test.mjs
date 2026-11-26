@@ -809,6 +809,7 @@ test("each product's processes report to their own Sentry project, and none with
     PATH: "/usr/bin",
     MEND_SENTRY_DSN: "https://m@sentry.example/3",
     SEALANT_SENTRY_DSN: " https://s@sentry.example/2 ",
+    SEALANTD_SENTRY_DSN: " https://d@sentry.example/10 ",
     SENTRY_ENVIRONMENT: "box",
     SENTRY_RELEASE: "mend-server@1.2.3",
     SENTRY_BROWSER_DSN: "https://b@sentry.example/4",
@@ -830,6 +831,18 @@ test("each product's processes report to their own Sentry project, and none with
   assert.equal(sealant.SENTRY_RELEASE, undefined);
   assert.equal(sealant.SENTRY_BROWSER_DSN, undefined);
   assert.equal(sealant.MEND_SENTRY_DSN, undefined);
+  // Only sealant's worker is given the workspaces' sealantd DSN, which it hands each workspace.
+  assert.equal(sealant.SEALANTD_SENTRY_DSN, undefined);
+  assert.equal(mend.SEALANTD_SENTRY_DSN, undefined);
+  assert.equal(web.SEALANTD_SENTRY_DSN, undefined);
+  const worker = childEnvironment(container, "sealant", {}, { daemons: true });
+  assert.equal(worker.SEALANTD_SENTRY_DSN, "https://d@sentry.example/10");
+  assert.equal(worker.SENTRY_DSN, "https://s@sentry.example/2");
+  assert.equal(
+    "SEALANTD_SENTRY_DSN" in
+      childEnvironment({ SEALANTD_SENTRY_DSN: " " }, "sealant", {}, { daemons: true }),
+    false,
+  );
   // A plain SENTRY_DSN is Mend's, the container's product: never sealant's.
   const plain = { SENTRY_DSN: "https://m@sentry.example/3" };
   assert.equal(childEnvironment(plain, "mend").SENTRY_DSN, "https://m@sentry.example/3");

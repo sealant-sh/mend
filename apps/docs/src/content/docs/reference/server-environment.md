@@ -533,6 +533,9 @@ paths their directories. Trace and span IDs are kept whole.
 The Docker bundle runs Mend and sealant in one container, and each reports to a project of its own:
 the bundle hands Mend's processes `MEND_SENTRY_DSN` and sealant's `SEALANT_SENTRY_DSN`, each as
 their `SENTRY_DSN`, and only the web app `SENTRY_BROWSER_DSN`, which it serves to the browser.
+`SEALANTD_SENTRY_DSN` goes to sealant's worker alone, which hands it to the sealantd in each
+workspace it starts, with the trace of the launch; a workspace with restricted egress may then reach
+that DSN's host on port 443. Workspaces already running keep what they started with.
 
 ## Set them on the Docker install
 
@@ -554,10 +557,10 @@ each workspace network; `--t3-gateway` writes `compose.t3.yaml`, which sets
 `WORKSPACE_IMAGE_MIN_AGE_HOURS` with the values written in the overlay itself, not in `server.env`;
 `--workspace-memory` and `--workspace-docker-memory` write `compose.workspace-memory.yaml`, which
 sets `SEALANT_DOCKER_WORKSPACE_MEMORY_LIMIT` and `SEALANT_DOCKER_SERVICE_MEMORY_LIMIT` the same way;
-and `--sentry-dsn`, `--sealant-sentry-dsn`, `--sentry-browser-dsn`, `--sentry-environment` and
-`--sentry-traces-sample-rate` write `compose.telemetry.yaml`, which sets `MEND_SENTRY_DSN`,
-`SEALANT_SENTRY_DSN`, `SENTRY_BROWSER_DSN`, `SENTRY_ENVIRONMENT` and `SENTRY_TRACES_SAMPLE_RATE` the
-same way.
+and `--sentry-dsn`, `--sealant-sentry-dsn`, `--sealantd-sentry-dsn`, `--sentry-browser-dsn`,
+`--sentry-environment` and `--sentry-traces-sample-rate` write `compose.telemetry.yaml`, which sets
+`MEND_SENTRY_DSN`, `SEALANT_SENTRY_DSN`, `SEALANTD_SENTRY_DSN`, `SENTRY_BROWSER_DSN`,
+`SENTRY_ENVIRONMENT` and `SENTRY_TRACES_SAMPLE_RATE` the same way.
 
 What `server.env` holds, all read by the compose files:
 

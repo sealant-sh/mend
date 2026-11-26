@@ -324,10 +324,10 @@ Its last line says what happened:
   boots, it prints `lane c · no Boat slot free · …` and boots without Boat, and the Boat flows of
   groups 9 and 10 run on lane A (Lanes, "Lane C without Boat"). Each lane's line ends
   `telemetry passed|skipped|off`: `copies.sh` hands every copy this machine's Sentry DSNs when
-  `~/.local/share/sentry-mend/verify.env` names them (SLNT-1383), reading only their three names
-  from it, never running it. `off` (no file, or none of the names) or `skipped` (the copy's CLI
-  refused them) makes `telemetry.web-trace` `not run · no DSN on this copy`; the copies run on
-  either way. Never print a DSN, nor anything from that file, in the report, the evidence or a log.
+  `~/.local/share/sentry-mend/verify.env` names them (SLNT-1383), reading only their four names from
+  it, never running it. `off` (no file, or none of the names) or `skipped` (the copy's CLI refused
+  them) makes `telemetry.web-trace` `not run · no DSN on this copy`; the copies run on either way.
+  Never print a DSN, nor anything from that file, in the report, the evidence or a log.
 - `failed <lane> <what failed>`: `vm up` failed for a reason other than room. Run it once more; a
   second failure is a Fix Now ticket (step 7), and the run ends after step 8 without moving
   `lastCommit`.

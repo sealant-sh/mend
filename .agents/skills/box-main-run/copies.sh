@@ -15,9 +15,10 @@
 # and its groups run on lane A (SKILL.md, Lanes).
 #
 # Every copy reports to this machine's Sentry projects when ~/.local/share/sentry-mend/verify.env
-# names them (SLNT-1383): `vm up` hands MEND_VERIFY_SENTRY_DSN, MEND_VERIFY_SEALANT_SENTRY_DSN and
-# MEND_VERIFY_SENTRY_BROWSER_DSN to the copy's `mend server setup` under the environment `check-vm`.
-# Another agent wrote that file, so it is read as data, never run: only those three names, each
+# names them (SLNT-1383): `vm up` hands MEND_VERIFY_SENTRY_DSN, MEND_VERIFY_SEALANT_SENTRY_DSN,
+# MEND_VERIFY_SEALANTD_SENTRY_DSN (SLNT-1358) and MEND_VERIFY_SENTRY_BROWSER_DSN to the copy's
+# `mend server setup` under the environment `check-vm`.
+# Another agent wrote that file, so it is read as data, never run: only those four names, each
 # value taken only when it has a DSN's shape. A missing file, or one without them, leaves telemetry
 # off and the copies boot as before. No value is printed: the lane's line says only whether `vm up`'s
 # telemetry step passed. Its setting lives in the copy's server.env, which `vm save` does not keep.
@@ -47,7 +48,7 @@ mkdir -p "$LANES"
 TELEMETRY_FILE=${MAIN_RUN_TELEMETRY_FILE:-$HOME/.local/share/sentry-mend/verify.env}
 telemetry=()
 if [[ -f $TELEMETRY_FILE && -r $TELEMETRY_FILE ]]; then
-  for var in MEND_VERIFY_SENTRY_DSN MEND_VERIFY_SEALANT_SENTRY_DSN MEND_VERIFY_SENTRY_BROWSER_DSN; do
+  for var in MEND_VERIFY_SENTRY_DSN MEND_VERIFY_SEALANT_SENTRY_DSN MEND_VERIFY_SEALANTD_SENTRY_DSN MEND_VERIFY_SENTRY_BROWSER_DSN; do
     value=$(sed -n -E "s/^[[:space:]]*(export[[:space:]]+)?${var}=//p" "$TELEMETRY_FILE" | tail -n 1)
     value=${value%$'\r'}
     if [[ $value =~ ^\"(.*)\"$ || $value =~ ^\'(.*)\'$ ]]; then value=${BASH_REMATCH[1]}; fi

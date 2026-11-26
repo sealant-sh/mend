@@ -5,8 +5,9 @@
  *
  * The bundle's supervisor gives each process the one DSN its product reports to
  * (scripts/bundle-supervisor.mjs): Mend's API, worker and web server `MEND_SENTRY_DSN`, sealant's
- * API, worker and SSH gateway `SEALANT_SENTRY_DSN`, and the web app's browser half
- * `SENTRY_BROWSER_DSN`. The environment and the trace sample rate are shared.
+ * API, worker and SSH gateway `SEALANT_SENTRY_DSN`, the sealantd in each workspace
+ * `SEALANTD_SENTRY_DSN` (which sealant's worker hands each workspace it launches), and the web
+ * app's browser half `SENTRY_BROWSER_DSN`. The environment and the trace sample rate are shared.
  *
  * The values live in the server config, and `compose.telemetry.yaml` hands them to the `mend`
  * container, written into the overlay itself, not `server.env`: a CLI from before this setting
@@ -23,6 +24,8 @@ export interface ServerTelemetry {
   readonly dsn?: string;
   /** `SEALANT_SENTRY_DSN`: the bundled sealant's API, worker and SSH gateway. */
   readonly sealantDsn?: string;
+  /** `SEALANTD_SENTRY_DSN`: the sealantd in each workspace, handed to it by sealant's worker. */
+  readonly sealantdDsn?: string;
   /** `SENTRY_BROWSER_DSN`: the web app in the browser, served to it at runtime. */
   readonly browserDsn?: string;
   /** `SENTRY_ENVIRONMENT`: absent, each process says `development`. */
@@ -64,6 +67,13 @@ export const TELEMETRY_FIELDS: ReadonlyArray<Field> = [
     key: "sealantDsn",
     flag: "--sealant-sentry-dsn",
     variable: "SEALANT_SENTRY_DSN",
+    rule: DSN_RULE,
+    valid: isDsn,
+  },
+  {
+    key: "sealantdDsn",
+    flag: "--sealantd-sentry-dsn",
+    variable: "SEALANTD_SENTRY_DSN",
     rule: DSN_RULE,
     valid: isDsn,
   },
@@ -165,6 +175,9 @@ export const telemetryLine = (telemetry: ServerTelemetry | undefined): string =>
     telemetry.sealantDsn === undefined
       ? "sealant's nothing"
       : `sealant's to ${projectOf(telemetry.sealantDsn)}`,
+    telemetry.sealantdDsn === undefined
+      ? "sealantd's nothing"
+      : `sealantd's to ${projectOf(telemetry.sealantdDsn)}`,
     telemetry.browserDsn === undefined
       ? "the browser nothing"
       : `the browser to ${projectOf(telemetry.browserDsn)}`,

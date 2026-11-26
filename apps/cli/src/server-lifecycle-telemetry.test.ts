@@ -24,9 +24,10 @@ const OVERLAY = "compose.telemetry.yaml";
 const MEND_DSN = "https://0123456789abcdef0123456789abcdef@sentry.example.test/3";
 const SEALANT_DSN = "https://fedcba9876543210fedcba9876543210@sentry.example.test/2";
 const BROWSER_DSN = "https://00112233445566778899aabbccddeeff@sentry.example.test/4";
+const SEALANTD_DSN = "https://ffeeddccbbaa99887766554433221100@sentry.example.test/10";
 const OFF_LINE = "telemetry · off: this server reports its errors and traces to nobody";
 const SET_LINE =
-  "telemetry · Mend's servers report to sentry.example.test project 3, sealant's to sentry.example.test project 2, the browser nothing, environment box, traces sampled at 0.5";
+  "telemetry · Mend's servers report to sentry.example.test project 3, sealant's to sentry.example.test project 2, sealantd's to sentry.example.test project 10, the browser nothing, environment box, traces sampled at 0.5";
 
 const field = (flag: string) => {
   const found = TELEMETRY_FIELDS.find((each) => each.flag === flag);
@@ -92,6 +93,7 @@ describe("where a server's errors and traces go", () => {
       `  mend:\n    environment:\n      MEND_SENTRY_DSN: "${MEND_DSN}"\n      SENTRY_BROWSER_DSN: "${BROWSER_DSN}"\n`,
     );
     expect(overlay).not.toContain("SEALANT_SENTRY_DSN");
+    expect(overlay).not.toContain("SEALANTD_SENTRY_DSN");
     expect(telemetryLine(undefined)).toBe(OFF_LINE);
     // The key in a DSN is not a secret, and still never printed.
     expect(telemetryLine({ dsn: MEND_DSN })).not.toContain("0123456789abcdef");
@@ -125,6 +127,8 @@ describe("telemetry on the Docker install", { timeout: 120_000 }, () => {
           MEND_DSN,
           "--sealant-sentry-dsn",
           SEALANT_DSN,
+          "--sealantd-sentry-dsn",
+          SEALANTD_DSN,
           "--sentry-environment",
           "box",
           "--sentry-traces-sample-rate",
@@ -138,11 +142,12 @@ describe("telemetry on the Docker install", { timeout: 120_000 }, () => {
     expect(JSON.parse(files["server.json"] ?? "{}").telemetry).toEqual({
       dsn: MEND_DSN,
       sealantDsn: SEALANT_DSN,
+      sealantdDsn: SEALANTD_DSN,
       environment: "box",
       tracesSampleRate: "0.5",
     });
     expect(files[OVERLAY]).toContain(
-      `      MEND_SENTRY_DSN: "${MEND_DSN}"\n      SEALANT_SENTRY_DSN: "${SEALANT_DSN}"\n      SENTRY_ENVIRONMENT: "box"\n      SENTRY_TRACES_SAMPLE_RATE: "0.5"\n`,
+      `      MEND_SENTRY_DSN: "${MEND_DSN}"\n      SEALANT_SENTRY_DSN: "${SEALANT_DSN}"\n      SEALANTD_SENTRY_DSN: "${SEALANTD_DSN}"\n      SENTRY_ENVIRONMENT: "box"\n      SENTRY_TRACES_SAMPLE_RATE: "0.5"\n`,
     );
     // server.env is untouched: a CLI from before the setting still reads the install.
     expect(files["server.env"]).toBe(envBefore);
@@ -174,6 +179,8 @@ describe("telemetry on the Docker install", { timeout: 120_000 }, () => {
           "default",
           "--sealant-sentry-dsn",
           "default",
+          "--sealantd-sentry-dsn",
+          "default",
           "--sentry-environment",
           "default",
           "--sentry-traces-sample-rate",
@@ -193,6 +200,7 @@ describe("telemetry on the Docker install", { timeout: 120_000 }, () => {
     for (const [flag, value] of [
       ["--sentry-dsn", "sentry.example.test/3"],
       ["--sealant-sentry-dsn", "https://sentry.example.test/2"],
+      ["--sealantd-sentry-dsn", "https://key@sentry.example.test/ten"],
       ["--sentry-browser-dsn", `${BROWSER_DSN}"`],
       ["--sentry-environment", "has space"],
       ["--sentry-traces-sample-rate", "2"],

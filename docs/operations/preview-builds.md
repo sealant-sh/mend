@@ -415,15 +415,16 @@ Limits of a check VM:
 A verify stack and a check VM report their errors and traces to Sentry only when this machine names
 the projects, in the verifier's own environment, never in the repository: `MEND_VERIFY_SENTRY_DSN`
 (Mend's servers, mend-server), `MEND_VERIFY_SEALANT_SENTRY_DSN` (the bundled sealant,
-sealant-server) and `MEND_VERIFY_SENTRY_BROWSER_DSN` (the web app in the browser, mend-web); the
-DSNs are in SLNT-1349's contract. `pnpm verify stack up` hands them to the stack's
-`mend server setup` under the environment `verify-stack`, and `pnpm verify vm up` to the copy's
-under `check-vm`. Unset, both report to nobody, as every install does.
+sealant-server), `MEND_VERIFY_SEALANTD_SENTRY_DSN` (the sealantd in each workspace, sealantd) and
+`MEND_VERIFY_SENTRY_BROWSER_DSN` (the web app in the browser, mend-web); the DSNs are in SLNT-1349's
+contract. `pnpm verify stack up` hands them to the stack's `mend server setup` under the environment
+`verify-stack`, and `pnpm verify vm up` to the copy's under `check-vm`. Unset, both report to
+nobody, as every install does.
 
 The daily run of `main` sets them for every copy it boots when the dev machine's
 `~/.local/share/sentry-mend/verify.env` names them (the `box-main-run` skill's `copies.sh` reads
-only the three names from it, as data). The setting lives in the copy's `server.env`, which
-`vm save` does not keep, so the next master, and a copy booted from it without the variables, reads
+only the four names from it, as data). The setting lives in the copy's `server.env`, which `vm save`
+does not keep, so the next master, and a copy booted from it without the variables, reads
 `telemetry · off`.
 
 ## The box
@@ -476,7 +477,7 @@ on it.
 
   ```sh
   mend server setup --offline --sentry-dsn <mend-server DSN> --sealant-sentry-dsn <sealant-server DSN> \
-    --sentry-browser-dsn <mend-web DSN> --sentry-environment <alpha|box>
+    --sealantd-sentry-dsn <sealantd DSN> --sentry-browser-dsn <mend-web DSN> --sentry-environment <alpha|box>
   ```
 
 - **VM 131, `mend-boat-preview`** (`10.0.0.41`), the preview server made on 5 Nov 2026 for the Boat

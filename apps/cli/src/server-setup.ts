@@ -501,8 +501,8 @@ interface SetupOptions {
   readonly workspaceMemory: WorkspaceMemoryValue | undefined;
   readonly workspaceDockerMemory: WorkspaceMemoryValue | undefined;
   /**
-   * `--sentry-dsn`, `--sealant-sentry-dsn`, `--sentry-browser-dsn`, `--sentry-environment`,
-   * `--sentry-traces-sample-rate` (server-telemetry.ts): where errors and traces go. `default`
+   * `--sentry-dsn`, `--sealant-sentry-dsn`, `--sealantd-sentry-dsn`, `--sentry-browser-dsn`,
+   * `--sentry-environment`, `--sentry-traces-sample-rate` (server-telemetry.ts): where errors and traces go. `default`
    * takes a saved value away; omitted keeps the saved one.
    */
   readonly telemetry: Readonly<Partial<Record<keyof ServerTelemetry, TelemetryValue>>>;
