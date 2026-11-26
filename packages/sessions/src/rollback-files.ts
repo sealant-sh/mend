@@ -402,9 +402,7 @@ const execute = (
     );
 
 /** Retain and verify the original save once, including files that cannot be represented by a Git tree. */
-export const saveRollbackRecovery = Effect.fn("SessionRepository.saveRollbackRecovery")(function* (
-  authority: RollbackFileAuthority,
-) {
+export const saveRollbackRecovery = Effect.fnUntraced(function* (authority: RollbackFileAuthority) {
   yield* execute(authority, "save");
   return yield* Effect.gen(function* () {
     const manifestBytes = Buffer.from(yield* execute(authority, "read", "save.json"), "base64");
@@ -567,88 +565,89 @@ const placeRetainedPayloads = (
   });
 
 /** Hydrate the original immutable save after losing a workspace's local journal. */
-export const hydrateRollbackRecovery = Effect.fn("SessionRepository.hydrateRollbackRecovery")(
-  function* (authority: RollbackFileAuthority, recovery: RollbackRecovery) {
-    if (
-      recovery.operationId !== authority.operationId ||
-      recovery.worktreeId !== authority.worktreeId ||
-      authority.placeRecovery === undefined
-    )
-      return yield* new RollbackFilesError({
-        message: "This authority cannot hydrate the retained recovery.",
-      });
-    const load = (blob: HistoryBlob) =>
-      authority.blobs.get(blob.key).pipe(
-        Effect.mapError(
-          () => new RollbackFilesError({ message: "A retained recovery object is unavailable." }),
-        ),
-        Effect.flatMap((bytes) =>
-          bytes.byteLength === blob.byteLength && digest(bytes) === blob.sha256
-            ? Effect.succeed(bytes)
-            : Effect.fail(
-                new RollbackFilesError({
-                  message: "A retained recovery object failed verification.",
-                }),
-              ),
-        ),
-      );
-    const index = yield* load(recovery.index);
-    const decoded = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(Schema.Struct({ raw: Schema.String, support: Schema.String })),
-    )(Buffer.from(index).toString("utf8")).pipe(
+export const hydrateRollbackRecovery = Effect.fnUntraced(function* (
+  authority: RollbackFileAuthority,
+  recovery: RollbackRecovery,
+) {
+  if (
+    recovery.operationId !== authority.operationId ||
+    recovery.worktreeId !== authority.worktreeId ||
+    authority.placeRecovery === undefined
+  )
+    return yield* new RollbackFilesError({
+      message: "This authority cannot hydrate the retained recovery.",
+    });
+  const load = (blob: HistoryBlob) =>
+    authority.blobs.get(blob.key).pipe(
       Effect.mapError(
-        () => new RollbackFilesError({ message: "Retained index evidence is invalid." }),
+        () => new RollbackFilesError({ message: "A retained recovery object is unavailable." }),
+      ),
+      Effect.flatMap((bytes) =>
+        bytes.byteLength === blob.byteLength && digest(bytes) === blob.sha256
+          ? Effect.succeed(bytes)
+          : Effect.fail(
+              new RollbackFilesError({
+                message: "A retained recovery object failed verification.",
+              }),
+            ),
       ),
     );
-    const files = [
-      { name: "files.json", bytes: yield* load(recovery.files) },
-      { name: "index", bytes: Buffer.from(decoded.raw, "base64") },
-      { name: "index-support.json", bytes: Buffer.from(decoded.support, "base64") },
-      { name: "objects.pack", bytes: yield* load(recovery.objects) },
-      { name: "native.json", bytes: yield* load(recovery.native) },
-      { name: "save.json", bytes: yield* load(recovery.journal) },
-    ];
-    yield* placeRetainedPayloads(
-      authority,
-      files.map((file) => ({
-        path: `${authority.journalRoot}/${authority.operationId}/${file.name}`,
-        bytes: file.bytes,
-      })),
-    ).pipe(Effect.mapError((error) => new RollbackFilesError({ message: error.message })));
-    yield* execute(authority, "hydrate");
-  },
-);
+  const index = yield* load(recovery.index);
+  const decoded = yield* Schema.decodeUnknownEffect(
+    Schema.fromJsonString(Schema.Struct({ raw: Schema.String, support: Schema.String })),
+  )(Buffer.from(index).toString("utf8")).pipe(
+    Effect.mapError(
+      () => new RollbackFilesError({ message: "Retained index evidence is invalid." }),
+    ),
+  );
+  const files = [
+    { name: "files.json", bytes: yield* load(recovery.files) },
+    { name: "index", bytes: Buffer.from(decoded.raw, "base64") },
+    { name: "index-support.json", bytes: Buffer.from(decoded.support, "base64") },
+    { name: "objects.pack", bytes: yield* load(recovery.objects) },
+    { name: "native.json", bytes: yield* load(recovery.native) },
+    { name: "save.json", bytes: yield* load(recovery.journal) },
+  ];
+  yield* placeRetainedPayloads(
+    authority,
+    files.map((file) => ({
+      path: `${authority.journalRoot}/${authority.operationId}/${file.name}`,
+      bytes: file.bytes,
+    })),
+  ).pipe(Effect.mapError((error) => new RollbackFilesError({ message: error.message })));
+  yield* execute(authority, "hydrate");
+});
 
 /** Retain the verified outcome and journal before history publication, including conversation-only. */
-export const retainRollbackFileEvidence = Effect.fn("SessionRepository.retainRollbackFileEvidence")(
-  function* (authority: RollbackFileAuthority) {
-    const bytes = Buffer.from(yield* execute(authority, "evidence"));
-    const sha256 = digest(bytes);
-    const key = `changes/${authority.worktreeId}/history/${authority.operationId}/${sha256}`;
-    yield* authority.blobs
-      .put(key, bytes, { ifAbsent: true })
-      .pipe(
-        Effect.mapError(
-          () => new RollbackFilesError({ message: "Rollback outcome could not be retained." }),
-        ),
-      );
-    const stored = yield* authority.blobs
-      .get(key)
-      .pipe(
-        Effect.mapError(
-          () => new RollbackFilesError({ message: "Rollback outcome could not be verified." }),
-        ),
-      );
-    if (digest(stored) !== sha256)
-      return yield* new RollbackFilesError({
-        message: "Retained rollback outcome failed verification.",
-      });
-    return { key, sha256, byteLength: bytes.byteLength } satisfies HistoryBlob;
-  },
-);
+export const retainRollbackFileEvidence = Effect.fnUntraced(function* (
+  authority: RollbackFileAuthority,
+) {
+  const bytes = Buffer.from(yield* execute(authority, "evidence"));
+  const sha256 = digest(bytes);
+  const key = `changes/${authority.worktreeId}/history/${authority.operationId}/${sha256}`;
+  yield* authority.blobs
+    .put(key, bytes, { ifAbsent: true })
+    .pipe(
+      Effect.mapError(
+        () => new RollbackFilesError({ message: "Rollback outcome could not be retained." }),
+      ),
+    );
+  const stored = yield* authority.blobs
+    .get(key)
+    .pipe(
+      Effect.mapError(
+        () => new RollbackFilesError({ message: "Rollback outcome could not be verified." }),
+      ),
+    );
+  if (digest(stored) !== sha256)
+    return yield* new RollbackFilesError({
+      message: "Retained rollback outcome failed verification.",
+    });
+  return { key, sha256, byteLength: bytes.byteLength } satisfies HistoryBlob;
+});
 
 /** Check that initialization or conversation-only rollback preserved the original managed bytes. */
-export const compareRollbackFiles = Effect.fn("SessionRepository.compareRollbackFiles")(function* (
+export const compareRollbackFiles = Effect.fnUntraced(function* (
   authority: RollbackFileAuthority,
   recovery: RollbackRecovery,
 ) {

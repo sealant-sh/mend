@@ -58,7 +58,7 @@ export const localBranchRefs = (
   });
 
 /** Read a worktree's own refs without launching a workspace or an agent turn. */
-export const readWorktreeBranchRefs = Effect.fn("readWorktreeBranchRefs")(
+export const readWorktreeBranchRefs = Effect.fnUntraced(
   function* (worktree: Worktree) {
     const authority = yield* SessionRepository;
     const mount = yield* authority.worktreeMount(worktree.projectId, worktree.directory);

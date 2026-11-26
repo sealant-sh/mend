@@ -24,7 +24,7 @@ export class OrganizationNameRefusedError extends Schema.TaggedError<Organizatio
  * it. Its runtime follows the server's until an owner chooses. With `owner`, the actor is its owner from the same transaction; without, it starts
  * empty and the operator invites its first owner. Who may call it is the caller's to check.
  */
-export const createOrganization = Effect.fn("createOrganization")(function* (input: {
+export const createOrganization = Effect.fnUntraced(function* (input: {
   readonly name: string;
   readonly actorUserId: string;
   readonly owner: boolean;

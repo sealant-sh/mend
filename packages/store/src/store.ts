@@ -1542,7 +1542,7 @@ export class Store extends Context.Service<
        * Skipped entirely once the config records the policy — the walk must not tax every
        * worktree create.
        */
-      const ensureSharedGroup = Effect.fn("Store.ensureSharedGroup")(function* (storePath: string) {
+      const ensureSharedGroup = Effect.fnUntraced(function* (storePath: string) {
         const current = yield* git(["config", "--get", "core.sharedRepository"], storePath).pipe(
           Effect.catch(() => Effect.succeed("")),
         );
@@ -1652,9 +1652,7 @@ export class Store extends Context.Service<
         );
       });
 
-      const settleCreatedRepository = Effect.fn("Store.settleCreatedRepository")(function* (
-        storePath: string,
-      ) {
+      const settleCreatedRepository = Effect.fnUntraced(function* (storePath: string) {
         const marker = path.join(path.dirname(storePath), UNSETTLED_REPOSITORY_MARKER);
         yield* Effect.try(() => fs.rmSync(marker, { force: true })).pipe(
           Effect.catch((error) =>
@@ -1665,7 +1663,7 @@ export class Store extends Context.Service<
         );
       });
 
-      const unsettledRepositories = Effect.fn("Store.unsettledRepositories")(function* () {
+      const unsettledRepositories = Effect.fnUntraced(function* () {
         const entries = yield* Effect.try(() =>
           fs.existsSync(config.root) ? fs.readdirSync(config.root) : [],
         ).pipe(
@@ -1790,7 +1788,7 @@ export class Store extends Context.Service<
        * successful fetch reports the unknown base; a failed fetch or refusal keeps its original
        * reason, and a resolution that failed any other way keeps its own.
        */
-      const resolveBaseSha = Effect.fn("Store.resolveBaseSha")(function* (
+      const resolveBaseSha = Effect.fnUntraced(function* (
         storePath: string,
         baseRef: string,
         remoteEnv: GitRemoteEnvironment | null,
@@ -1971,7 +1969,7 @@ export class Store extends Context.Service<
             baseRef: source.reviewBase.ref,
           };
         });
-      const createLocalWorktree = Effect.fn("Store.localWorktree")(function* (
+      const createLocalWorktree = Effect.fnUntraced(function* (
         storePath: string,
         directory: string,
         defaultBranch: string,
@@ -2010,10 +2008,7 @@ export class Store extends Context.Service<
           Effect.flatMap((now) => sweepQuarantinesUnder(quarantineRoot, now)),
         );
 
-      const renameBranch = Effect.fn("Store.renameBranch")(function* (
-        worktreePath: string,
-        newBranch: string,
-      ) {
+      const renameBranch = Effect.fnUntraced(function* (worktreePath: string, newBranch: string) {
         yield* git(["branch", "-m", newBranch], worktreePath);
       });
 
@@ -2071,7 +2066,7 @@ export class Store extends Context.Service<
         return { name, sha: sha(refSha), committedAt };
       };
 
-      const listBranches = Effect.fn("Store.listBranches")(function* (
+      const listBranches = Effect.fnUntraced(function* (
         storePath: string,
         options?: BranchListingOptions,
       ) {
@@ -2121,10 +2116,7 @@ export class Store extends Context.Service<
         yield* git(["worktree", "remove", "--force", worktreePath], storePath);
       });
 
-      const removeWorktreeForce = Effect.fn("Store.removeWorktreeForce")(function* (
-        storePath: string,
-        name: string,
-      ) {
+      const removeWorktreeForce = Effect.fnUntraced(function* (storePath: string, name: string) {
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
         yield* git(["worktree", "remove", "--force", worktreePath], storePath).pipe(Effect.ignore);
         const result = yield* Effect.sync(() => rmBestEffort(worktreePath));
@@ -2151,7 +2143,7 @@ export class Store extends Context.Service<
           path.relative(path.resolve(config.root), path.resolve(entry)),
         );
 
-      const retainedStoreProblem = Effect.fn("Store.retainedStoreProblem")(function* (
+      const retainedStoreProblem = Effect.fnUntraced(function* (
         storePath: string,
         directories: ReadonlyArray<string>,
       ) {
@@ -2186,7 +2178,7 @@ export class Store extends Context.Service<
       });
 
       // Off the event loop: a kept project's worktrees can hold hundreds of thousands of files.
-      const projectDiskUsage = Effect.fn("Store.projectDiskUsage")(function* (storePath: string) {
+      const projectDiskUsage = Effect.fnUntraced(function* (storePath: string) {
         const parent = path.dirname(storePath);
         if (!withinStore(parent)) return null;
         return yield* Effect.promise(async () => {
@@ -2263,7 +2255,7 @@ export class Store extends Context.Service<
         );
       });
 
-      const diffRange = Effect.fn("Store.diffRange")(function* (
+      const diffRange = Effect.fnUntraced(function* (
         dir: string,
         a: string,
         b: string,
@@ -2283,7 +2275,7 @@ export class Store extends Context.Service<
         return last <= 0 ? "" : out.stdout.slice(0, last);
       });
 
-      const worktreeMatchesCommit = Effect.fn("Store.worktreeMatchesCommit")(function* (
+      const worktreeMatchesCommit = Effect.fnUntraced(function* (
         worktreePath: string,
         commit: string,
       ) {
@@ -2328,11 +2320,7 @@ export class Store extends Context.Service<
         return [tracked, ...additions].filter((part) => part !== "").join("\n");
       });
 
-      const changedFiles = Effect.fn("Store.changedFiles")(function* (
-        dir: string,
-        a: string,
-        b: string | null,
-      ) {
+      const changedFiles = Effect.fnUntraced(function* (dir: string, a: string, b: string | null) {
         const args =
           b === null ? ["diff", "--numstat", "-z", a] : ["diff", "--numstat", "-z", a, b];
         const out = yield* git(args, dir);
@@ -2377,7 +2365,7 @@ export class Store extends Context.Service<
           : [...tracked, ...additions];
       });
 
-      const diffFileFacts = Effect.fn("Store.diffFileFacts")(function* (
+      const diffFileFacts = Effect.fnUntraced(function* (
         dir: string,
         a: string,
         b: string,
@@ -2391,7 +2379,7 @@ export class Store extends Context.Service<
         return parseNameStatus(names, parseNumstat(counts));
       });
 
-      const diffFileFactsBounded = Effect.fn("Store.diffFileFactsBounded")(function* (
+      const diffFileFactsBounded = Effect.fnUntraced(function* (
         dir: string,
         a: string,
         b: string,
@@ -2542,7 +2530,7 @@ export class Store extends Context.Service<
         return found.facts.length > whole.facts.length || !found.cut ? found : whole;
       });
 
-      const listWorktreeFiles = Effect.fn("Store.listWorktreeFiles")(function* (
+      const listWorktreeFiles = Effect.fnUntraced(function* (
         worktreePath: string,
         limit: number,
         after?: string,
@@ -2557,7 +2545,7 @@ export class Store extends Context.Service<
         return capListing([...new Set(out.split("\0"))], limit, after);
       });
 
-      const readBlob = Effect.fn("Store.readBlob")(function* (
+      const readBlob = Effect.fnUntraced(function* (
         dir: string,
         rev: string,
         relative: string,
@@ -2578,7 +2566,7 @@ export class Store extends Context.Service<
         } satisfies FileRead;
       });
 
-      const readWorktreeFile = Effect.fn("Store.readWorktreeFile")(function* (
+      const readWorktreeFile = Effect.fnUntraced(function* (
         worktreePath: string,
         relative: string,
         maxBytes: number,
@@ -2639,7 +2627,7 @@ export class Store extends Context.Service<
         return parseGrep(out.stdout, rev, limit, out.cut);
       });
 
-      const listTreeFiles = Effect.fn("Store.listTreeFiles")(function* (
+      const listTreeFiles = Effect.fnUntraced(function* (
         dir: string,
         ref: string,
         limit: number,
@@ -2649,7 +2637,7 @@ export class Store extends Context.Service<
         return capListing(out.split("\0"), limit, after);
       });
 
-      const listSubtreeBlobs = Effect.fn("Store.listSubtreeBlobs")(function* (
+      const listSubtreeBlobs = Effect.fnUntraced(function* (
         dir: string,
         rev: string,
         prefix: string,
@@ -2663,11 +2651,7 @@ export class Store extends Context.Service<
         return parseSubtreeBlobListing(out, limit);
       });
 
-      const listTopLevel = Effect.fn("Store.listTopLevel")(function* (
-        dir: string,
-        ref: string,
-        limit: number,
-      ) {
+      const listTopLevel = Effect.fnUntraced(function* (dir: string, ref: string, limit: number) {
         // `<mode> <type> <sha>\t<name>`, NUL-separated so unusual names survive.
         const out = yield* git(["ls-tree", "-z", ref], dir);
         const entries = out.split("\0").flatMap((line) => {
@@ -2679,7 +2663,7 @@ export class Store extends Context.Service<
         return capListing(entries, limit);
       });
 
-      const headSha = Effect.fn("Store.headSha")(function* (dir: string) {
+      const headSha = Effect.fnUntraced(function* (dir: string) {
         const head = yield* git(["rev-parse", "HEAD"], dir);
         return sha(head);
       });

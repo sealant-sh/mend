@@ -86,7 +86,7 @@ const make: Effect.Effect<
   const repo = yield* SessionStartsRepo;
   const sessions = yield* SessionsRepo;
 
-  const read = Effect.fn("SessionStarts.read")(function* (actor: Actor, key: string) {
+  const read = Effect.fnUntraced(function* (actor: Actor, key: string) {
     const row = yield* repo.read(actor.userId, key);
     return new SessionStartRead({
       key,
@@ -107,7 +107,7 @@ const make: Effect.Effect<
    * The same key again (a client that sent its start twice): what the first request made, once it
    * has made it, or the reason it didn't. Never a second session.
    */
-  const again = Effect.fn("SessionStarts.again")(function* (actor: Actor, key: string) {
+  const again = Effect.fnUntraced(function* (actor: Actor, key: string) {
     const until = (yield* DateTime.nowAsDate).getTime() + Duration.toMillis(LAUNCH_ANSWER_WINDOW);
     for (;;) {
       const row = yield* repo.read(actor.userId, key);
@@ -128,7 +128,7 @@ const make: Effect.Effect<
     }
   });
 
-  const start = Effect.fn("SessionStarts.start")(function* (
+  const start = Effect.fnUntraced(function* (
     actor: Actor,
     request: StartSessionRequest,
     worktree: Worktree | null,

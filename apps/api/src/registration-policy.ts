@@ -26,7 +26,7 @@ export const RegistrationPolicyLive: Layer.Layer<
     const users = yield* UsersRepo;
     const organizations = yield* OrganizationsRepo;
 
-    const decide = Effect.fn("RegistrationPolicy.decide")(function* (input: {
+    const decide = Effect.fnUntraced(function* (input: {
       readonly email: string;
       readonly invitationToken: string | null;
     }) {
@@ -66,7 +66,7 @@ export const RegistrationPolicyLive: Layer.Layer<
         ).pipe(Effect.annotateLogs({ userId, reason }));
       });
 
-    const registered = Effect.fn("RegistrationPolicy.registered")(function* (
+    const registered = Effect.fnUntraced(function* (
       user: { readonly id: string; readonly email: string },
       invitationToken: string | null,
     ) {

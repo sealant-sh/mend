@@ -147,7 +147,7 @@ export const TerminalProjectsLive: Layer.Layer<
     const projects = yield* ProjectsRepo;
     const processes = yield* SessionProcessesRepo;
     const sessions = yield* SessionsRepo;
-    const listed = Effect.fn("TerminalProjects.listed")(function* (address: TerminalAddress) {
+    const listed = Effect.fnUntraced(function* (address: TerminalAddress) {
       const sessionId =
         address.session !== undefined
           ? SessionId.make(address.session)

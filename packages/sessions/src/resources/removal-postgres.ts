@@ -81,7 +81,7 @@ export const saveRemovalDump: (
   worktreeId: WorktreeId,
   dumpName: string,
   refresh?: boolean,
-) => Effect.Effect<void, OwnDatabaseDumpFailed> = Effect.fn("saveRemovalDump")(
+) => Effect.Effect<void, OwnDatabaseDumpFailed> = Effect.fnUntraced(
   function* (
     scope: ResourceScope,
     key: string,

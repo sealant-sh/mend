@@ -61,7 +61,7 @@ export const localWorktreeGitStatus = (
   });
 
 /** Read uncommitted paths from the authoritative mount or the capture's immutable Git trees. */
-export const readWorktreeGitStatus = Effect.fn("readWorktreeGitStatus")(
+export const readWorktreeGitStatus = Effect.fnUntraced(
   function* (worktree: Worktree) {
     const mount = yield* (yield* SessionRepository).worktreeMount(
       worktree.projectId,

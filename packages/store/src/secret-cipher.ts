@@ -66,7 +66,7 @@ export const SecretCipherLive: Layer.Layer<SecretCipher, never, MendKeysConfig> 
   Effect.gen(function* () {
     const config = yield* MendKeysConfig;
 
-    const encrypt = Effect.fn("SecretCipher.encrypt")(function* (plaintext: string) {
+    const encrypt = Effect.fnUntraced(function* (plaintext: string) {
       const key = yield* loadOrCreateKey(config.root);
       return yield* Effect.try({
         try: () => {
@@ -84,7 +84,7 @@ export const SecretCipherLive: Layer.Layer<SecretCipher, never, MendKeysConfig> 
       });
     });
 
-    const decrypt = Effect.fn("SecretCipher.decrypt")(function* (sealed: string) {
+    const decrypt = Effect.fnUntraced(function* (sealed: string) {
       const key = yield* loadOrCreateKey(config.root);
       return yield* Effect.try({
         try: () => {

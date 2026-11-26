@@ -93,16 +93,16 @@ const stagingIn = (script: string) => {
 
 const makeLaunchClock = Effect.gen(function* () {
   const clock = yield* makeEngineClock(["sessions"], { drivesCheckpointWaits: true });
-  let harnessStateLooks = 0;
+  let classifyPasses = 0;
   const base = yield* Effect.tracer;
   const tracer = Tracer.make({
     span: (options) => {
       const span = base.span(options);
-      if (options.name !== "SessionEngine.harnessStateFor") return span;
+      if (options.name !== "SessionEngine.classifyUnclassifiedSessions") return span;
       const end = span.end.bind(span);
       span.end = (endTime, exit) => {
         end(endTime, exit);
-        harnessStateLooks += 1;
+        classifyPasses += 1;
         clock.changed();
       };
       return span;
@@ -139,7 +139,7 @@ const makeLaunchClock = Effect.gen(function* () {
     ...clock,
     captureStatus,
     tracer,
-    harnessStateLooks: () => harnessStateLooks,
+    classifyPasses: () => classifyPasses,
     harnessGone,
   };
 });
@@ -1517,11 +1517,11 @@ describe("SessionEngine capture mode", () => {
             Effect.gen(function* () {
               yield* SessionEngine;
               // The classification runs forked, after the boot: a reading is waited for; an absent
-              // one is read once the boot's look at the saved harness state has ended.
+              // one is read once the boot's pass over unclassified sessions has ended.
               if (expected === null) {
                 yield* clock.untilChanged(
-                  () => clock.harnessStateLooks() > 0,
-                  "the restart's look at the saved harness state",
+                  () => clock.classifyPasses() > 0,
+                  "the restart's pass over unclassified sessions",
                 );
               } else {
                 yield* clock.untilChanged(

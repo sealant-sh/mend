@@ -877,7 +877,7 @@ export const ResourcesLive: Layer.Layer<
         ),
       };
     });
-    const env = Effect.fn("Resources.env")(function* (
+    const env = Effect.fnUntraced(function* (
       project: ResourceProject,
       viewer: Viewer,
       worktreeId: WorktreeId,
@@ -898,7 +898,7 @@ export const ResourcesLive: Layer.Layer<
         }),
       } satisfies ResourceEnvAnswer;
     });
-    const forSession = Effect.fn("Resources.forSession")(function* (
+    const forSession = Effect.fnUntraced(function* (
       sessionId: SessionId,
       argv: ReadonlyArray<string>,
       clock: ReaderClock,

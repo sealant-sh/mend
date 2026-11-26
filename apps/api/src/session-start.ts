@@ -133,7 +133,7 @@ const launchOverOf = (request: LaunchRequest): LaunchOver =>
       ? Restart
       : NoLiveAgent;
 
-export const settleIfUnlaunched = Effect.fn("SessionStart.settleIfUnlaunched")(function* (
+export const settleIfUnlaunched = Effect.fnUntraced(function* (
   sessions: SessionsRepo["Service"],
   session: Session,
   summary: string,
@@ -219,7 +219,7 @@ export const makeSessionStart = Effect.gen(function* () {
    * "Questions do not open pull requests"): every Slack request, and any session that lands by
    * itself. Only the opening turn does: a resumed conversation heard it already.
    */
-  const guardsLanding = Effect.fn("SessionStart.guardsLanding")(function* (session: Session) {
+  const guardsLanding = Effect.fnUntraced(function* (session: Session) {
     if (session.purpose === "setup") return false;
     if (session.origin !== "slack") {
       const project = yield* projects.byId(session.projectId);
@@ -350,7 +350,7 @@ export const makeSessionStart = Effect.gen(function* () {
       ),
     );
 
-  const launchAs = Effect.fn("SessionStart.launchAs")(function* (
+  const launchAs = Effect.fnUntraced(function* (
     userId: string,
     session: Session,
     request: LaunchRequest,
@@ -581,10 +581,7 @@ export const makeSessionStart = Effect.gen(function* () {
     return answered.value;
   });
 
-  const startAs = Effect.fn("SessionStart.startAs")(function* (
-    actor: Actor,
-    input: StartSessionInput,
-  ) {
+  const startAs = Effect.fnUntraced(function* (actor: Actor, input: StartSessionInput) {
     const session = yield* createAs(actor, input.projectId, input.session);
     return yield* launchAs(actor.userId, session, input.launch);
   });

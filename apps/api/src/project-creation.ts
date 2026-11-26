@@ -185,7 +185,7 @@ export const ProjectCreationLive: Layer.Layer<
       createNew: Effect.fn("ProjectCreation.createNew")(function* (name: ProjectName) {
         return (yield* allocate(yield* currentCreator, name, "named")) ?? (yield* exhausted);
       }),
-      ensureScratch: Effect.fn("ProjectCreation.ensureScratch")(function* () {
+      ensureScratch: Effect.fnUntraced(function* () {
         const creator = yield* currentCreator;
         return (
           (yield* scratchOf(creator)) ??

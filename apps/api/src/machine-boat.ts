@@ -156,7 +156,7 @@ export const MachineBoatReportLive: Layer.Layer<
       readonly until: number;
       readonly facts: ServerBoatFacts;
     } | null>(null);
-    const read = Effect.fn("MachineBoatReport.read")(function* () {
+    const read = Effect.fnUntraced(function* () {
       const now = yield* Clock.currentTimeMillis;
       const known = yield* Ref.get(kept);
       if (known !== null && known.until > now) return known.facts;
@@ -166,7 +166,7 @@ export const MachineBoatReportLive: Layer.Layer<
     });
     /** How long the operator's own check may take: Boat answers several reads. */
     const checkTimeout = Duration.seconds(20);
-    const checkServerKey = Effect.fn("MachineBoatReport.checkServerKey")(function* () {
+    const checkServerKey = Effect.fnUntraced(function* () {
       const checked = yield* clients.checkBoatInstallKey().pipe(
         Effect.timeout(checkTimeout),
         Effect.mapError((error) => {

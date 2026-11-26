@@ -132,7 +132,7 @@ export const makeHandoffStart = Effect.gen(function* () {
           ),
         );
 
-  const admissible = Effect.fn("HandoffStart.admissible")(function* (project: Project) {
+  const admissible = Effect.fnUntraced(function* (project: Project) {
     yield* capturedStore;
     const reason = yield* unsupportedRepositoryReason(project.storePath).pipe(
       Effect.catchTag("GitError", () => Effect.succeed(null)),
@@ -140,10 +140,7 @@ export const makeHandoffStart = Effect.gen(function* () {
     if (reason !== null) return yield* refused("unsupported-repository", reason);
   });
 
-  const termsAs = Effect.fn("HandoffStart.termsAs")(function* (
-    caller: SignIn,
-    projectId: ProjectId,
-  ) {
+  const termsAs = Effect.fnUntraced(function* (caller: SignIn, projectId: ProjectId) {
     const project = yield* access.projectAs(caller, projectId);
     yield* admissible(project);
     return terms;
@@ -186,11 +183,7 @@ export const makeHandoffStart = Effect.gen(function* () {
       return yield* store.freshenBase(project.storePath, project.defaultBranch, remoteEnv);
     });
 
-  const admit = Effect.fn("HandoffStart.admit")(function* (
-    project: Project,
-    userId: string,
-    bytes: Uint8Array,
-  ) {
+  const admit = Effect.fnUntraced(function* (project: Project, userId: string, bytes: Uint8Array) {
     return yield* store
       .admitHandoff(project.storePath, project.defaultBranch, bytes, {
         freshen: freshenFor(project, userId),
@@ -226,7 +219,7 @@ export const makeHandoffStart = Effect.gen(function* () {
    * it stands: `idle`, `starting` while the hold or another launch is under way, `running` when
    * another client launched its agent first, or `failed` with its words.
    */
-  const hold = Effect.fn("HandoffStart.hold")(function* (session: Session, userId: string) {
+  const hold = Effect.fnUntraced(function* (session: Session, userId: string) {
     const slot: LaunchSlot = {
       take: (effect) => budgets.withLaunchSlot(userId, effect),
       refused: budgetMessage("accountLaunchesInFlight", budgets.limits.accountLaunchesInFlight),
@@ -251,7 +244,7 @@ export const makeHandoffStart = Effect.gen(function* () {
       .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(session)));
   });
 
-  const sessionIn = Effect.fn("HandoffStart.sessionIn")(function* (
+  const sessionIn = Effect.fnUntraced(function* (
     project: Project,
     worktree: Worktree,
     userId: string,
@@ -280,7 +273,7 @@ export const makeHandoffStart = Effect.gen(function* () {
   });
 
   /** The account's earlier receipt of the same W, answered from what it stored then. */
-  const replay = Effect.fn("HandoffStart.replay")(function* (
+  const replay = Effect.fnUntraced(function* (
     project: Project,
     earlier: Worktree,
     seed: WorktreeHandoff,
@@ -302,7 +295,7 @@ export const makeHandoffStart = Effect.gen(function* () {
     message: "this handoff was received before, for another account · nothing was created",
   });
 
-  const takenNames = Effect.fn("HandoffStart.takenNames")(function* (projectId: ProjectId) {
+  const takenNames = Effect.fnUntraced(function* (projectId: ProjectId) {
     const rows = yield* worktrees.listForProject(projectId);
     const refs = yield* storeRefs.list(projectId);
     const taken = new Set([
@@ -381,7 +374,7 @@ export const makeHandoffStart = Effect.gen(function* () {
     });
   });
 
-  const receive = Effect.fn("HandoffStart.receive")(function* (
+  const receive = Effect.fnUntraced(function* (
     project: Project,
     userId: string,
     query: HandoffQueryInput,
@@ -439,7 +432,7 @@ export const makeHandoffStart = Effect.gen(function* () {
     });
   });
 
-  const receiveAs = Effect.fn("HandoffStart.receiveAs")(function* (
+  const receiveAs = Effect.fnUntraced(function* (
     caller: SignIn,
     projectId: ProjectId,
     query: HandoffQueryInput,

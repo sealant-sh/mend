@@ -124,66 +124,62 @@ export const selectAdoptedSkillFiles = (
  * Scan `.agents/skills` on the newly adopted commit and sync valid bundles into that project's own
  * skill library (`scope: "project"`). Never touches the adopter's personal skill library.
  */
-export const importAdoptedProjectSkills = Effect.fn("AdoptionSkills.importAdoptedProjectSkills")(
-  function* (input: {
-    readonly projectId: ProjectId;
-    readonly storePath: string;
-    readonly headSha: Sha;
-  }): Effect.fn.Return<number, GitError | SkillWriteError, Store | SkillsRepo> {
-    const store = yield* Store;
-    const skillsRepo = yield* SkillsRepo;
-    const entries = yield* store.listSubtreeBlobs(
-      input.storePath,
-      input.headSha,
-      ADOPTION_SKILLS_DIR,
-      MAX_ADOPTION_SKILL_BLOBS,
-    );
-    const candidates = selectAdoptedSkillFiles(entries);
-    if (candidates.length === 0) return 0;
+export const importAdoptedProjectSkills = Effect.fnUntraced(function* (input: {
+  readonly projectId: ProjectId;
+  readonly storePath: string;
+  readonly headSha: Sha;
+}): Effect.fn.Return<number, GitError | SkillWriteError, Store | SkillsRepo> {
+  const store = yield* Store;
+  const skillsRepo = yield* SkillsRepo;
+  const entries = yield* store.listSubtreeBlobs(
+    input.storePath,
+    input.headSha,
+    ADOPTION_SKILLS_DIR,
+    MAX_ADOPTION_SKILL_BLOBS,
+  );
+  const candidates = selectAdoptedSkillFiles(entries);
+  if (candidates.length === 0) return 0;
 
-    const loaded = yield* Effect.forEach(
-      candidates,
-      (candidate) =>
-        Effect.gen(function* () {
-          const readFiles = yield* Effect.forEach(
-            candidate.files,
-            (file) =>
-              store
-                .readBlob(input.storePath, input.headSha, file.repoPath, SKILL_MAX_FILE_BYTES + 1)
-                .pipe(
-                  Effect.map((blob) => {
-                    if (blob === null || blob.truncated || blob.binary) return null;
-                    return {
-                      path: file.skillPath,
-                      contents: utf8Decoder.decode(blob.bytes),
-                    };
-                  }),
-                ),
-            // Bounded concurrency: each read spawns `git cat-file` against the local bare repo.
-            { concurrency: BLOB_READ_CONCURRENCY },
-          );
-          const files = readFiles.filter(
-            (file): file is { readonly path: string; readonly contents: string } => file !== null,
-          );
-          const entryFile = files.find((file) => file.path === SKILL_ENTRY_FILE);
-          if (entryFile === undefined) return null;
-          const bundle: SkillBundleInput = {
-            name: candidate.name,
-            description: readSkillFrontmatterDescription(entryFile.contents),
-            files,
-          };
-          return validateSkillBundle(bundle) === null ? bundle : null;
-        }),
-      { concurrency: 1 },
-    );
+  const loaded = yield* Effect.forEach(
+    candidates,
+    (candidate) =>
+      Effect.gen(function* () {
+        const readFiles = yield* Effect.forEach(
+          candidate.files,
+          (file) =>
+            store
+              .readBlob(input.storePath, input.headSha, file.repoPath, SKILL_MAX_FILE_BYTES + 1)
+              .pipe(
+                Effect.map((blob) => {
+                  if (blob === null || blob.truncated || blob.binary) return null;
+                  return {
+                    path: file.skillPath,
+                    contents: utf8Decoder.decode(blob.bytes),
+                  };
+                }),
+              ),
+          // Bounded concurrency: each read spawns `git cat-file` against the local bare repo.
+          { concurrency: BLOB_READ_CONCURRENCY },
+        );
+        const files = readFiles.filter(
+          (file): file is { readonly path: string; readonly contents: string } => file !== null,
+        );
+        const entryFile = files.find((file) => file.path === SKILL_ENTRY_FILE);
+        if (entryFile === undefined) return null;
+        const bundle: SkillBundleInput = {
+          name: candidate.name,
+          description: readSkillFrontmatterDescription(entryFile.contents),
+          files,
+        };
+        return validateSkillBundle(bundle) === null ? bundle : null;
+      }),
+    { concurrency: 1 },
+  );
 
-    const bundles = loaded.filter((bundle): bundle is SkillBundleInput => bundle !== null);
-    if (bundles.length === 0) return 0;
-    const report = yield* skillsRepo.sync(
-      { scope: "project", projectId: input.projectId },
-      bundles,
-      { prune: false },
-    );
-    return report.created.length + report.updated.length;
-  },
-);
+  const bundles = loaded.filter((bundle): bundle is SkillBundleInput => bundle !== null);
+  if (bundles.length === 0) return 0;
+  const report = yield* skillsRepo.sync({ scope: "project", projectId: input.projectId }, bundles, {
+    prune: false,
+  });
+  return report.created.length + report.updated.length;
+});

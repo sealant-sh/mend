@@ -155,7 +155,7 @@ export const workspacePasteNonce = (): string => crypto.randomUUID().slice(0, 8)
 const PASTED_IMAGE_NAME_TRIES = 4;
 
 /** Refuse what is too large or not an image, before any byte is written; name what is not. */
-export const checkPastedImage = Effect.fn("checkPastedImage")(function* (
+export const checkPastedImage = Effect.fnUntraced(function* (
   bytes: Uint8Array,
   options: { readonly now?: Date; readonly nonce?: string } = {},
 ) {
@@ -187,7 +187,7 @@ export const checkPastedImage = Effect.fn("checkPastedImage")(function* (
  * has not launched yet, and the launch mounts it. Capture mode mounts nothing: the engine writes
  * into the live workspace instead (`SessionEngine.storePastedImage`).
  */
-export const storePastedImage = Effect.fn("storePastedImage")(function* (
+export const storePastedImage = Effect.fnUntraced(function* (
   harnessHome: string,
   bytes: Uint8Array,
   options: { readonly now?: Date; readonly nonce?: string } = {},

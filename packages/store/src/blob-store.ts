@@ -440,7 +440,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
       catch: (cause) => new BlobStoreError({ operation, key, cause }),
     });
 
-  const put = Effect.fn("BlobStore.put")(function* (
+  const put = Effect.fnUntraced(function* (
     key: string,
     body: Uint8Array | BlobBody,
     options?: { readonly ifAbsent?: boolean },
@@ -499,7 +499,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     );
   });
 
-  const get = Effect.fn("BlobStore.get")(function* (key: string) {
+  const get = Effect.fnUntraced(function* (key: string) {
     yield* checkKey("get", key);
     return yield* Effect.try({
       try: () => new Uint8Array(fs.readFileSync(objectPath(key))),
@@ -510,11 +510,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     });
   });
 
-  const getRange = Effect.fn("BlobStore.getRange")(function* (
-    key: string,
-    start: number,
-    length: number,
-  ) {
+  const getRange = Effect.fnUntraced(function* (key: string, start: number, length: number) {
     yield* checkKey("getRange", key);
     return yield* Effect.try({
       try: () => {
@@ -541,7 +537,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     });
   });
 
-  const getStream = Effect.fn("BlobStore.getStream")(function* (key: string) {
+  const getStream = Effect.fnUntraced(function* (key: string) {
     yield* checkKey("getStream", key);
     // Open first so a missing key fails here, not on the consumer's first read.
     const fd = yield* Effect.try({
@@ -554,7 +550,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     return fs.createReadStream(objectPath(key), { fd });
   });
 
-  const head = Effect.fn("BlobStore.head")(function* (key: string) {
+  const head = Effect.fnUntraced(function* (key: string) {
     yield* checkKey("head", key);
     return yield* attempt("head", key, (): BlobHead | null => {
       try {
@@ -567,7 +563,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     });
   });
 
-  const list = Effect.fn("BlobStore.list")(function* (prefix: string) {
+  const list = Effect.fnUntraced(function* (prefix: string) {
     return yield* attempt("list", prefix, (): ReadonlyArray<BlobEntry> => {
       if (!fs.existsSync(root)) return [];
       const out: Array<BlobEntry> = [];
@@ -587,12 +583,12 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     });
   });
 
-  const presign = Effect.fn("BlobStore.presign")(function* (key: string) {
+  const presign = Effect.fnUntraced(function* (key: string) {
     yield* checkKey("presign", key);
     return `file://${objectPath(key)}`;
   });
 
-  const copy = Effect.fn("BlobStore.copy")(function* (from: string, to: string) {
+  const copy = Effect.fnUntraced(function* (from: string, to: string) {
     yield* checkKey("copy", from);
     yield* checkKey("copy", to);
     const tmp = path.join(tmpDir, `${crypto.randomUUID()}.part`);
@@ -669,7 +665,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     });
   });
 
-  const presignPart = Effect.fn("BlobStore.presignPart")(function* (
+  const presignPart = Effect.fnUntraced(function* (
     key: string,
     uploadId: string,
     partNumber: number,
@@ -679,7 +675,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     return `file://${partPath(uploadId, partNumber)}`;
   });
 
-  const completeMultipart = Effect.fn("BlobStore.completeMultipart")(function* (
+  const completeMultipart = Effect.fnUntraced(function* (
     key: string,
     uploadId: string,
     parts: ReadonlyArray<MultipartPart>,
@@ -722,10 +718,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     });
   });
 
-  const abortMultipart = Effect.fn("BlobStore.abortMultipart")(function* (
-    key: string,
-    uploadId: string,
-  ) {
+  const abortMultipart = Effect.fnUntraced(function* (key: string, uploadId: string) {
     yield* checkKey("abortMultipart", key);
     yield* checkUploadId("abortMultipart", key, uploadId);
     yield* attempt("abortMultipart", key, () => {
@@ -735,7 +728,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     });
   });
 
-  const listMultipart = Effect.fn("BlobStore.listMultipart")(function* (prefix: string) {
+  const listMultipart = Effect.fnUntraced(function* (prefix: string) {
     return yield* attempt("listMultipart", prefix, (): ReadonlyArray<MultipartUploadEntry> => {
       if (!fs.existsSync(multipartDir)) return [];
       const out: Array<MultipartUploadEntry> = [];
@@ -986,7 +979,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
       Effect.map((refused) => (refused ? 0 : Math.max(minted.get(key) ?? 0, startupWindowEnds))),
     );
 
-  const put = Effect.fn("BlobStore.put")(function* (
+  const put = Effect.fnUntraced(function* (
     key: string,
     body: Uint8Array | BlobBody,
     putOptions?: { readonly ifAbsent?: boolean },
@@ -1044,7 +1037,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
           : new BlobStoreError({ operation, key, cause }),
     });
 
-  const get = Effect.fn("BlobStore.get")(function* (key: string) {
+  const get = Effect.fnUntraced(function* (key: string) {
     yield* checkKey("get", key);
     const response = yield* fetchBody("get", key);
     const body = response.Body;
@@ -1052,11 +1045,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     return yield* call("get", key, () => body.transformToByteArray());
   });
 
-  const getRange = Effect.fn("BlobStore.getRange")(function* (
-    key: string,
-    start: number,
-    length: number,
-  ) {
+  const getRange = Effect.fnUntraced(function* (key: string, start: number, length: number) {
     yield* checkKey("getRange", key);
     if (length <= 0) return new Uint8Array();
     const from = Math.max(0, start);
@@ -1085,7 +1074,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     return yield* call("getRange", key, () => body.transformToByteArray());
   });
 
-  const getStream = Effect.fn("BlobStore.getStream")(function* (key: string) {
+  const getStream = Effect.fnUntraced(function* (key: string) {
     yield* checkKey("getStream", key);
     const response = yield* fetchBody("getStream", key);
     const body = response.Body;
@@ -1095,7 +1084,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     return Readable.from([Buffer.from(bytes)]);
   });
 
-  const head = Effect.fn("BlobStore.head")(function* (key: string) {
+  const head = Effect.fnUntraced(function* (key: string) {
     yield* checkKey("head", key);
     return yield* Effect.tryPromise({
       try: () => client.send(new HeadObjectCommand({ Bucket: bucket, Key: key })),
@@ -1113,7 +1102,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     );
   });
 
-  const list = Effect.fn("BlobStore.list")(function* (prefix: string) {
+  const list = Effect.fnUntraced(function* (prefix: string) {
     const out: Array<BlobEntry> = [];
     let token: string | undefined;
     do {
@@ -1130,7 +1119,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     return out.toSorted((a, b) => a.key.localeCompare(b.key));
   });
 
-  const presign = Effect.fn("BlobStore.presign")(function* (
+  const presign = Effect.fnUntraced(function* (
     key: string,
     method: PresignMethod,
     ttlSeconds: number,
@@ -1185,7 +1174,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     return url;
   });
 
-  const copy = Effect.fn("BlobStore.copy")(function* (from: string, to: string) {
+  const copy = Effect.fnUntraced(function* (from: string, to: string) {
     yield* checkKey("copy", from);
     yield* checkKey("copy", to);
     yield* Effect.tryPromise({
@@ -1231,7 +1220,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     return { kind: "created", uploadId } satisfies MultipartCreated;
   });
 
-  const presignPart = Effect.fn("BlobStore.presignPart")(function* (
+  const presignPart = Effect.fnUntraced(function* (
     key: string,
     uploadId: string,
     partNumber: number,
@@ -1260,10 +1249,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     );
   });
 
-  const abortMultipart = Effect.fn("BlobStore.abortMultipart")(function* (
-    key: string,
-    uploadId: string,
-  ) {
+  const abortMultipart = Effect.fnUntraced(function* (key: string, uploadId: string) {
     yield* checkKey("abortMultipart", key);
     yield* checkUploadId("abortMultipart", key, uploadId);
     yield* Effect.tryPromise({
@@ -1282,7 +1268,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     );
   });
 
-  const completeMultipart = Effect.fn("BlobStore.completeMultipart")(function* (
+  const completeMultipart = Effect.fnUntraced(function* (
     key: string,
     uploadId: string,
     parts: ReadonlyArray<MultipartPart>,
@@ -1326,7 +1312,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     );
   };
 
-  const completeConditional = Effect.fn("BlobStore.completeConditional")(function* (
+  const completeConditional = Effect.fnUntraced(function* (
     key: string,
     uploadId: string,
     ordered: ReadonlyArray<MultipartPart>,
@@ -1358,7 +1344,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
     return outcome;
   });
 
-  const listMultipart = Effect.fn("BlobStore.listMultipart")(function* (prefix: string) {
+  const listMultipart = Effect.fnUntraced(function* (prefix: string) {
     const out: Array<MultipartUploadEntry> = [];
     let keyMarker: string | undefined;
     let uploadIdMarker: string | undefined;

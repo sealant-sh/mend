@@ -112,7 +112,7 @@ const SHARE_RECHECK_MS = 5 * 60_000;
 const SHARE_OBSERVATION_MS = 60 * 60_000;
 
 /** Uploads each turn's settled files together, with durable batch membership and file identities. */
-export const deliverProofToSlack = Effect.fn("deliverProofToSlack")(function* <R>(
+export const deliverProofToSlack = Effect.fnUntraced(function* <R>(
   input: SlackProofDeliveryInput<R>,
 ) {
   const { artifacts, thread, install, project, token } = input;

@@ -101,7 +101,7 @@ const exists = async (target: string): Promise<boolean> => {
   }
 };
 
-const appendLocal = Effect.fn("ResourceTableWrites.appendLocal")(function* (
+const appendLocal = Effect.fnUntraced(function* (
   rootPath: string,
   input: AppendResourceTableInput,
 ) {

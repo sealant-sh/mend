@@ -78,10 +78,7 @@ export const makeScreenWatchLayer = (
         { readonly userId: string; readonly sessionId: SessionId }
       >();
 
-      const admit = Effect.fn("ScreenWatch.admit")(function* (
-        subject: AccessSubject,
-        sessionId: SessionId,
-      ) {
+      const admit = Effect.fnUntraced(function* (subject: AccessSubject, sessionId: SessionId) {
         if (!(yield* tickets.credentialStands(subject.credential))) {
           return yield* new NotFound({ id: sessionId });
         }

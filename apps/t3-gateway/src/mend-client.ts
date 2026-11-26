@@ -1009,7 +1009,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           }),
         );
 
-      const claimPairing = Effect.fn("MendClient.claimPairing")(function* ({
+      const claimPairing = Effect.fnUntraced(function* ({
         forwardedFor,
         ...claim
       }: {
@@ -1060,7 +1060,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         }
       });
 
-      const checkDevice = Effect.fn("MendClient.checkDevice")(function* (deviceToken: string) {
+      const checkDevice = Effect.fnUntraced(function* (deviceToken: string) {
         const operation = "GET /api/me/devices";
         const response = yield* send(
           operation,
@@ -1105,31 +1105,29 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         );
       });
 
-      const disconnectAccount: MendClient["Service"]["disconnectAccount"] = Effect.fn(
-        "MendClient.disconnectAccount",
-      )(function* (deviceToken, accountId) {
-        const operation = "DELETE /api/me/sealant/accounts/:id";
-        const response = yield* send(
-          operation,
-          HttpClientRequest.delete(
-            url(`/api/me/sealant/accounts/${encodeURIComponent(accountId)}`),
-          ).pipe(HttpClientRequest.bearerToken(deviceToken)),
-        );
-        if (response.status === 401) return yield* new MendDeviceRefused({ operation });
-        if (response.status >= 500)
-          return yield* new MendUnavailable({ operation, status: response.status, cause: null });
-        if (response.status !== 200)
-          return yield* new MendCommandRefused({
+      const disconnectAccount: MendClient["Service"]["disconnectAccount"] = Effect.fnUntraced(
+        function* (deviceToken, accountId) {
+          const operation = "DELETE /api/me/sealant/accounts/:id";
+          const response = yield* send(
             operation,
-            status: response.status,
-            tag: null,
-            detail: null,
-          });
-      });
+            HttpClientRequest.delete(
+              url(`/api/me/sealant/accounts/${encodeURIComponent(accountId)}`),
+            ).pipe(HttpClientRequest.bearerToken(deviceToken)),
+          );
+          if (response.status === 401) return yield* new MendDeviceRefused({ operation });
+          if (response.status >= 500)
+            return yield* new MendUnavailable({ operation, status: response.status, cause: null });
+          if (response.status !== 200)
+            return yield* new MendCommandRefused({
+              operation,
+              status: response.status,
+              tag: null,
+              detail: null,
+            });
+        },
+      );
 
-      const listHarnessModels = Effect.fn("MendClient.listHarnessModels")(function* (
-        deviceToken: string,
-      ) {
+      const listHarnessModels = Effect.fnUntraced(function* (deviceToken: string) {
         const operation = "GET /api/harnesses/models";
         const response = yield* send(
           operation,

@@ -243,9 +243,7 @@ export const AccessPolicyEnforcementLive: Layer.Layer<
         } satisfies WorkspaceEnforcement;
       }).pipe(Effect.catch((error) => Effect.succeed(failed(workspaceId, error))));
 
-    const applyUpdatedPolicy = Effect.fn("AccessPolicyEnforcement.applyUpdatedPolicy")(function* (
-      worktreeId: WorktreeId,
-    ) {
+    const applyUpdatedPolicy = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const worktree = yield* worktrees.byId(worktreeId);
       const project = yield* projects
         .byId(worktree.projectId)
@@ -328,9 +326,7 @@ export const AccessPolicyEnforcementLive: Layer.Layer<
       return { pin, workspaces };
     });
 
-    const fanOutRevocation = Effect.fn("AccessPolicyEnforcement.fanOutRevocation")(function* (
-      revocation: AccessRevocation,
-    ) {
+    const fanOutRevocation = Effect.fnUntraced(function* (revocation: AccessRevocation) {
       const reached = yield* repo.worktreesFrom(revocation.organizationId, revocation.policyId);
       const options =
         revocation.kind === "all"

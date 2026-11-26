@@ -1439,7 +1439,7 @@ export const CaptureChannelLive: Layer.Layer<
               "a standby executor holds no worktree yet — nothing to ship until it is claimed",
           }),
         );
-      const planGet = Effect.fn("StandbyCaptureApi.planGet")(function* (input: PlanGetRequest) {
+      const planGet = Effect.fnUntraced(function* (input: PlanGetRequest) {
         if (
           input.worktree_id !== undefined &&
           input.worktree_id !== null &&
@@ -1747,7 +1747,7 @@ export const CaptureChannelLive: Layer.Layer<
           return unsealed satisfies CaptureManifest;
         });
 
-      const planGet = Effect.fn("SessionCaptureApi.planGet")(function* (input: PlanGetRequest) {
+      const planGet = Effect.fnUntraced(function* (input: PlanGetRequest) {
         yield* requireWorktree(input.worktree_id);
         yield* refuseOtherLaunch(input, launchId);
         yield* noteUploadAnswers(launchId, input);
@@ -2779,7 +2779,7 @@ export const CaptureChannelLive: Layer.Layer<
        * concluded nothing (`unavailable`: the store failed a read, the database failed the record)
        * — checked again, the seal recorded if they pass.
        */
-      const reAsked = Effect.fn("SessionCaptureApi.reAsked")(function* (
+      const reAsked = Effect.fnUntraced(function* (
         input: RegisterRequest,
         manifest: CaptureManifest,
         chunked: ReadonlyArray<ChunkedSection>,
@@ -2839,9 +2839,7 @@ export const CaptureChannelLive: Layer.Layer<
         );
       });
 
-      const registerOnce = Effect.fn("SessionCaptureApi.register")(function* (
-        input: RegisterRequest,
-      ) {
+      const registerOnce = Effect.fnUntraced(function* (input: RegisterRequest) {
         const startedAt = epochMillis();
         const budget = yield* CaptureRegisterBudget;
         const remaining = () => Math.max(0, budget - (epochMillis() - startedAt));
@@ -3204,7 +3202,7 @@ export const CaptureChannelLive: Layer.Layer<
           // failure to retry — the bytes are in the bucket and the same register can never
           // pass. What landed is off-chain and retires with its epoch prefix.
           let quotaExemptionReported = false;
-          const checkRegisterQuota = Effect.fn("SessionCaptureApi.checkRegisterQuota")(function* (
+          const checkRegisterQuota = Effect.fnUntraced(function* (
             currentPriced: ReadonlyMap<string, number>,
             additional: number,
           ) {
@@ -3573,7 +3571,7 @@ export const CaptureChannelLive: Layer.Layer<
        * How the seal of `captureId` under `epoch` stands for this launch now: `recorded` only when
        * the store holds it for that very capture and it stands (`sealStandingOf`).
        */
-      const registeredSealOutcome = Effect.fn("SessionCaptureApi.registeredSealOutcome")(function* (
+      const registeredSealOutcome = Effect.fnUntraced(function* (
         epoch: number,
         captureId: string,
         problem: string | null,
@@ -3606,9 +3604,7 @@ export const CaptureChannelLive: Layer.Layer<
             };
       });
 
-      const changeSummary = Effect.fn("SessionCaptureApi.changeSummary")(function* (
-        input: ChangeSummaryRequest,
-      ) {
+      const changeSummary = Effect.fnUntraced(function* (input: ChangeSummaryRequest) {
         yield* requireWorktree(input.worktree_id);
         yield* requireLease(input.epoch);
         const summary = yield* decodeChangeSummary(input.summary).pipe(
@@ -3639,9 +3635,7 @@ export const CaptureChannelLive: Layer.Layer<
         return { accepted: true as const, key };
       });
 
-      const heartbeat = Effect.fn("SessionCaptureApi.heartbeat")(function* (
-        input: HeartbeatRequest,
-      ) {
+      const heartbeat = Effect.fnUntraced(function* (input: HeartbeatRequest) {
         yield* requireWorktree(input.worktree_id);
         const renewed = yield* repo.heartbeat(worktreeId, input.epoch, undefined, holder);
         if (renewed) return { expires_in_secs: LEASE_EXPIRES_IN_SECS };

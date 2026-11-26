@@ -710,7 +710,7 @@ const makeExecutorSockets = (
       return servers.map((entry) => entry.path);
     };
 
-    const bind = Effect.fn("ExecutorSockets.bind")(function* (binding: ExecutorSocketsBinding) {
+    const bind = Effect.fnUntraced(function* (binding: ExecutorSocketsBinding) {
       if (!SCOPE_SHAPE.test(binding.scope)) {
         return yield* new ExecutorScopeError({
           message: `not an executor scope: ${JSON.stringify(binding.scope)}`,
@@ -748,7 +748,7 @@ const makeExecutorSockets = (
       });
     });
 
-    const unbind = Effect.fn("ExecutorSockets.unbind")(function* (scope: string) {
+    const unbind = Effect.fnUntraced(function* (scope: string) {
       if (!SCOPE_SHAPE.test(scope)) return;
       yield* Effect.promise(() =>
         inTurn(scope, async () => {

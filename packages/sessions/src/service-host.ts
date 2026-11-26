@@ -435,10 +435,7 @@ export const ServiceHostLive: Layer.Layer<
           }),
       );
 
-    const sever = Effect.fn("ServiceHost.sever")(function* (
-      serviceId: ServiceId,
-      reason: ServiceSeverReason,
-    ) {
+    const sever = Effect.fnUntraced(function* (serviceId: ServiceId, reason: ServiceSeverReason) {
       const entry = active.get(serviceId);
       if (entry !== undefined) resetSockets(entry);
       yield* Effect.forEach([...(held.get(serviceId) ?? [])], (close) => close(reason), {
@@ -446,7 +443,7 @@ export const ServiceHostLive: Layer.Layer<
       });
     });
 
-    const bindAddresses = Effect.fn("ServiceHost.bindAddresses")(function* () {
+    const bindAddresses = Effect.fnUntraced(function* () {
       return yield* configuredBindAddresses();
     });
 

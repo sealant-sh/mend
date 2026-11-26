@@ -155,9 +155,7 @@ export const FollowUpDeliveryLive: Layer.Layer<
         message: `The follow-up for session ${sessionId} no longer exists.`,
       });
 
-    const finalizeCorrelated = Effect.fn("FollowUpDelivery.finalizeCorrelated")(function* (
-      followUp: FollowUp,
-    ) {
+    const finalizeCorrelated = Effect.fnUntraced(function* (followUp: FollowUp) {
       const correlated = yield* processes.byLaunchCorrelation(`follow-up:${followUp.id}`);
       if (correlated === null || correlated.sealantRunId === null) return null;
       const delivered = yield* followUps.reconcileDelivered(
@@ -169,7 +167,7 @@ export const FollowUpDeliveryLive: Layer.Layer<
       return delivered;
     });
 
-    const finishLaunch = Effect.fn("FollowUpDelivery.finishLaunch")(function* (
+    const finishLaunch = Effect.fnUntraced(function* (
       claimed: FollowUp,
       attemptId: string,
       launchResult: Result.Result<unknown, unknown>,
@@ -224,7 +222,7 @@ export const FollowUpDeliveryLive: Layer.Layer<
       );
     });
 
-    const prepare = Effect.fn("FollowUpDelivery.prepare")(function* (
+    const prepare = Effect.fnUntraced(function* (
       input: DeliverFollowUpInput,
     ): Effect.fn.Return<DeliveryDecision, FollowUpDeliveryInputError> {
       return yield* followUps.withSessionLock(

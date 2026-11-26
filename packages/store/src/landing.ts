@@ -306,7 +306,7 @@ export const planLanding = (facts: LandingFacts): LandingPlan => {
  * branch never does, and keeping the result reachable (`landedRefOf`, a runner's pack) is the
  * caller's.
  */
-export const writeLandingCommit = Effect.fn("writeLandingCommit")(function* (
+export const writeLandingCommit = Effect.fnUntraced(function* (
   dir: string,
   input: LandingCommitInput,
 ) {
@@ -356,10 +356,7 @@ export const writeLandingCommit = Effect.fn("writeLandingCommit")(function* (
  * `refs/mend/probe/` ref deleted before returning, with an empty `--refmap` and no `FETCH_HEAD`,
  * so the store's configured refspec never writes `refs/remotes` and no branch moves.
  */
-export const probeRemoteBranch = Effect.fn("probeRemoteBranch")(function* (
-  dir: string,
-  input: ProbeInput,
-) {
+export const probeRemoteBranch = Effect.fnUntraced(function* (dir: string, input: ProbeInput) {
   const ref = yield* checkBranch(input.remoteBranch);
   const local = yield* commitOf(dir, input.sha);
   const env = yield* gitRemoteEnvironment(input.remoteEnv, {
@@ -429,7 +426,7 @@ export const probeRemoteBranch = Effect.fn("probeRemoteBranch")(function* (
  * drop its commits. A refusal comes back typed, in the remote's words; a transport failure stays
  * a `GitError` for the caller's readable line (`describeGitRemoteFailure`).
  */
-export const pushBranch = Effect.fn("pushBranch")(function* (dir: string, input: PushInput) {
+export const pushBranch = Effect.fnUntraced(function* (dir: string, input: PushInput) {
   const ref = yield* checkBranch(input.remoteBranch);
   const sha = yield* commitOf(dir, input.sha);
   const args = ["push", "--porcelain", "--", input.remote, `${sha}:${ref}`];
@@ -499,10 +496,7 @@ export const pushBranch = Effect.fn("pushBranch")(function* (dir: string, input:
  * scratch repository that borrows `dir`'s objects (alternates) and holds the one branch ref, so
  * no ref is added to the store or the cache. Refused over `limitBytes` with the size.
  */
-export const createChangeBundle = Effect.fn("createChangeBundle")(function* (
-  dir: string,
-  input: BundleInput,
-) {
+export const createChangeBundle = Effect.fnUntraced(function* (dir: string, input: BundleInput) {
   const ref = yield* checkBranch(input.branch);
   const [base, tip] = yield* Effect.all([commitOf(dir, input.base), commitOf(dir, input.tip)]);
   const have = input.have === undefined ? null : yield* commitOf(dir, input.have);

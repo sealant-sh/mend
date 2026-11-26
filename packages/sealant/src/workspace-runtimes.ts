@@ -73,7 +73,7 @@ export const WorkspaceRuntimesReportLive: Layer.Layer<
         ),
       ),
     );
-    const read = Effect.fn("WorkspaceRuntimesReport.read")(function* () {
+    const read = Effect.fnUntraced(function* () {
       const now = yield* Clock.currentTimeMillis;
       const known = yield* Ref.get(kept);
       if (known !== null && known.until > now) return known.reading;

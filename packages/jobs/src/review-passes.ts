@@ -30,7 +30,7 @@ export const reviewPassKey = (kind: PassKind, changeId: ChangeId): string =>
  * of the session whose settle or landing queued it (docs/adr/0008-one-refresher-for-provider-
  * logins.md, "Whose login pays"). A request absorbed by a pass already in flight spends nothing.
  */
-export const queueReviewPass = Effect.fn("queueReviewPass")(function* (
+export const queueReviewPass = Effect.fnUntraced(function* (
   kind: PassKind,
   changeId: ChangeId,
   requestedBy: string,

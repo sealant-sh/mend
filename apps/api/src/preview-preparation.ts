@@ -117,7 +117,7 @@ export const makePreviewPreparation = (options: PreviewPreparationOptions = {}) 
         turns.some((other) => other.ordinal > turn.ordinal),
       );
 
-    const decide = Effect.fn("PreviewPreparation.decide")(function* (
+    const decide = Effect.fnUntraced(function* (
       session: Session,
       turn: AgentTurn,
       hold: PreviewPreparationHold,
@@ -164,7 +164,7 @@ export const makePreviewPreparation = (options: PreviewPreparationOptions = {}) 
      * while the claim holds (`PreviewPreparationHold.holds`), and the turn is left for the pass
      * that retakes it.
      */
-    const prepare = Effect.fn("PreviewPreparation.prepare")(function* (
+    const prepare = Effect.fnUntraced(function* (
       session: Session,
       turn: AgentTurn,
       claim: PreviewPreparationClaim,

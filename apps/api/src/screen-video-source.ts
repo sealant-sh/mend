@@ -44,7 +44,7 @@ const make: Effect.Effect<
   const joining = yield* Semaphore.make(1);
 
   return ScreenVideoSource.of({
-    subscribe: Effect.fn("ScreenVideoSource.subscribe")(function* (screen, subscriber) {
+    subscribe: Effect.fnUntraced(function* (screen, subscriber) {
       const key = `${screen.id}:${screen.processId}`;
       const held = yield* Effect.acquireRelease(
         joining.withPermit(

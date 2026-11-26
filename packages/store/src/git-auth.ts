@@ -165,7 +165,7 @@ export const MendKeysLive: Layer.Layer<MendKeys, never, MendKeysConfig> = Layer.
      * path where only the id was known, reads as the account's email once a signed-in call
      * sees it. A failed relabel keeps the key usable under its old comment.
      */
-    const relabel = Effect.fn("MendKeys.relabel")(function* (owner: string, label: string) {
+    const relabel = Effect.fnUntraced(function* (owner: string, label: string) {
       const { privateKeyPath, publicKeyPath } = paths(owner);
       const current = yield* Effect.sync(() =>
         fs.existsSync(publicKeyPath) ? fs.readFileSync(publicKeyPath, "utf8") : null,
@@ -176,10 +176,7 @@ export const MendKeysLive: Layer.Layer<MendKeys, never, MendKeysConfig> = Layer.
       );
     });
 
-    const describe = Effect.fn("MendKeys.describe")(function* (
-      owner: string,
-      label: string | undefined,
-    ) {
+    const describe = Effect.fnUntraced(function* (owner: string, label: string | undefined) {
       const { privateKeyPath, publicKeyPath } = paths(owner);
       // Re-pin 0600 on every use, not only at creation: a volume's group policy
       // (Kubernetes fsGroup adds g+rw to every file at pod start) or a copy
@@ -197,7 +194,7 @@ export const MendKeysLive: Layer.Layer<MendKeys, never, MendKeysConfig> = Layer.
       return { publicKey, fingerprint, privateKeyPath };
     });
 
-    const ensure = Effect.fn("MendKeys.ensure")(function* (userId: string | null, label?: string) {
+    const ensure = Effect.fnUntraced(function* (userId: string | null, label?: string) {
       const owner = yield* resolveOwner(userId);
       yield* claimLegacy(owner);
       const { privateKeyPath } = paths(owner);
@@ -214,7 +211,7 @@ export const MendKeysLive: Layer.Layer<MendKeys, never, MendKeysConfig> = Layer.
       return yield* describe(owner, label);
     });
 
-    const read = Effect.fn("MendKeys.read")(function* (userId: string | null, label?: string) {
+    const read = Effect.fnUntraced(function* (userId: string | null, label?: string) {
       const owner = yield* resolveOwner(userId).pipe(
         Effect.catchTag("KeygenError", () => Effect.succeed(null)),
       );

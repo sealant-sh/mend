@@ -14,10 +14,7 @@ import { Effect, Schema } from "effect";
 import { ProjectAccess } from "./access.ts";
 
 /** Rename project metadata without moving its store or any worktree. */
-export const renameProject = Effect.fn("ProjectOperations.rename")(function* (
-  id: ProjectId,
-  name: string,
-) {
+export const renameProject = Effect.fnUntraced(function* (id: ProjectId, name: string) {
   const previous = yield* (yield* ProjectAccess).manageProject(id);
   if (!PROJECT_NAME_PATTERN.test(name))
     return yield* new StoreFailure({
@@ -54,9 +51,7 @@ const GithubRepository = Schema.Struct({
 });
 
 /** Resolve GitHub through the caller's connected login. No host credential is consulted. */
-export const lookupProjectRepository = Effect.fn("ProjectOperations.lookupRepository")(function* (
-  repository: string,
-) {
+export const lookupProjectRepository = Effect.fnUntraced(function* (repository: string) {
   // Only an owner/name or a GitHub web URL is accepted; argv never contains a flag or another host.
   const slug = repository
     .replace(/^https:\/\/github\.com\//i, "")

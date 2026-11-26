@@ -208,7 +208,7 @@ export const makePreviewIdentityLayer = (
       );
 
       /** The preview at `origin`, and its tailnet port when an admission renews it before serving. */
-      const previewAt = Effect.fn("PreviewIdentity.previewAt")(function* (origin: PreviewOrigin) {
+      const previewAt = Effect.fnUntraced(function* (origin: PreviewOrigin) {
         const routed = yield* routing;
         const at = previewAtOrigin(routed, origin);
         if (at === null) return yield* new PreviewNotFound();
@@ -296,7 +296,7 @@ export const makePreviewIdentityLayer = (
           }
         });
 
-      const issueTicket = Effect.fn("PreviewIdentity.issueTicket")(function* (request: {
+      const issueTicket = Effect.fnUntraced(function* (request: {
         readonly previewId: PreviewId;
         readonly opener: SignedInAccount;
       }) {

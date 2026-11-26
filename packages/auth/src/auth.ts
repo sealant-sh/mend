@@ -334,7 +334,7 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
           ),
         );
 
-      const handler = Effect.fn("Auth.handler")(function* (request: Request) {
+      const handler = Effect.fnUntraced(function* (request: Request) {
         // An access key never reaches Better Auth (docs/adr/0023, decision 4), and it signs
         // nothing in or out.
         if (bearsAccessKey(request.headers)) {
@@ -376,7 +376,7 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
       // a fact about the device, not a session clock — one write a minute is enough.
       const DEVICE_LAST_USED_INTERVAL_MS = 60_000;
 
-      const deviceSession = Effect.fn("Auth.deviceSession")(function* (headers: Headers) {
+      const deviceSession = Effect.fnUntraced(function* (headers: Headers) {
         const authorization = headers.get("authorization");
         if (authorization === null || !authorization.startsWith("Bearer ")) {
           return Option.none<AuthSession>();
@@ -521,7 +521,7 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
         });
       });
 
-      const issuePasswordReset = Effect.fn("Auth.issuePasswordReset")(function* (userId: string) {
+      const issuePasswordReset = Effect.fnUntraced(function* (userId: string) {
         const token = randomBytes(32).toString("base64url");
         const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
         // Only the newest link works: an earlier one for the same account is spent now, so the

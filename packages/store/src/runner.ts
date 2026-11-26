@@ -498,7 +498,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
           }
         });
 
-      const ensure = Effect.fn("GitOpsRunner.ensure")(function* (input: EnsureInput) {
+      const ensure = Effect.fnUntraced(function* (input: EnsureInput) {
         const { projectId, manifest } = input;
         const format = gitObjectFormatOf(manifest.sections.git);
         if (format === null) {
@@ -624,7 +624,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return yield* resolve(cache, "HEAD");
       });
 
-      const listBranches = Effect.fn("GitOpsRunner.listBranches")(function* (
+      const listBranches = Effect.fnUntraced(function* (
         cache: RunnerCache,
         options?: BranchListingOptions,
       ) {
@@ -712,7 +712,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return parseLinePorcelain(raw);
       });
 
-      const log = Effect.fn("GitOpsRunner.log")(function* (
+      const log = Effect.fnUntraced(function* (
         cache: RunnerCache,
         ref: string,
         options?: { readonly limit?: number; readonly path?: string },
@@ -725,17 +725,14 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return parseLog(yield* git(args, cache.path));
       });
 
-      const treeOf = Effect.fn("GitOpsRunner.treeOf")(function* (cache: RunnerCache, ref: string) {
+      const treeOf = Effect.fnUntraced(function* (cache: RunnerCache, ref: string) {
         const direct = HEX40.test(ref) ? ref : cache.refs[ref];
         const target = direct ?? ref;
         return Sha.make(yield* git(["rev-parse", "--verify", `${target}^{tree}`], cache.path));
       });
 
       /** A self-contained pack of one commit object the runner wrote. */
-      const packCommit = Effect.fn("GitOpsRunner.packCommit")(function* (
-        cache: RunnerCache,
-        commit: Sha,
-      ) {
+      const packCommit = Effect.fnUntraced(function* (cache: RunnerCache, commit: Sha) {
         const staging = path.join(cache.path, "objects", `derived-${crypto.randomUUID()}`);
         yield* cacheIo(cache.projectId, () => fs.mkdirSync(staging, { recursive: true }));
         const attempt = Effect.gen(function* () {
@@ -764,7 +761,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         );
       });
 
-      const commitTree = Effect.fn("GitOpsRunner.commitTree")(function* (
+      const commitTree = Effect.fnUntraced(function* (
         cache: RunnerCache,
         input: { readonly tree: string; readonly parent: Sha | null; readonly message: string },
       ) {

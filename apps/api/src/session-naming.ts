@@ -72,7 +72,7 @@ const openingMessagesFromTranscript = Effect.fnUntraced(function* (
  * on, says more. Every other no-name outcome is a quiet success: a renamed or deleted session, a
  * switched-off cascade, an unparseable harness on the transcript path.
  */
-export const nameSession = Effect.fn("mend.session.name")(function* (job: NameSessionJob) {
+export const nameSession = Effect.fnUntraced(function* (job: NameSessionJob) {
   const sessions = yield* SessionsRepo;
   const session = yield* sessions
     .byId(job.sessionId)
@@ -99,7 +99,7 @@ export const nameSession = Effect.fn("mend.session.name")(function* (job: NameSe
   const namer = yield* SessionNamer;
   const named = (turns: Omit<SessionNamingInput, "harness" | "projectName">) =>
     namer.name({ harness: session.harness, projectName: project.name, ...turns });
-  const write = Effect.fn("nameSession.write")(function* (label: string) {
+  const write = Effect.fnUntraced(function* (label: string) {
     const wrote = yield* sessions.setLabelIfUnset(job.sessionId, label);
     yield* Effect.annotateLogs(Effect.logInfo("session named"), {
       sessionId: job.sessionId,

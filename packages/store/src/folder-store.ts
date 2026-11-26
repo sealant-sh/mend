@@ -111,7 +111,7 @@ export const FolderStoreLive: Layer.Layer<FolderStore, never, StoreConfig> = Lay
       return root;
     });
 
-    const write = Effect.fn("FolderStore.write")(function* (
+    const write = Effect.fnUntraced(function* (
       directory: string,
       files: ReadonlyArray<FolderUpload>,
       options: { readonly merge: boolean },
@@ -154,15 +154,12 @@ export const FolderStoreLive: Layer.Layer<FolderStore, never, StoreConfig> = Lay
       }
     });
 
-    const deleteFile = Effect.fn("FolderStore.deleteFile")(function* (
-      directory: string,
-      filePath: string,
-    ) {
+    const deleteFile = Effect.fnUntraced(function* (directory: string, filePath: string) {
       const target = yield* targetOf(rootOf(directory), filePath);
       yield* Effect.sync(() => fs.rmSync(target, { force: true }));
     });
 
-    const list = Effect.fn("FolderStore.list")(function* (directory: string, limit: number) {
+    const list = Effect.fnUntraced(function* (directory: string, limit: number) {
       const root = rootOf(directory);
       return yield* Effect.sync((): FolderListing => {
         const files: Array<FolderFile> = [];

@@ -158,6 +158,42 @@ export const callerSpanOf = (headers: Headers.Headers): Tracer.ExternalSpan | un
   return Tracer.externalSpan({ traceId: match[1], spanId: match[2], sampled: match[3] !== "0" });
 };
 
+/**
+ * The paths a load balancer, an orchestrator or an uptime check asks every few seconds. Asked
+ * without a caller's trace, such a request makes no trace unless it fails: each would otherwise be
+ * a root trace of its own in Sentry, hundreds an hour, saying only that the server answered.
+ */
+const PROBE_PATHS: ReadonlySet<string> = new Set([
+  "/health",
+  "/healthz",
+  "/ready",
+  "/readyz",
+  "/api/health",
+]);
+
+const isProbe = (request: HttpServerRequest.HttpServerRequest): boolean =>
+  PROBE_PATHS.has(
+    Option.getOrUndefined(HttpServerRequest.toURL(request))?.pathname ??
+      request.url.split("?")[0] ??
+      "",
+  );
+
+/** A span for a probe that failed, started when the request was, with no parent: its own trace. */
+const failedProbeSpan = (name: string, startTime: bigint) =>
+  Effect.gen(function* () {
+    const tracer = yield* Tracer.Tracer;
+    return tracer.span({
+      name,
+      parent: Option.none(),
+      annotations: Context.empty(),
+      links: [],
+      startTime,
+      kind: "server",
+      root: true,
+      sampled: true,
+    });
+  });
+
 const observed = <E, R>(
   request: HttpServerRequest.HttpServerRequest,
   app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
@@ -165,28 +201,37 @@ const observed = <E, R>(
   Effect.gen(function* () {
     let route: RouteTemplate = UNROUTED;
     const startTime = yield* Clock.currentTimeNanos;
-    const span = yield* Effect.makeSpan(request.method, {
-      kind: "server",
-      parent: callerSpanOf(request.headers),
-    });
-    return yield* app.pipe(
-      Effect.onExit((exit) =>
-        Effect.flatMap(Clock.currentTimeNanos, (endTime) => {
-          const observation: HttpObservation = {
-            method: request.method,
-            route,
-            outcome: outcomeOf(exit),
-            durationMillis: Number(endTime - startTime) / 1_000_000,
-          };
-          const cause = Option.map(failedCause(exit, observation.outcome), (failed) =>
-            withoutUrlOf(Cause.pretty(failed), request, route),
-          );
-          return logObservation(observation, cause).pipe(
-            Effect.andThen(Effect.sync(() => endSpan(span, observation, endTime))),
-          );
-        }),
-      ),
-      Effect.withParentSpan(span),
+    const parent = callerSpanOf(request.headers);
+    const span =
+      parent === undefined && isProbe(request)
+        ? undefined
+        : yield* Effect.makeSpan(request.method, { kind: "server", parent });
+    const observe = Effect.onExit((exit: Exit.Exit<HttpServerResponse.HttpServerResponse, E>) =>
+      Effect.gen(function* () {
+        const endTime = yield* Clock.currentTimeNanos;
+        const observation: HttpObservation = {
+          method: request.method,
+          route,
+          outcome: outcomeOf(exit),
+          durationMillis: Number(endTime - startTime) / 1_000_000,
+        };
+        const cause = Option.map(failedCause(exit, observation.outcome), (failed) =>
+          withoutUrlOf(Cause.pretty(failed), request, route),
+        );
+        yield* logObservation(observation, cause);
+        const ended =
+          span ??
+          (failureOf(observation.outcome) === null
+            ? undefined
+            : yield* failedProbeSpan(request.method, startTime));
+        if (ended !== undefined) endSpan(ended, observation, endTime);
+      }),
+    );
+    const served =
+      span === undefined
+        ? app.pipe(Effect.withTracerEnabled(false), observe)
+        : app.pipe(observe, Effect.withParentSpan(span));
+    return yield* served.pipe(
       Effect.provideService(MatchedRoute, {
         matched: (template) => {
           route = template;

@@ -1106,9 +1106,7 @@ export const makeHarnessLayoutSteps = (deps: {
   let layoutsRecorded = deps.anyRecorded;
   const nothingRecorded = () => flag === "shared" && !layoutsRecorded;
 
-  const prepareTickets: HarnessLayoutSteps["prepareTickets"] = Effect.fn(
-    "HarnessLayoutSteps.prepareTickets",
-  )(function* (input) {
+  const prepareTickets: HarnessLayoutSteps["prepareTickets"] = Effect.fnUntraced(function* (input) {
     const { layout } = input;
     if (layout.layout !== "person") return null;
     const tickets = yield* Effect.forEach(
@@ -1144,7 +1142,7 @@ export const makeHarnessLayoutSteps = (deps: {
     return yield* repo.capabilityOf(imageLayoutKeyOf(image, null), runtime);
   });
 
-  const capabilityFor = Effect.fn("HarnessLayoutSteps.capabilityFor")(function* (
+  const capabilityFor = Effect.fnUntraced(function* (
     image: WorkspaceImage,
     ownerUserId: string,
     harness: Harness,
@@ -1219,142 +1217,137 @@ export const makeHarnessLayoutSteps = (deps: {
       ? platform.loginIsKey(ownerUserId, "claude")
       : Effect.succeed(false);
 
-  const membersOf = Effect.fn("HarnessLayoutSteps.membersOf")(function* (
-    organizationId: OrganizationId,
-    launcher: string,
-  ) {
+  const membersOf = Effect.fnUntraced(function* (organizationId: OrganizationId, launcher: string) {
     const members = yield* deps.organizations.members(organizationId);
     return yield* repo.identitiesOf(
       members.map((member) => member.userId).filter((id) => id !== launcher),
     );
   });
 
-  const decide: HarnessLayoutSteps["decide"] = Effect.fn("HarnessLayoutSteps.decide")(
-    function* (input) {
-      // `MEND_HARNESS_LAYOUT=shared` and nothing ever recorded: shared, as before, with no read at all.
-      if (nothingRecorded()) {
-        layoutByLaunch.set(input.launchId, "shared");
-        return SHARED_AS_BEFORE;
-      }
-      const worktree = yield* repo.worktreeLayout(input.worktreeId);
-      // Nothing asks for person: as before, nothing read, nothing recorded.
-      if (worktree.layout === null && worktree.requested === null && flag === "shared") {
-        // Known now, at no cost: the channel never reads this launch's layout from the store.
-        layoutByLaunch.set(input.launchId, "shared");
-        return SHARED_AS_BEFORE;
-      }
-      // The record is written before any person process runs; the head is read as a belt only
-      // where the flag is on and the worktree has no record.
-      const headHasPeople =
-        worktree.layout === null && flag === "person" ? yield* input.headHasPeople : false;
-      const image = yield* input.image;
-      const { capability, imageKey, runtime, replaces } = yield* capabilityFor(
-        image,
+  const decide: HarnessLayoutSteps["decide"] = Effect.fnUntraced(function* (input) {
+    // `MEND_HARNESS_LAYOUT=shared` and nothing ever recorded: shared, as before, with no read at all.
+    if (nothingRecorded()) {
+      layoutByLaunch.set(input.launchId, "shared");
+      return SHARED_AS_BEFORE;
+    }
+    const worktree = yield* repo.worktreeLayout(input.worktreeId);
+    // Nothing asks for person: as before, nothing read, nothing recorded.
+    if (worktree.layout === null && worktree.requested === null && flag === "shared") {
+      // Known now, at no cost: the channel never reads this launch's layout from the store.
+      layoutByLaunch.set(input.launchId, "shared");
+      return SHARED_AS_BEFORE;
+    }
+    // The record is written before any person process runs; the head is read as a belt only
+    // where the flag is on and the worktree has no record.
+    const headHasPeople =
+      worktree.layout === null && flag === "person" ? yield* input.headHasPeople : false;
+    const image = yield* input.image;
+    const { capability, imageKey, runtime, replaces } = yield* capabilityFor(
+      image,
+      input.ownerUserId,
+      input.harness,
+    );
+    // Decision 1's fallback for dotfiles: where the platform cannot apply a person's dotfiles
+    // as them yet, a fresh worktree whose launcher keeps some runs shared, as before, and their
+    // dotfiles apply at boot. A worktree already person stays person (decision 14) and starts
+    // without them, which the session says.
+    const dotfilesBlocked =
+      !platform.dotfilesUser &&
+      worktree.layout === null &&
+      worktree.requested === null &&
+      !headHasPeople &&
+      flag === "person" &&
+      capability.person === true &&
+      input.launcherHasDotfiles !== undefined &&
+      (yield* input.launcherHasDotfiles);
+    const decision = decideHarnessLayout({
+      flag,
+      worktree,
+      headHasPeople,
+      capability,
+      screen: imageHasScreen(image),
+      claudeKey: yield* launcherClaudeKey(
+        worktree.layout === null &&
+          worktree.requested === null &&
+          !headHasPeople &&
+          input.standby === undefined,
+        capability,
         input.ownerUserId,
         input.harness,
-      );
-      // Decision 1's fallback for dotfiles: where the platform cannot apply a person's dotfiles
-      // as them yet, a fresh worktree whose launcher keeps some runs shared, as before, and their
-      // dotfiles apply at boot. A worktree already person stays person (decision 14) and starts
-      // without them, which the session says.
-      const dotfilesBlocked =
-        !platform.dotfilesUser &&
-        worktree.layout === null &&
-        worktree.requested === null &&
-        !headHasPeople &&
-        flag === "person" &&
-        capability.person === true &&
-        input.launcherHasDotfiles !== undefined &&
-        (yield* input.launcherHasDotfiles);
-      const decision = decideHarnessLayout({
-        flag,
-        worktree,
-        headHasPeople,
-        capability,
-        screen: imageHasScreen(image),
-        claudeKey: yield* launcherClaudeKey(
-          worktree.layout === null &&
-            worktree.requested === null &&
-            !headHasPeople &&
-            input.standby === undefined,
-          capability,
-          input.ownerUserId,
-          input.harness,
-        ),
-        dotfilesBlocked,
-        ...(input.standby === undefined ? {} : { standby: input.standby }),
-      });
-      if (decision.kind === "refuse") return yield* layoutRefused(decision.message);
-      if (decision.layout === "shared") {
-        yield* repo.recordLaunch({
-          launchId: input.launchId,
-          worktreeId: input.worktreeId,
-          sessionId: input.sessionId,
-          layout: "shared",
-          source: decision.source,
-          reason: decision.reason,
-          imageKey,
-          confirmed: !decision.probe,
-        });
-        layoutByLaunch.set(input.launchId, "shared");
-        // The same create asked again, decided shared this time: nothing waits for a person
-        // prepare that will not run.
-        yield* prepareSettled(input.launchId, null);
-        return {
-          layout: "shared",
-          source: decision.source,
-          reason: decision.reason,
-          probe: decision.probe,
-          replaces: decision.probe ? replaces : null,
-          imageKey,
-          runtime,
-          recorded: true,
-        };
-      }
-      const launcher = yield* repo
-        .ensureIdentity(input.ownerUserId)
-        .pipe(Effect.mapError((error) => layoutRefused(error.message)));
-      const members = yield* membersOf(input.organizationId, input.ownerUserId);
+      ),
+      dotfilesBlocked,
+      ...(input.standby === undefined ? {} : { standby: input.standby }),
+    });
+    if (decision.kind === "refuse") return yield* layoutRefused(decision.message);
+    if (decision.layout === "shared") {
       yield* repo.recordLaunch({
         launchId: input.launchId,
         worktreeId: input.worktreeId,
         sessionId: input.sessionId,
-        layout: "person",
+        layout: "shared",
         source: decision.source,
-        reason: null,
+        reason: decision.reason,
         imageKey,
-        confirmed: false,
+        confirmed: !decision.probe,
       });
-      layoutsRecorded = true;
-      layoutByLaunch.set(input.launchId, "person");
-      // Nobody's user is made in this executor before its prepare settles (`awaitPrepare`). The
-      // same create asked again keeps the latch its first decide made while that is still open.
-      const open = preparing.get(input.launchId);
-      if (open === undefined || Deferred.isDoneUnsafe(open)) {
-        preparing.set(input.launchId, yield* Deferred.make<string | null>());
-      }
+      layoutByLaunch.set(input.launchId, "shared");
+      // The same create asked again, decided shared this time: nothing waits for a person
+      // prepare that will not run.
+      yield* prepareSettled(input.launchId, null);
       return {
-        layout: "person",
+        layout: "shared",
         source: decision.source,
-        onMissing: decision.onMissing,
-        launcher,
-        members,
+        reason: decision.reason,
+        probe: decision.probe,
+        replaces: decision.probe ? replaces : null,
         imageKey,
         runtime,
+        recorded: true,
       };
+    }
+    const launcher = yield* repo
+      .ensureIdentity(input.ownerUserId)
+      .pipe(Effect.mapError((error) => layoutRefused(error.message)));
+    const members = yield* membersOf(input.organizationId, input.ownerUserId);
+    yield* repo.recordLaunch({
+      launchId: input.launchId,
+      worktreeId: input.worktreeId,
+      sessionId: input.sessionId,
+      layout: "person",
+      source: decision.source,
+      reason: null,
+      imageKey,
+      confirmed: false,
+    });
+    layoutsRecorded = true;
+    layoutByLaunch.set(input.launchId, "person");
+    // Nobody's user is made in this executor before its prepare settles (`awaitPrepare`). The
+    // same create asked again keeps the latch its first decide made while that is still open.
+    const open = preparing.get(input.launchId);
+    if (open === undefined || Deferred.isDoneUnsafe(open)) {
+      preparing.set(input.launchId, yield* Deferred.make<string | null>());
+    }
+    return {
+      layout: "person",
+      source: decision.source,
+      onMissing: decision.onMissing,
+      launcher,
+      members,
+      imageKey,
+      runtime,
+    };
+  });
+
+  const mayRunPerson: HarnessLayoutSteps["mayRunPerson"] = Effect.fnUntraced(
+    function* (worktreeId) {
+      if (flag === "person") return true;
+      if (nothingRecorded()) return false;
+      return (yield* repo.worktreeLayout(worktreeId)).layout === "person";
     },
   );
 
-  const mayRunPerson: HarnessLayoutSteps["mayRunPerson"] = Effect.fn(
-    "HarnessLayoutSteps.mayRunPerson",
-  )(function* (worktreeId) {
-    if (flag === "person") return true;
-    if (nothingRecorded()) return false;
-    return (yield* repo.worktreeLayout(worktreeId)).layout === "person";
-  });
-
   /** The layout `decide` would choose for this worktree record, read as `decide` reads it. */
-  const predictPerson = Effect.fn("HarnessLayoutSteps.predictPerson")(function* (
+  const predictPerson = Effect.fnUntraced(function* (
     worktree: { readonly layout: "person" | null; readonly requested: HarnessLayout | null },
     input: {
       readonly ownerUserId: string;
@@ -1398,50 +1391,50 @@ export const makeHarnessLayoutSteps = (deps: {
     };
   });
 
-  const nextLaunchPerson: HarnessLayoutSteps["nextLaunchPerson"] = Effect.fn(
-    "HarnessLayoutSteps.nextLaunchPerson",
-  )(function* (input) {
-    if (flag !== "person") return false;
-    const worktree = yield* repo.worktreeLayout(input.worktreeId);
-    if (worktree.requested === "shared") return false;
-    const { person, capability } = yield* predictPerson(worktree, input);
-    // Retired only on an answer a per-person executor gave (its prepare, or sealant's create): a
-    // shared probe's yes, or sealant's build report, is a prediction, and replacing a live
-    // executor on one could replace it into a refusal (review of mend#582, finding 1).
-    // A worktree already person (or asked for per person) runs person next as a fact, not a
-    // prediction (decision 14; review 2 of mend#582, N2).
-    return (
-      person &&
-      (worktree.layout === "person" ||
-        worktree.requested === "person" ||
-        (capability.source === "mend" && capability.confirmed === true))
-    );
-  });
+  const nextLaunchPerson: HarnessLayoutSteps["nextLaunchPerson"] = Effect.fnUntraced(
+    function* (input) {
+      if (flag !== "person") return false;
+      const worktree = yield* repo.worktreeLayout(input.worktreeId);
+      if (worktree.requested === "shared") return false;
+      const { person, capability } = yield* predictPerson(worktree, input);
+      // Retired only on an answer a per-person executor gave (its prepare, or sealant's create): a
+      // shared probe's yes, or sealant's build report, is a prediction, and replacing a live
+      // executor on one could replace it into a refusal (review of mend#582, finding 1).
+      // A worktree already person (or asked for per person) runs person next as a fact, not a
+      // prediction (decision 14; review 2 of mend#582, N2).
+      return (
+        person &&
+        (worktree.layout === "person" ||
+          worktree.requested === "person" ||
+          (capability.source === "mend" && capability.confirmed === true))
+      );
+    },
+  );
 
-  const freshLaunchLayout: HarnessLayoutSteps["freshLaunchLayout"] = Effect.fn(
-    "HarnessLayoutSteps.freshLaunchLayout",
-  )(function* (input) {
-    if (flag !== "person") return SHARED_STANDBY;
-    const predicted = yield* predictPerson({ layout: null, requested: null }, input);
-    if (predicted.person) {
-      return { layout: "person", imageKey: predicted.imageKey, runtime: predicted.runtime };
-    }
-    if (!predicted.capability.missing.includes(CONTROL_PLANE_UNREADABLE)) return SHARED_STANDBY;
-    // A passing failure to ask the control plane says nothing of the image, but what is known of
-    // it still stands (review of mend#596, N2): a runtime ruled out, sealant's own "no", or Mend's
-    // record of a "no" keep fresh launches shared, so shared standbys still serve them.
-    const image = yield* input.image;
-    const report = yield* platform.imageReport({
-      ownerUserId: input.ownerUserId,
-      image,
-      harness: input.harness,
-    });
-    if (runtimeLayoutObstacle(report.runtime) !== null || report.person === false) {
-      return SHARED_STANDBY;
-    }
-    const recorded = yield* recordedCapabilityOf(image, report, report.runtime ?? "unknown");
-    return recorded !== null && !recorded.person ? SHARED_STANDBY : null;
-  });
+  const freshLaunchLayout: HarnessLayoutSteps["freshLaunchLayout"] = Effect.fnUntraced(
+    function* (input) {
+      if (flag !== "person") return SHARED_STANDBY;
+      const predicted = yield* predictPerson({ layout: null, requested: null }, input);
+      if (predicted.person) {
+        return { layout: "person", imageKey: predicted.imageKey, runtime: predicted.runtime };
+      }
+      if (!predicted.capability.missing.includes(CONTROL_PLANE_UNREADABLE)) return SHARED_STANDBY;
+      // A passing failure to ask the control plane says nothing of the image, but what is known of
+      // it still stands (review of mend#596, N2): a runtime ruled out, sealant's own "no", or Mend's
+      // record of a "no" keep fresh launches shared, so shared standbys still serve them.
+      const image = yield* input.image;
+      const report = yield* platform.imageReport({
+        ownerUserId: input.ownerUserId,
+        image,
+        harness: input.harness,
+      });
+      if (runtimeLayoutObstacle(report.runtime) !== null || report.person === false) {
+        return SHARED_STANDBY;
+      }
+      const recorded = yield* recordedCapabilityOf(image, report, report.runtime ?? "unknown");
+      return recorded !== null && !recorded.person ? SHARED_STANDBY : null;
+    },
+  );
 
   // A standby boots before any worktree is known, and sealantd reads its capture owner map only
   // at boot (sealant#333): a shared standby boots with none, a person standby with its owner's
@@ -1449,17 +1442,17 @@ export const makeHarnessLayoutSteps = (deps: {
   // with no `people/` in its head whose change owner is that owner. So a standby serves a
   // worktree with no layout yet, in the layout its fresh launch is predicted; a worktree already
   // person, or asked for per person, launches cold.
-  const standbyLayoutFor: HarnessLayoutSteps["standbyLayoutFor"] = Effect.fn(
-    "HarnessLayoutSteps.standbyLayoutFor",
-  )(function* (worktreeId, fresh, headHasPeople) {
-    if (flag !== "person" && nothingRecorded()) return SHARED_STANDBY;
-    const worktree = yield* repo.worktreeLayout(worktreeId);
-    if (worktree.layout !== null || worktree.requested === "person") return null;
-    if (flag !== "person" || worktree.requested === "shared") return SHARED_STANDBY;
-    // A head that holds `people/` is person whatever the record says (decision 14).
-    if (headHasPeople !== undefined && (yield* headHasPeople)) return null;
-    return yield* freshLaunchLayout(fresh);
-  });
+  const standbyLayoutFor: HarnessLayoutSteps["standbyLayoutFor"] = Effect.fnUntraced(
+    function* (worktreeId, fresh, headHasPeople) {
+      if (flag !== "person" && nothingRecorded()) return SHARED_STANDBY;
+      const worktree = yield* repo.worktreeLayout(worktreeId);
+      if (worktree.layout !== null || worktree.requested === "person") return null;
+      if (flag !== "person" || worktree.requested === "shared") return SHARED_STANDBY;
+      // A head that holds `people/` is person whatever the record says (decision 14).
+      if (headHasPeople !== undefined && (yield* headHasPeople)) return null;
+      return yield* freshLaunchLayout(fresh);
+    },
+  );
 
   /**
    * Executors whose SSH user a fallback set back to root (decision 10) and sealant has not confirmed:
@@ -1575,184 +1568,184 @@ export const makeHarnessLayoutSteps = (deps: {
       ),
     );
 
-  const settlePrepareNow: HarnessLayoutSteps["settlePrepare"] = Effect.fn(
-    "HarnessLayoutSteps.settlePrepare",
-  )(function* (input) {
-    const { layout } = input;
-    if (layout.layout === "shared") {
-      if (!layout.probe) return { layout: "shared", fallback: null };
-      const report = parseLayoutReport(input.stdout);
-      if (report.probed && layout.imageKey !== null) {
-        // A prediction: a shared executor cannot see what only a per-person one meets, so it is
-        // recorded only where nothing is, or over the "no" it checked again, and nothing is
-        // retired on it.
+  const settlePrepareNow: HarnessLayoutSteps["settlePrepare"] = Effect.fnUntraced(
+    function* (input) {
+      const { layout } = input;
+      if (layout.layout === "shared") {
+        if (!layout.probe) return { layout: "shared", fallback: null };
+        const report = parseLayoutReport(input.stdout);
+        if (report.probed && layout.imageKey !== null) {
+          // A prediction: a shared executor cannot see what only a per-person one meets, so it is
+          // recorded only where nothing is, or over the "no" it checked again, and nothing is
+          // retired on it.
+          yield* repo.recordCapability({
+            imageKey: layout.imageKey,
+            runtime: layout.runtime,
+            person: report.missing.length === 0,
+            missing: report.missing,
+            confirmed: false,
+            // A "no" checked again is replaced, only while it is still the one checked.
+            ...(layout.replaces === null || layout.replaces === undefined
+              ? {}
+              : { replacing: layout.replaces }),
+          });
+        }
+        yield* repo.confirm(input.launchId);
+        return { layout: "shared", fallback: null };
+      }
+      const prepared = parseLayoutReport(input.stdout);
+      // The restore, not the image: nothing is recorded against the image, and the launch is
+      // refused whatever the worktree, since nobody could edit what came back.
+      if (prepared.unowned !== null) return yield* layoutRefused(ownerMapRefusal(prepared.unowned));
+      // The workspace's own answer (sealant#343): a person launch runs only where its processes can
+      // start as a person. `unsupported` is the image's sealantd, recorded against it like a probe's
+      // finding; `unknown` is not a yes, and is not held against the image.
+      const capability = yield* platform.workspaceProcessUser(input.workspace);
+      const workspaceObstacle = workspaceProcessUserObstacleOf(capability);
+      const report =
+        workspaceObstacle === null || !prepared.ready
+          ? prepared
+          : {
+              ...prepared,
+              ready: false,
+              probed: capability === "unsupported",
+              missing: [workspaceObstacle],
+            };
+      // A person could not be given their Mend identity: usually passing, never the image's fault,
+      // so the launch is refused with words to try again and nothing is recorded against the image.
+      const identityFailures = report.failed.filter((entry) => entry.includes(": identity: "));
+      if (!report.ready && report.missing.length === 0 && identityFailures.length > 0) {
+        return yield* layoutRefused(identityRefusal(identityFailures));
+      }
+      if (report.ready) {
         yield* repo.recordCapability({
           imageKey: layout.imageKey,
           runtime: layout.runtime,
-          person: report.missing.length === 0,
-          missing: report.missing,
-          confirmed: false,
-          // A "no" checked again is replaced, only while it is still the one checked.
-          ...(layout.replaces === null || layout.replaces === undefined
-            ? {}
-            : { replacing: layout.replaces }),
+          person: true,
+          missing: [],
+          confirmed: true,
+        });
+        yield* repo.confirmPerson(input.launchId, input.worktreeId);
+        layoutByLaunch.set(input.launchId, "person");
+        // Only the people this prepare says it made: a member with an identity (made in some other
+        // worktree) whose saved directory did not come back with this head was skipped, and is
+        // made at their first process here.
+        const made = new Set(report.made);
+        madeIn.set(
+          input.workspace.id,
+          new Set(
+            [layout.launcher, ...layout.members]
+              .filter((person) => made.has(person.name))
+              .map((person) => person.accountId),
+          ),
+        );
+        lastIn.set(input.workspace.id, layout.launcher.accountId);
+        // The create wrote the launcher's logins into their home (`credentialsHome`): sealant holds it
+        // for them while the executor lives, so it is never released (decision 5).
+        const executor = executorOf(input.workspace.id, input.launchId);
+        executor.launcher = layout.launcher.accountId;
+        const held = new Set(loginsOfCreate(input.fallback.credentials));
+        const deferred = new Set(input.fallback.deferred ?? []);
+        executor.people.set(layout.launcher.accountId, {
+          identity: layout.launcher,
+          held,
+          absent: new Set(
+            loginsOfCreate(input.fallback.asked).filter(
+              (provider) => !held.has(provider) && !deferred.has(provider),
+            ),
+          ),
+          unusable: new Set(),
+          // A create writes no Claude key (sealant refuses one), so nothing here needs a helper.
+          placed: {},
+        });
+        const opencode = new Set(report.opencode);
+        return {
+          layout: "person",
+          opencode: [layout.launcher, ...layout.members].filter(
+            (person) => made.has(person.name) && opencode.has(person.name),
+          ),
+        };
+      }
+      const missing =
+        report.missing.length > 0
+          ? report.missing
+          : report.failed.length > 0
+            ? report.failed
+            : [report.probed ? "the users could not be made" : "the image could not be checked"];
+      if (report.probed && report.missing.length > 0) {
+        yield* repo.recordCapability({
+          imageKey: layout.imageKey,
+          runtime: layout.runtime,
+          person: false,
+          missing,
+          confirmed: true,
         });
       }
-      yield* repo.confirm(input.launchId);
-      return { layout: "shared", fallback: null };
-    }
-    const prepared = parseLayoutReport(input.stdout);
-    // The restore, not the image: nothing is recorded against the image, and the launch is
-    // refused whatever the worktree, since nobody could edit what came back.
-    if (prepared.unowned !== null) return yield* layoutRefused(ownerMapRefusal(prepared.unowned));
-    // The workspace's own answer (sealant#343): a person launch runs only where its processes can
-    // start as a person. `unsupported` is the image's sealantd, recorded against it like a probe's
-    // finding; `unknown` is not a yes, and is not held against the image.
-    const capability = yield* platform.workspaceProcessUser(input.workspace);
-    const workspaceObstacle = workspaceProcessUserObstacleOf(capability);
-    const report =
-      workspaceObstacle === null || !prepared.ready
-        ? prepared
-        : {
-            ...prepared,
-            ready: false,
-            probed: capability === "unsupported",
-            missing: [workspaceObstacle],
-          };
-    // A person could not be given their Mend identity: usually passing, never the image's fault,
-    // so the launch is refused with words to try again and nothing is recorded against the image.
-    const identityFailures = report.failed.filter((entry) => entry.includes(": identity: "));
-    if (!report.ready && report.missing.length === 0 && identityFailures.length > 0) {
-      return yield* layoutRefused(identityRefusal(identityFailures));
-    }
-    if (report.ready) {
-      yield* repo.recordCapability({
-        imageKey: layout.imageKey,
-        runtime: layout.runtime,
-        person: true,
-        missing: [],
-        confirmed: true,
-      });
-      yield* repo.confirmPerson(input.launchId, input.worktreeId);
-      layoutByLaunch.set(input.launchId, "person");
-      // Only the people this prepare says it made: a member with an identity (made in some other
-      // worktree) whose saved directory did not come back with this head was skipped, and is
-      // made at their first process here.
-      const made = new Set(report.made);
-      madeIn.set(
-        input.workspace.id,
-        new Set(
-          [layout.launcher, ...layout.members]
-            .filter((person) => made.has(person.name))
-            .map((person) => person.accountId),
-        ),
-      );
-      lastIn.set(input.workspace.id, layout.launcher.accountId);
-      // The create wrote the launcher's logins into their home (`credentialsHome`): sealant holds it
-      // for them while the executor lives, so it is never released (decision 5).
-      const executor = executorOf(input.workspace.id, input.launchId);
-      executor.launcher = layout.launcher.accountId;
-      const held = new Set(loginsOfCreate(input.fallback.credentials));
-      const deferred = new Set(input.fallback.deferred ?? []);
-      executor.people.set(layout.launcher.accountId, {
-        identity: layout.launcher,
-        held,
-        absent: new Set(
-          loginsOfCreate(input.fallback.asked).filter(
-            (provider) => !held.has(provider) && !deferred.has(provider),
-          ),
-        ),
-        unusable: new Set(),
-        // A create writes no Claude key (sealant refuses one), so nothing here needs a helper.
-        placed: {},
-      });
-      const opencode = new Set(report.opencode);
-      return {
-        layout: "person",
-        opencode: [layout.launcher, ...layout.members].filter(
-          (person) => made.has(person.name) && opencode.has(person.name),
-        ),
-      };
-    }
-    const missing =
-      report.missing.length > 0
-        ? report.missing
-        : report.failed.length > 0
-          ? report.failed
-          : [report.probed ? "the users could not be made" : "the image could not be checked"];
-    if (report.probed && report.missing.length > 0) {
-      yield* repo.recordCapability({
-        imageKey: layout.imageKey,
-        runtime: layout.runtime,
-        person: false,
-        missing,
-        confirmed: true,
-      });
-    }
-    // The probe passed and found nothing missing, yet the users were not made: not the image's
-    // (SLNT-1013), so the words say to start again, never to pick another image or worktree.
-    const usersNotMade = report.probed && report.missing.length === 0;
-    if (layout.onMissing === "refuse") {
-      return yield* layoutRefused(
-        usersNotMade
-          ? usersNotMadeRefusal(report.failed)
-          : layout.source === "operator"
-            ? `harnessLayout person was asked for, and this image cannot run per-person users (${missing.join(", ")}).`
-            : `This worktree's sessions are saved per person, and its image cannot run per-person users (${missing.join(", ")}). Pick an image that can, or start a new worktree.`,
-      );
-    }
-    // A wrong prediction never leaves an agent without a login: the create-time home is released
-    // and the launcher's logins are written to `/root`, before anything starts. Either failing
-    // fails the launch. Their dotfiles have no way to `/root`: sealant's `dotfiles.apply` runs only as
-    // a person (sealant#334) and the create applied none at boot, so the session says they were
-    // not applied. The image's answer is recorded below, so the next launch on it decides shared
-    // before create and its dotfiles apply at boot, as before.
-    const home = linuxHomeOf(layout.launcher);
-    // The launcher's SSH sessions go back to root with the rest of the executor (decision 10):
-    // the create named their user, which this prepare may not have made. Off the launch path:
-    // nothing here waits on it, and until sealant takes it the session says Remote-SSH is down.
-    sshResets.set(input.workspace.id, {
-      workspace: input.workspace,
-      notify: input.onSshReset ?? (() => Effect.void),
-      running: false,
-      told: false,
-    });
-    yield* forkSshReset(input.workspace.id);
-    yield* platform.deleteCredentials(input.workspace, { home });
-    const rootLogins = homeLoginsOf(input.fallback.credentials);
-    for (const provider of input.fallback.deferred ?? []) rootLogins[provider] = true;
-    if (Object.keys(rootLogins).length > 0) {
-      // Partial, as a start's (sealant#337): a provider disconnected since the create is left
-      // out, and only one the harness needs refuses the launch.
-      const written = yield* platform.postCredentials(input.workspace, {
-        onBehalfOf: layout.launcher.accountId,
-        home: "/root",
-        logins: rootLogins,
-        partial: true,
-      });
-      const harness = input.fallback.harness ?? null;
-      const needed = (provider: LoginProvider) =>
-        harness === null || loginNeedOf(harness).required.includes(provider);
-      const refused = written.skipped.find((skip) => needed(skip.provider));
-      if (refused !== undefined) {
-        return yield* loginRefused(
-          isClaudeKeyRefusal(refused)
-            ? SHARED_HOME_CLAUDE_KEY_REFUSAL
-            : loginRefusal(refused.provider, refused.reason),
+      // The probe passed and found nothing missing, yet the users were not made: not the image's
+      // (SLNT-1013), so the words say to start again, never to pick another image or worktree.
+      const usersNotMade = report.probed && report.missing.length === 0;
+      if (layout.onMissing === "refuse") {
+        return yield* layoutRefused(
+          usersNotMade
+            ? usersNotMadeRefusal(report.failed)
+            : layout.source === "operator"
+              ? `harnessLayout person was asked for, and this image cannot run per-person users (${missing.join(", ")}).`
+              : `This worktree's sessions are saved per person, and its image cannot run per-person users (${missing.join(", ")}). Pick an image that can, or start a new worktree.`,
         );
       }
-    }
-    const reason = usersNotMade
-      ? usersNotMadeFallback(report.failed)
-      : `this image cannot run per-person users (${missing.join(", ")}), so this workspace takes one person`;
-    yield* repo.recordFallback(input.launchId, reason);
-    layoutByLaunch.set(input.launchId, "shared");
-    return {
-      layout: "shared",
-      fallback: reason,
-      dotfilesNotApplied: input.fallback.dotfiles.length > 0 ? DOTFILES_NOT_TO_ROOT : null,
-    };
-  });
+      // A wrong prediction never leaves an agent without a login: the create-time home is released
+      // and the launcher's logins are written to `/root`, before anything starts. Either failing
+      // fails the launch. Their dotfiles have no way to `/root`: sealant's `dotfiles.apply` runs only as
+      // a person (sealant#334) and the create applied none at boot, so the session says they were
+      // not applied. The image's answer is recorded below, so the next launch on it decides shared
+      // before create and its dotfiles apply at boot, as before.
+      const home = linuxHomeOf(layout.launcher);
+      // The launcher's SSH sessions go back to root with the rest of the executor (decision 10):
+      // the create named their user, which this prepare may not have made. Off the launch path:
+      // nothing here waits on it, and until sealant takes it the session says Remote-SSH is down.
+      sshResets.set(input.workspace.id, {
+        workspace: input.workspace,
+        notify: input.onSshReset ?? (() => Effect.void),
+        running: false,
+        told: false,
+      });
+      yield* forkSshReset(input.workspace.id);
+      yield* platform.deleteCredentials(input.workspace, { home });
+      const rootLogins = homeLoginsOf(input.fallback.credentials);
+      for (const provider of input.fallback.deferred ?? []) rootLogins[provider] = true;
+      if (Object.keys(rootLogins).length > 0) {
+        // Partial, as a start's (sealant#337): a provider disconnected since the create is left
+        // out, and only one the harness needs refuses the launch.
+        const written = yield* platform.postCredentials(input.workspace, {
+          onBehalfOf: layout.launcher.accountId,
+          home: "/root",
+          logins: rootLogins,
+          partial: true,
+        });
+        const harness = input.fallback.harness ?? null;
+        const needed = (provider: LoginProvider) =>
+          harness === null || loginNeedOf(harness).required.includes(provider);
+        const refused = written.skipped.find((skip) => needed(skip.provider));
+        if (refused !== undefined) {
+          return yield* loginRefused(
+            isClaudeKeyRefusal(refused)
+              ? SHARED_HOME_CLAUDE_KEY_REFUSAL
+              : loginRefusal(refused.provider, refused.reason),
+          );
+        }
+      }
+      const reason = usersNotMade
+        ? usersNotMadeFallback(report.failed)
+        : `this image cannot run per-person users (${missing.join(", ")}), so this workspace takes one person`;
+      yield* repo.recordFallback(input.launchId, reason);
+      layoutByLaunch.set(input.launchId, "shared");
+      return {
+        layout: "shared",
+        fallback: reason,
+        dotfilesNotApplied: input.fallback.dotfiles.length > 0 ? DOTFILES_NOT_TO_ROOT : null,
+      };
+    },
+  );
 
   const refusedOwnerMap: HarnessLayoutSteps["refusedOwnerMap"] = (input) =>
     refusedOwnerMapNow(input).pipe(
@@ -1764,55 +1757,55 @@ export const makeHarnessLayoutSteps = (deps: {
       ),
     );
 
-  const refusedOwnerMapNow: HarnessLayoutSteps["refusedOwnerMap"] = Effect.fn(
-    "HarnessLayoutSteps.refusedOwnerMap",
-  )(function* (input) {
-    const { layout } = input;
-    if (layout.layout !== "person") return null;
-    const lacks = ownerMapRefusalOf(input.error);
-    if (lacks === null) return null;
-    const unchecked = input.error.code === "owner-map-unverified";
-    yield* repo.recordCapability({
-      imageKey: layout.imageKey,
-      runtime: layout.runtime,
-      person: false,
-      missing: [lacks],
-      confirmed: !unchecked,
-      ...(unchecked ? { replacing: "unconfirmed" as const } : {}),
-    });
-    const refused = (message: string) =>
-      new SealantPlatformError({
-        code: "harness_layout_refused",
-        status: 409,
-        message,
-        cause: input.error,
+  const refusedOwnerMapNow: HarnessLayoutSteps["refusedOwnerMap"] = Effect.fnUntraced(
+    function* (input) {
+      const { layout } = input;
+      if (layout.layout !== "person") return null;
+      const lacks = ownerMapRefusalOf(input.error);
+      if (lacks === null) return null;
+      const unchecked = input.error.code === "owner-map-unverified";
+      yield* repo.recordCapability({
+        imageKey: layout.imageKey,
+        runtime: layout.runtime,
+        person: false,
+        missing: [lacks],
+        confirmed: !unchecked,
+        ...(unchecked ? { replacing: "unconfirmed" as const } : {}),
       });
-    if (layout.onMissing === "refuse") {
+      const refused = (message: string) =>
+        new SealantPlatformError({
+          code: "harness_layout_refused",
+          status: 409,
+          message,
+          cause: input.error,
+        });
+      if (layout.onMissing === "refuse") {
+        return refused(
+          unchecked
+            ? UNCHECKED_IMAGE_REFUSAL
+            : layout.source === "operator"
+              ? operatorPersonRefusal([lacks])
+              : personLayoutRefusal([lacks]),
+        );
+      }
+      // A fresh worktree: nothing ran, and it stays without a layout; the image is known now.
+      if (input.launchId !== undefined) {
+        // An image sealant could not check is not one that cannot run per-person users.
+        yield* repo.recordFallback(
+          input.launchId,
+          unchecked
+            ? "sealant could not check whether this image runs per-person users"
+            : `this image cannot run per-person users (${lacks})`,
+        );
+        layoutByLaunch.set(input.launchId, "shared");
+      }
       return refused(
         unchecked
           ? UNCHECKED_IMAGE_REFUSAL
-          : layout.source === "operator"
-            ? operatorPersonRefusal([lacks])
-            : personLayoutRefusal([lacks]),
+          : `This workspace cannot run per-person users (${lacks}), so nothing was started. The next launch here runs as one person.`,
       );
-    }
-    // A fresh worktree: nothing ran, and it stays without a layout; the image is known now.
-    if (input.launchId !== undefined) {
-      // An image sealant could not check is not one that cannot run per-person users.
-      yield* repo.recordFallback(
-        input.launchId,
-        unchecked
-          ? "sealant could not check whether this image runs per-person users"
-          : `this image cannot run per-person users (${lacks})`,
-      );
-      layoutByLaunch.set(input.launchId, "shared");
-    }
-    return refused(
-      unchecked
-        ? UNCHECKED_IMAGE_REFUSAL
-        : `This workspace cannot run per-person users (${lacks}), so nothing was started. The next launch here runs as one person.`,
-    );
-  });
+    },
+  );
 
   const layoutOfLaunch: HarnessLayoutSteps["layoutOfLaunch"] = Effect.fnUntraced(
     function* (launchId) {
@@ -1935,9 +1928,7 @@ export const makeHarnessLayoutSteps = (deps: {
     });
   });
 
-  const homeForWrite: HarnessLayoutSteps["homeForWrite"] = Effect.fn(
-    "HarnessLayoutSteps.homeForWrite",
-  )(function* (input) {
+  const homeForWrite: HarnessLayoutSteps["homeForWrite"] = Effect.fnUntraced(function* (input) {
     if (input.launchId === null) {
       // As `processAs`: never as root in a worktree that runs per person.
       if (
@@ -2215,7 +2206,7 @@ export const makeHarnessLayoutSteps = (deps: {
    * One person's home released: sealant's files and record (pi's and opencode's ChatGPT logins among
    * them, which sealant writes and removes, sealant#336), and their token.
    */
-  const releaseHome = Effect.fn("HarnessLayoutSteps.releaseHome")(function* (input: {
+  const releaseHome = Effect.fnUntraced(function* (input: {
     readonly workspace: Workspace;
     readonly launchId: string | null;
     readonly home: string;

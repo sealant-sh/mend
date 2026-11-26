@@ -65,19 +65,17 @@ const make: Effect.Effect<McpAppRequests["Service"], never, McpAppsRepo | McpApp
   Effect.gen(function* () {
     const repo = yield* McpAppsRepo;
     const connections = yield* McpAppConnections;
-    const snapshot = Effect.fn("McpAppRequests.snapshot")(function* (target: Target) {
+    const snapshot = Effect.fnUntraced(function* (target: Target) {
       const app = yield* repo.byItem(target.itemId);
       if (app === null || app.sessionId !== target.sessionId)
         return yield* new McpAppError({ reason: "not-an-app" });
       return app;
     });
-    const resolve = Effect.fn("McpAppRequests.resolve")(function* (target: LiveTarget) {
+    const resolve = Effect.fnUntraced(function* (target: LiveTarget) {
       const app = yield* snapshot(target);
       return { app, connection: yield* connections.forProcess(app.processId, target.accountId) };
     });
-    const toolInfo = Effect.fn("McpAppRequests.toolInfo")(function* (
-      input: LiveTarget & { readonly name: string },
-    ) {
+    const toolInfo = Effect.fnUntraced(function* (input: LiveTarget & { readonly name: string }) {
       const { app, connection } = yield* resolve(input);
       const tools = yield* connection.listTools(app.server).pipe(Effect.mapError(failed));
       const tool = tools.find((candidate) => candidate.name === input.name);
@@ -97,7 +95,7 @@ const make: Effect.Effect<McpAppRequests["Service"], never, McpAppsRepo | McpApp
         ...(tool === undefined ? {} : { tool }),
       };
     });
-    const callTool = Effect.fn("McpAppRequests.callTool")(function* (
+    const callTool = Effect.fnUntraced(function* (
       input: LiveTarget & {
         readonly name: string;
         readonly arguments: Readonly<Record<string, unknown>>;
@@ -113,7 +111,7 @@ const make: Effect.Effect<McpAppRequests["Service"], never, McpAppsRepo | McpApp
         .callTool({ server: app.server, tool: input.name, arguments: input.arguments })
         .pipe(Effect.mapError(failed));
     });
-    const readResource = Effect.fn("McpAppRequests.readResource")(function* (
+    const readResource = Effect.fnUntraced(function* (
       input: LiveTarget & { readonly uri: string },
     ) {
       const { app, connection } = yield* resolve(input);
@@ -121,7 +119,7 @@ const make: Effect.Effect<McpAppRequests["Service"], never, McpAppsRepo | McpApp
         .readResource({ server: app.server, uri: input.uri })
         .pipe(Effect.mapError(failed));
     });
-    const updateModelContext = Effect.fn("McpAppRequests.updateModelContext")(function* (
+    const updateModelContext = Effect.fnUntraced(function* (
       input: Target & {
         readonly conversationSessionId?: SessionId;
         readonly content?: ReadonlyArray<unknown>;

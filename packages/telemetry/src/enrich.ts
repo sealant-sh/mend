@@ -17,9 +17,11 @@ import { pathOf, templatePath } from "./url-template.ts";
  * - a database span: `select .. from agent_sessions where agent_sessions.id = $1 limit $2`, with
  *   its system, operation and table;
  * - a queue span: the queue's name, as `queue.publish` or `queue.process`;
+ * - a procedure of the web tier: `rpc.server — sessions.sendMessage`, its tRPC path;
  * - anything else: a name of `<product>.<area>.<operation>` (an `Effect.fn("SessionEngine.start")`
  *   becomes `mend.session.start`, and keeps its own name in `code.function.name`), filed under
- *   `<product>.<area>`.
+ *   `<product>.<area>` and described in plain words that never repeat it: Sentry shows
+ *   `mend.session — launch session`, not `mend.session — mend.session.launch` (`PHRASES`).
  *
  * It runs on the spans as Effect made them, before `scrub.ts` scrubs everything it wrote.
  */
@@ -156,6 +158,20 @@ const DOTTED = /^[a-z][a-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/;
 /** A bare function's name: `ensureCaptureCache`. */
 const FUNCTION = /^[a-z][A-Za-z0-9]*$/;
 
+/**
+ * Spans named for a different area than their service's: a protocol host's turns are a turn's
+ * steps (`mend.turn — send turn input`), not the session's.
+ */
+const RENAMED: Readonly<Record<string, string>> = {
+  "ProtocolHost.sendMessage": "mend.turn.input",
+  "ProtocolHost.submitTurn": "mend.turn.submit",
+  "ProtocolHost.interruptTurn": "mend.turn.interrupt",
+  "ProtocolHost.respondRequest": "mend.turn.respond",
+  "ProtocolHost.steerTurn": "mend.turn.steer",
+  "ProtocolHost.sendSteer": "mend.turn.steer",
+  "ProtocolHost.deliverSteer": "mend.turn.deliver_steer",
+};
+
 interface Named {
   readonly name: string;
   readonly op: string;
@@ -171,6 +187,8 @@ const opOfDotted = (name: string): string => {
 };
 
 const nameOf = (name: string): Named => {
+  const renamed = RENAMED[name];
+  if (renamed !== undefined) return { name: renamed, op: opOfDotted(renamed), codeName: name };
   if (DOTTED.test(name)) return { name, op: opOfDotted(name) };
   if (name.startsWith("Migrator "))
     return { name: "mend.db.migrate", op: "db.migrate", codeName: name };
@@ -187,6 +205,108 @@ const nameOf = (name: string): Named => {
   }
   if (FUNCTION.test(name)) return { name: `mend.${snake(name)}`, op: "function", codeName: name };
   return { name, op: "function" };
+};
+
+// --- Phrases --------------------------------------------------------------------------------
+
+/**
+ * What a person reads for the spans a trace is made of, by name: Sentry shows `<op> — <this>`, so
+ * none repeats its operation. A name not listed reads as its own words (`phraseOf`).
+ */
+const PHRASES: Readonly<Record<string, string>> = {
+  // Who is asking, and may they
+  "mend.auth.get_session": "authenticate request",
+  "mend.auth.access_key_session": "authenticate access key",
+  "mend.access.session_as": "authorize session",
+  "mend.access.session_as_member": "authorize session",
+  "mend.access.session_view": "authorize session",
+  "mend.access.project_as": "authorize project",
+  "mend.access.manage_project": "authorize project management",
+  "mend.access.worktree": "authorize worktree",
+  "mend.access.change": "authorize change",
+  "mend.access.require_owner": "authorize owner",
+  "mend.access.require_operator": "authorize operator",
+  "mend.access.visible_projects_of": "list visible projects",
+  // A session's life
+  "mend.session.start": "start session",
+  "mend.session.create_as": "create session",
+  "mend.session.create_in_worktree_as": "create session",
+  "mend.session.launch": "launch session",
+  "mend.session.provision": "create worktree",
+  "mend.session.create_worktree_in": "create worktree",
+  "mend.session.provision_workspace": "provision workspace",
+  "mend.session.prepare_executor": "prepare workspace",
+  "mend.session.supervise": "supervise session",
+  "mend.session.run_drain": "wind down session",
+  "mend.session.end_agent_process": "end agent process",
+  "mend.session.terminate_workspace": "terminate workspace",
+  "mend.session.stop": "stop session",
+  "mend.session.stop_session": "stop session and workspace",
+  "mend.session.resume": "resume sessions",
+  "mend.session.resume_session": "resume session",
+  "mend.session.reconcile_session": "reconcile session",
+  "mend.session.classify_unclassified_sessions": "classify restart transcripts",
+  "mend.session.switch_mode": "switch mode",
+  "mend.session.launch_follow_up": "launch follow-up",
+  // What a session keeps
+  "mend.session.take_checkpoint": "save checkpoint",
+  "mend.session.checkpoint_now": "save checkpoint",
+  "mend.session.landing_checkpoint": "save landing checkpoint",
+  "mend.session.take_worktree_snapshot": "snapshot worktree",
+  "mend.session.observe_capture_flush": "flush capture",
+  "mend.session.flush_captures": "flush captures",
+  // A turn
+  "mend.turn.dispatch": "dispatch turn",
+  "mend.turn.input": "send turn input",
+  "mend.turn.submit": "submit turn",
+  "mend.turn.run": "run turn",
+  "mend.turn.first_output": "first agent output",
+  "mend.turn.complete": "complete turn",
+  "mend.turn.interrupt": "interrupt turn",
+  "mend.turn.respond": "answer agent request",
+  "mend.turn.steer": "steer turn",
+  // Calls to sealant
+  "mend.sealant.create_workspace": "create workspace",
+  "mend.sealant.find_workspace_by_key": "find workspace",
+  "mend.sealant.get_workspace": "read workspace",
+  "mend.sealant.expire_workspace": "set workspace expiry",
+  "mend.sealant.stop_workspace": "stop workspace",
+  "mend.sealant.open_session": "open session",
+  "mend.sealant.get_session": "read session",
+  "mend.sealant.session_output": "read session output",
+  "mend.sealant.get_run": "read run",
+  "mend.sealant.wait_run": "wait for run",
+  "mend.sealant.run_changes": "read run changes",
+  "mend.sealant.record_commands": "read command record",
+  "mend.sealant.record_scrollback": "read scrollback",
+  "mend.sealant.capture_status": "read capture status",
+  "mend.sealant.open_forward": "open port forward",
+  "mend.sealant.connection_check": "check connection",
+  "mend.sealant.connect": "connect account",
+  "mend.sealant.inspect_image": "inspect image",
+  // Background work and jobs
+  "mend.job.work": "listen for jobs",
+  "mend.job.process": "process job",
+  "mend.db.migrate": "migrate database",
+};
+
+/** `snake_case.words` as words: `deliver_skills_to_workspace` reads `deliver skills to workspace`. */
+const words = (name: string): string => name.replace(/[._]+/g, " ").trim();
+
+/**
+ * The words for `name` filed under `op`: its phrase, else the name less the operation it repeats
+ * (`mend.session.deliver_skills_to_workspace` under `mend.session` reads `deliver skills to
+ * workspace`), less the SDK's `sealant.sdk.<group>.`, or less `mend.` for a bare function.
+ */
+const phraseOf = (name: string, op: string): string => {
+  const phrase = PHRASES[name];
+  if (phrase !== undefined) return phrase;
+  const rest = name.startsWith(`${op}.`)
+    ? name.slice(op.length + 1)
+    : name.startsWith("sealant.sdk.")
+      ? name.split(".").slice(3).join(".")
+      : name.replace(/^(?:mend|sealant)\./, "");
+  return words(rest) || words(name);
 };
 
 // --- Spans ----------------------------------------------------------------------------------
@@ -256,9 +376,13 @@ const messaging = (span: Span): Enriched => {
       : span.kind === KIND.consumer
         ? "queue.process"
         : named.op;
-  return { name: named.name, set: { "sentry.op": op, "sentry.description": queue ?? named.name } };
+  return {
+    name: named.name,
+    set: { "sentry.op": op, "sentry.description": queue ?? phraseOf(named.name, named.op) },
+  };
 };
 
+/** A procedure by its method, `sessions.sendMessage`, not the span's `mend.web.` name. */
 const rpc = (span: Span): Enriched => {
   const named = nameOf(span.name);
   const op =
@@ -267,7 +391,8 @@ const rpc = (span: Span): Enriched => {
     name: named.name,
     set: {
       "sentry.op": op,
-      "sentry.description": named.name,
+      "sentry.description":
+        stringOf(span.attributes, "rpc.method") ?? phraseOf(named.name, named.op),
       "code.function.name": named.codeName,
     },
   };
@@ -279,7 +404,7 @@ const internal = (span: Span): Enriched => {
     name: named.name,
     set: {
       "sentry.op": named.op,
-      "sentry.description": named.name,
+      "sentry.description": phraseOf(named.name, named.op),
       "code.function.name": named.codeName,
     },
   };
@@ -309,12 +434,20 @@ export const enrichSpan = (span: Span): Span => {
   };
 };
 
+/**
+ * A query no span ran under: work outside any request, job or background pass. Alone it says
+ * nothing about why it ran, and each one would be a root trace of its own in Sentry.
+ */
+const isOrphanQuery = (span: Span): boolean =>
+  (span.parentSpanId === undefined || span.parentSpanId === "") &&
+  has(span.attributes, "db.system.name");
+
 export const enrichTraces = (data: OtlpTracer.TraceData): OtlpTracer.TraceData => ({
   resourceSpans: data.resourceSpans.map((resource) => ({
     ...resource,
     scopeSpans: resource.scopeSpans.map((scope) => ({
       ...scope,
-      spans: scope.spans.map(enrichSpan),
+      spans: scope.spans.filter((span) => !isOrphanQuery(span)).map(enrichSpan),
     })),
   })),
 });

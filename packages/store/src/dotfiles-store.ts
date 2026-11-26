@@ -262,14 +262,14 @@ export const DotfilesStoreLive: Layer.Layer<DotfilesStore, never, StoreConfig> =
       }).pipe(Effect.ensuring(cleanup));
     });
 
-    const current = Effect.fn("DotfilesStore.current")(function* (userId: string) {
+    const current = Effect.fnUntraced(function* (userId: string) {
       const dir = yield* repoDir(userId);
       const existing = yield* hasSnapshot(dir);
       if (!existing) return null;
       return yield* summarize(dir);
     });
 
-    const archive = Effect.fn("DotfilesStore.archive")(function* (userId: string) {
+    const archive = Effect.fnUntraced(function* (userId: string) {
       const dir = yield* repoDir(userId);
       const existing = yield* hasSnapshot(dir);
       if (!existing) return null;
@@ -278,7 +278,7 @@ export const DotfilesStoreLive: Layer.Layer<DotfilesStore, never, StoreConfig> =
       return { sha: summary.sha, data: packed.toString("base64") };
     });
 
-    const clear = Effect.fn("DotfilesStore.clear")(function* (userId: string) {
+    const clear = Effect.fnUntraced(function* (userId: string) {
       const dir = yield* repoDir(userId);
       yield* Effect.sync(() => {
         fs.rmSync(dir, { recursive: true, force: true });

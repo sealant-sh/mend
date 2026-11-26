@@ -97,7 +97,7 @@ const make: Effect.Effect<AttachmentUploads["Service"], never, GatewayAuth | Pro
         return bearer.session;
       });
 
-    const issue: AttachmentUploads["Service"]["issue"] = Effect.fn("AttachmentUploads.issue")(
+    const issue: AttachmentUploads["Service"]["issue"] = Effect.fnUntraced(
       function* (sessionId, input) {
         const session = yield* authenticate(sessionId);
         if (input.type === "file")
@@ -138,84 +138,81 @@ const make: Effect.Effect<AttachmentUploads["Service"], never, GatewayAuth | Pro
       },
     );
 
-    const receive: AttachmentUploads["Service"]["receive"] = Effect.fn("AttachmentUploads.receive")(
-      (token, contentType, body) =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const key = digest(token);
-            const now = yield* Clock.currentTimeMillis;
-            const grant = grants.get(key);
-            // Consume before any asynchronous work: a concurrent POST cannot reuse the capability.
-            grants.delete(key);
-            sweep(now);
-            if (grant === undefined || grant.expiresAt <= now)
-              return yield* refused(
-                404,
-                "This image upload URL expired or was already used. Retry the upload.",
-              );
-            transfers.set(grant.attachmentId, grant);
-            yield* Effect.addFinalizer(() =>
-              Effect.sync(() => {
-                transfers.delete(grant.attachmentId);
+    const receive: AttachmentUploads["Service"]["receive"] = (token, contentType, body) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const key = digest(token);
+          const now = yield* Clock.currentTimeMillis;
+          const grant = grants.get(key);
+          // Consume before any asynchronous work: a concurrent POST cannot reuse the capability.
+          grants.delete(key);
+          sweep(now);
+          if (grant === undefined || grant.expiresAt <= now)
+            return yield* refused(
+              404,
+              "This image upload URL expired or was already used. Retry the upload.",
+            );
+          transfers.set(grant.attachmentId, grant);
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              transfers.delete(grant.attachmentId);
+            }),
+          );
+          const session = yield* authenticate(grant.sessionId);
+          if (contentType?.split(";", 1)[0]?.trim().toLowerCase() !== grant.mimeType)
+            return yield* refused(400, "The image's content type does not match its upload URL.");
+          if (
+            !(yield* slots(session.mendDeviceId)) ||
+            !(yield* bytes(session.mendDeviceId, grant.sizeBytes))
+          )
+            return yield* refused(429, "Image uploads are busy. Retry the upload shortly.");
+          const hub = yield* projections.hub(session);
+          let received = 0;
+          const chunks = yield* Stream.runCollect(
+            body.pipe(
+              Stream.mapEffect((chunk) => {
+                received += chunk.byteLength;
+                return received > grant.sizeBytes
+                  ? Effect.fail(
+                      refused(
+                        413,
+                        "The image exceeds its declared size or the 10 MiB image limit.",
+                      ),
+                    )
+                  : Effect.succeed(chunk);
               }),
-            );
-            const session = yield* authenticate(grant.sessionId);
-            if (contentType?.split(";", 1)[0]?.trim().toLowerCase() !== grant.mimeType)
-              return yield* refused(400, "The image's content type does not match its upload URL.");
-            if (
-              !(yield* slots(session.mendDeviceId)) ||
-              !(yield* bytes(session.mendDeviceId, grant.sizeBytes))
-            )
-              return yield* refused(429, "Image uploads are busy. Retry the upload shortly.");
-            const hub = yield* projections.hub(session);
-            let received = 0;
-            const chunks = yield* Stream.runCollect(
-              body.pipe(
-                Stream.mapEffect((chunk) => {
-                  received += chunk.byteLength;
-                  return received > grant.sizeBytes
-                    ? Effect.fail(
-                        refused(
-                          413,
-                          "The image exceeds its declared size or the 10 MiB image limit.",
-                        ),
-                      )
-                    : Effect.succeed(chunk);
-                }),
-              ),
-            );
-            if (received !== grant.sizeBytes)
-              return yield* refused(400, "The image upload was incomplete. Retry the upload.");
-            if (grant.cancelled) return yield* refused(404, "This image upload was removed.");
-            // A cancellation that races the SQLite write removes the result before we acknowledge it.
-            yield* Effect.uninterruptible(
-              Effect.gen(function* () {
+            ),
+          );
+          if (received !== grant.sizeBytes)
+            return yield* refused(400, "The image upload was incomplete. Retry the upload.");
+          if (grant.cancelled) return yield* refused(404, "This image upload was removed.");
+          // A cancellation that races the SQLite write removes the result before we acknowledge it.
+          yield* Effect.uninterruptible(
+            Effect.gen(function* () {
+              yield* hub
+                .persistUploadedImage({
+                  id: grant.attachmentId,
+                  name: grant.name,
+                  mimeType: grant.mimeType,
+                  sizeBytes: grant.sizeBytes,
+                  bytes: Buffer.concat(chunks),
+                })
+                .pipe(Effect.mapError((error) => refused(400, error.message)));
+              if (grant.cancelled) {
                 yield* hub
-                  .persistUploadedImage({
-                    id: grant.attachmentId,
-                    name: grant.name,
-                    mimeType: grant.mimeType,
-                    sizeBytes: grant.sizeBytes,
-                    bytes: Buffer.concat(chunks),
-                  })
-                  .pipe(Effect.mapError((error) => refused(400, error.message)));
-                if (grant.cancelled) {
-                  yield* hub
-                    .deleteUploadedImage(grant.attachmentId)
-                    .pipe(Effect.mapError((error) => refused(500, error.message)));
-                  return yield* refused(404, "This image upload was removed.");
-                }
-              }),
-            );
-          }),
-        ).pipe(
-          Effect.timeoutOrElse({
-            duration: "1 minute",
-            orElse: () =>
-              Effect.fail(refused(408, "The image upload timed out. Retry the upload.")),
-          }),
-        ),
-    );
+                  .deleteUploadedImage(grant.attachmentId)
+                  .pipe(Effect.mapError((error) => refused(500, error.message)));
+                return yield* refused(404, "This image upload was removed.");
+              }
+            }),
+          );
+        }),
+      ).pipe(
+        Effect.timeoutOrElse({
+          duration: "1 minute",
+          orElse: () => Effect.fail(refused(408, "The image upload timed out. Retry the upload.")),
+        }),
+      );
 
     const remove: AttachmentUploads["Service"]["remove"] = Effect.fn("AttachmentUploads.remove")(
       (sessionId, attachmentId) =>

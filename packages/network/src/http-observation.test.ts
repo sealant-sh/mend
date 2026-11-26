@@ -34,6 +34,12 @@ const harness = () => {
         "/future/:id",
         Effect.succeed(HttpServerResponse.text("seen")).pipe(Effect.withSpan("handler")),
       ),
+      router.add(
+        "GET",
+        "/api/health",
+        Effect.succeed(HttpServerResponse.text("ok")).pipe(Effect.withSpan("health check")),
+      ),
+      router.add("GET", "/healthz", Effect.die(new Error("database gone"))),
       router.add("POST", "/future/:id/refuse", HttpServerResponse.empty({ status: 403 })),
       router.add("GET", "/future/:id/broken", Effect.die(new Error("broken"))),
       router.add(
@@ -291,6 +297,48 @@ describe("what a request leaves in the log and the trace", () => {
       expect(Option.map(child?.parent ?? Option.none(), (parent) => parent.spanId)).toEqual(
         Option.some(server?.spanId),
       );
+    } finally {
+      await dispose();
+    }
+  });
+
+  it("makes no trace for a health check nobody traced, and still logs it", async () => {
+    const { logs, spans, send, dispose } = harness();
+    try {
+      expect((await send("GET", "/api/health?probe=1")).status).toBe(200);
+      expect(spans).toEqual([]);
+      expect(observed(logs)).toEqual([{ method: "GET", route: "/api/health", status: 200 }]);
+    } finally {
+      await dispose();
+    }
+  });
+
+  it("traces a health check that came with a caller's trace", async () => {
+    const { spans, send, dispose } = harness();
+    try {
+      await send("GET", "/api/health", {
+        headers: { traceparent: `00-${TRACE_ID}-00f067aa0ba902b7-01` },
+      });
+      expect(serverSpans(spans).map((span) => span.traceId)).toEqual([TRACE_ID]);
+      expect(spans.map((span) => span.name)).toContain("health check");
+    } finally {
+      await dispose();
+    }
+  });
+
+  it("makes a failed health check a trace of its own, failed, from when it was asked", async () => {
+    const { spans, send, dispose } = harness();
+    try {
+      expect((await send("GET", "/healthz")).status).toBe(500);
+      await settled(() => serverSpans(spans).length === 1);
+      const [probe] = serverSpans(spans);
+      expect(probe?.parent).toEqual(Option.none());
+      expect(probe === undefined ? undefined : spanOutcome(probe)).toEqual({
+        method: "GET",
+        route: "/healthz",
+        status: 500,
+      });
+      expect(probe?.status._tag === "Ended" && Exit.isFailure(probe.status.exit)).toBe(true);
     } finally {
       await dispose();
     }

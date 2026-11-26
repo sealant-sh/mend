@@ -5,7 +5,7 @@ import { Store } from "@mend/store";
 import { Effect } from "effect";
 
 /** Project refs plus named workspace branches, observed from the same authority as creation. */
-export const listProjectBranches = Effect.fn("listProjectBranches")(function* (project: Project) {
+export const listProjectBranches = Effect.fnUntraced(function* (project: Project) {
   const store = yield* Store;
   const branches = yield* store.listBranches(project.storePath);
   const worktrees = yield* (yield* WorktreesRepo).listForProject(project.id);

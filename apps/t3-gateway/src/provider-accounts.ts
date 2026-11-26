@@ -70,7 +70,7 @@ export const makeProviderAccountControls = (
       else displayed.set(harness, id);
     }
   };
-  const logout = Effect.fn("ProviderAccounts.logout")(function* (instanceId: ProviderInstanceId) {
+  const logout = Effect.fnUntraced(function* (instanceId: ProviderInstanceId) {
     const harness = harnessOf(instanceId);
     if (harness === null)
       return yield* refusal(

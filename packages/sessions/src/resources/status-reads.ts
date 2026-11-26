@@ -279,7 +279,7 @@ export const ResourceStatusReadsLive: Layer.Layer<
         clock,
       );
     });
-    const forWorktrees = Effect.fn("ResourceStatusReads.forWorktrees")(function* (
+    const forWorktrees = Effect.fnUntraced(function* (
       projectId: ProjectId,
       worktreeIds: ReadonlyArray<WorktreeId>,
       options: { readonly files: boolean },

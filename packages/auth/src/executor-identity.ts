@@ -188,7 +188,7 @@ export const ExecutorIdentityLive: Layer.Layer<ExecutorIdentity, never, SecretCi
           database: pool,
           consume,
         });
-      const prepare = Effect.fn("ExecutorIdentity.prepare")(function* (
+      const prepare = Effect.fnUntraced(function* (
         organizationId: string,
         clientSecret: Redacted.Redacted,
       ) {
@@ -212,7 +212,7 @@ export const ExecutorIdentityLive: Layer.Layer<ExecutorIdentity, never, SecretCi
           domain: `${organizationId}.people.mend.invalid`,
         };
       });
-      const authorize = Effect.fn("ExecutorIdentity.authorize")(function* (
+      const authorize = Effect.fnUntraced(function* (
         organizationId: string,
         userId: string,
         authorizeURL: string,

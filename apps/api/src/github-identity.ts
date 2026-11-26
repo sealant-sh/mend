@@ -72,7 +72,7 @@ export const GithubIdentityLive: Layer.Layer<
     const tenancy = yield* TenancyConfig;
     const roles = yield* InstanceRolesRepo;
     const clients = yield* SealantClients;
-    const forCaller = Effect.fn("GithubIdentity.forCaller")(function* () {
+    const forCaller = Effect.fnUntraced(function* () {
       const caller = yield* CurrentUser;
       // A platform that can't be read counts as no connected login: the host rule still answers.
       const accounts = yield* clients

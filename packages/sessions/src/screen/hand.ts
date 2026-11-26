@@ -117,7 +117,7 @@ const decoderEnded = (stopped: WorkerStopped) =>
   ended(stopped.reason === "deadline" ? "decode-deadline" : "decoder-failed");
 
 /** The screen's one input connection: signs in, keeps the framebuffer current, and runs one queue. */
-export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
+export const openHand = Effect.fnUntraced(function* (options: HandOptions) {
   const { bytes, currentEpoch } = options;
   const workers = yield* ScreenWorkers;
   const decoder = yield* workers.decoder;

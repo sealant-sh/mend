@@ -314,7 +314,7 @@ export const AgentBridgeLive: Layer.Layer<AgentBridge, never, MendKeysConfig> = 
       return handle;
     });
 
-    const status = Effect.fn("AgentBridge.status")(function* (userId: string) {
+    const status = Effect.fnUntraced(function* (userId: string) {
       return yield* Effect.sync(
         () =>
           bridges.get(userId)?.status() ?? {
@@ -325,7 +325,7 @@ export const AgentBridgeLive: Layer.Layer<AgentBridge, never, MendKeysConfig> = 
       );
     });
 
-    const begin = Effect.fn("AgentBridge.begin")(function* (userId: string, description: string) {
+    const begin = Effect.fnUntraced(function* (userId: string, description: string) {
       return yield* Effect.sync(() => bridgeOf(userId).begin(description));
     });
 
