@@ -85,7 +85,7 @@ const stringAttribute = (attributes: Readonly<Record<string, unknown>>, key: str
 };
 
 /**
- * A request's span as a trace reads it: `POST /trpc/sessions.detail +3`, the first procedure a
+ * A request's span as a trace reads it, and a page timing's (below): `POST /trpc/sessions.detail +3`, the first procedure a
  * batch carries and how many more (all of them in `mend.trpc.procedures`), or
  * `GET /api/sessions/:sessionId/output`: never the page's origin, its port, an ID or a query.
  */
@@ -93,7 +93,16 @@ const requestNamed = (
   name: string,
   attributes: Record<string, unknown>,
 ): { readonly name: string; readonly attributes: Record<string, unknown> } => {
-  if (stringAttribute(attributes, "sentry.op") !== "http.client") return { name, attributes };
+  const op = stringAttribute(attributes, "sentry.op");
+  // The page's own timings (DNS, connect, request, response, load) describe the page they timed:
+  // by its path, not the origin and port it was served from.
+  if (op?.startsWith("browser.") === true) {
+    const page = pathOf(stringAttribute(attributes, "url.full") ?? "");
+    return page === undefined
+      ? { name, attributes }
+      : { name, attributes: { ...attributes, "sentry.description": templatePath(page) } };
+  }
+  if (op !== "http.client") return { name, attributes };
   const method = stringAttribute(attributes, "http.request.method") ?? name.split(" ")[0] ?? "GET";
   const path = pathOf(stringAttribute(attributes, "url.full") ?? name.split(" ")[1] ?? "");
   if (path === undefined) return { name, attributes };

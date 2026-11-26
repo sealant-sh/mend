@@ -184,6 +184,24 @@ describe("an action and what follows it", () => {
     expect(send?.name).toBe("POST /api/sessions/:sessionId/messages");
     expect(send?.attributes["sentry.description"]).toBe("POST /api/sessions/:sessionId/messages");
     expect(JSON.stringify([batch?.name, send?.name])).not.toContain("45877");
+    const timing = beforeSendSpan?.({
+      trace_id: "0af7651916cd43dd8448eb211c80319c",
+      span_id: "b7ad6b7169203332",
+      name: "Request",
+      start_timestamp: 1,
+      end_timestamp: 2,
+      status: "ok",
+      is_segment: false,
+      attributes: {
+        "sentry.op": { value: "browser.request", type: "string" },
+        "url.full": {
+          value: "http://localhost:45877/sessions/852bcfd6-bcde-45d8-970e-17161c13515c",
+          type: "string",
+        },
+      },
+    });
+    expect(timing?.name).toBe("Request");
+    expect(timing?.attributes["sentry.description"]).toBe("/sessions/:sessionId");
   });
 
   it("makes no span for a read the page repeats on a timer", () => {
