@@ -156,7 +156,7 @@ const ownerOf = (node: ts.Node): string => {
       ts.isVariableDeclaration(parent) &&
       ts.isIdentifier(parent.name) &&
       parent.initializer !== undefined &&
-      (parent.initializer.getText().includes("Effect.fn(") ||
+      (/Effect\.fn(?:Untraced)?\(/.test(parent.initializer.getText()) ||
         ts.isArrowFunction(parent.initializer))
     )
       return parent.name.text;
