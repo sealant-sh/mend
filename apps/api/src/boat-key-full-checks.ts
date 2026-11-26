@@ -48,7 +48,7 @@ export const BoatKeyFullChecksLive: Layer.Layer<BoatKeyFullChecks, never, Sealan
       >();
       const started = new Map<string, Date>();
 
-      const fiberFor = Effect.fn("BoatKeyFullChecks.fiberFor")(function* (account: string) {
+      const fiberFor = Effect.fnUntraced(function* (account: string) {
         const running = yield* FiberMap.get(fibers, account);
         if (Option.isSome(running)) return running.value;
         started.set(account, yield* DateTime.nowAsDate);

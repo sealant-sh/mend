@@ -313,10 +313,7 @@ export const CaptureGitVerifierLive: Layer.Layer<
         }),
       );
 
-    const verify = Effect.fn("CaptureGitVerifier.verify")(function* (
-      projectId: ProjectId,
-      manifest: CaptureManifest,
-    ) {
+    const verify = Effect.fnUntraced(function* (projectId: ProjectId, manifest: CaptureManifest) {
       const section = manifest.sections.git;
       // The section's object format (`object_format`, absent: sha1): the width of every id it
       // names, and the format of the repository its packs are read in (review 2026-09-28 (8)
@@ -461,7 +458,7 @@ export const CaptureGitVerifierLive: Layer.Layer<
       return { outcome: "verified", detail: null } satisfies GitVerification;
     });
 
-    const listTree = Effect.fn("CaptureGitVerifier.listTree")(function* (
+    const listTree = Effect.fnUntraced(function* (
       projectId: ProjectId,
       manifest: CaptureManifest,
       tree: string,

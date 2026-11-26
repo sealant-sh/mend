@@ -243,7 +243,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         { readonly report: ImageLayoutReport; readonly at: number }
       >();
 
-      const imageReport = Effect.fn("PersonLayoutPlatform.imageReport")(function* (input: {
+      const imageReport = Effect.fnUntraced(function* (input: {
         readonly ownerUserId: string;
         readonly image: WorkspaceImage;
         readonly harness: Harness;
@@ -459,13 +459,11 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
             return { skipped: written.skipped, placed: placedLoginsOf(receipts, chosen) };
           },
         ),
-        deleteCredentials: Effect.fn("PersonLayoutPlatform.deleteCredentials")(
-          function* (workspace, input) {
-            yield* boundedCall("release", input.home, () =>
-              workspace.credentials.release(input.home),
-            );
-          },
-        ),
+        deleteCredentials: Effect.fnUntraced(function* (workspace, input) {
+          yield* boundedCall("release", input.home, () =>
+            workspace.credentials.release(input.home),
+          );
+        }),
         loginOf: (accountId, provider) =>
           clients
             .connectedAccounts(accountId)
@@ -496,7 +494,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
               Effect.orElseSucceed(() => false),
             ),
         sealantUserOf: (accountId) => clients.sealantUserId(accountId),
-        listCredentials: Effect.fn("PersonLayoutPlatform.listCredentials")(function* (workspace) {
+        listCredentials: Effect.fnUntraced(function* (workspace) {
           const homes = yield* call(() => workspace.credentials.list());
           const receipts =
             homes.some((home) => (home.placements ?? []).length > 0) &&
@@ -505,34 +503,32 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         }),
         // One pass-through: the archives as Mend resolved them (a repository Mend cloned with
         // the person's own git access, then their synced snapshot), applied as their user.
-        applyDotfiles: Effect.fn("PersonLayoutPlatform.applyDotfiles")(
-          function* (workspace, input) {
-            const onBehalfOf = yield* clients.sealantUserId(input.onBehalfOf);
-            const applied = yield* call(() =>
-              workspace.dotfiles.apply({
-                onBehalfOf,
-                user: input.user.name,
-                home: input.home,
-                archives: input.archives.map((archive) => ({
-                  data: archive.data,
-                  manager: archive.manager,
-                  bootstrap: archive.bootstrap,
-                })),
-              }),
-            );
-            const bootstrap = applied.bootstrap;
-            if (bootstrap === null) return { bootstrap: null };
-            // One wait, however many callers ask how it ended (the start, then the session line).
-            let waited: Promise<{ readonly exitCode: number }> | undefined;
-            return {
-              bootstrap: {
-                ended: call(() => (waited ??= bootstrap.wait())).pipe(
-                  Effect.map((done) => ({ exitCode: done.exitCode })),
-                ),
-              },
-            };
-          },
-        ),
+        applyDotfiles: Effect.fnUntraced(function* (workspace, input) {
+          const onBehalfOf = yield* clients.sealantUserId(input.onBehalfOf);
+          const applied = yield* call(() =>
+            workspace.dotfiles.apply({
+              onBehalfOf,
+              user: input.user.name,
+              home: input.home,
+              archives: input.archives.map((archive) => ({
+                data: archive.data,
+                manager: archive.manager,
+                bootstrap: archive.bootstrap,
+              })),
+            }),
+          );
+          const bootstrap = applied.bootstrap;
+          if (bootstrap === null) return { bootstrap: null };
+          // One wait, however many callers ask how it ended (the start, then the session line).
+          let waited: Promise<{ readonly exitCode: number }> | undefined;
+          return {
+            bootstrap: {
+              ended: call(() => (waited ??= bootstrap.wait())).pipe(
+                Effect.map((done) => ({ exitCode: done.exitCode })),
+              ),
+            },
+          };
+        }),
       };
     }),
   );

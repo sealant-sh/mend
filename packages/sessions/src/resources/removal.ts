@@ -54,10 +54,7 @@ const make: Effect.Effect<
   const scopes = yield* ResourceScopes;
   const now = Clock.currentTimeMillis.pipe(Effect.map((ms) => new Date(ms)));
 
-  const worktree = Effect.fn("ResourceRemoval.worktree")(function* (
-    project: Project,
-    worktreeId: WorktreeId,
-  ) {
+  const worktree = Effect.fnUntraced(function* (project: Project, worktreeId: WorktreeId) {
     const definitions = (yield* repo.listForProject(project.id)).filter(
       (row) => row.worktreeId === null || row.worktreeId === worktreeId,
     );
@@ -282,7 +279,7 @@ const make: Effect.Effect<
     return lines;
   });
 
-  const archiveProject = Effect.fn("ResourceRemoval.project")(function* (project: Project) {
+  const archiveProject = Effect.fnUntraced(function* (project: Project) {
     let stored = yield* archives.byProject(project.id);
     if (stored?.complete === true) return ["resources · archived · volumes kept"];
     return yield* Effect.gen(function* () {

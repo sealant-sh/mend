@@ -126,7 +126,7 @@ export const CaptureSourcesLive: Layer.Layer<
       return { key, sha256, bytes: bytes.length };
     });
 
-    const forProject = Effect.fn("CaptureSources.forProject")(function* (
+    const forProject = Effect.fnUntraced(function* (
       projectId: ProjectId,
       worktreeId: WorktreeId,
       epoch: number,

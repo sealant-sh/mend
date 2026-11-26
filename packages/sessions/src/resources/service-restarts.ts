@@ -67,10 +67,7 @@ export const WorktreeServiceRestartsLive: Layer.Layer<
               ),
             );
 
-    const restart = Effect.fn("WorktreeServiceRestarts.restart")(function* (
-      worktreeId: WorktreeId,
-      by: string,
-    ) {
+    const restart = Effect.fnUntraced(function* (worktreeId: WorktreeId, by: string) {
       const restarted: Array<ResourceServiceRestart> = [];
       for (const session of yield* sessions.listForWorktree(worktreeId)) {
         for (const service of yield* services.listForSession(session.id)) {
@@ -97,7 +94,7 @@ export const WorktreeServiceRestartsLive: Layer.Layer<
       return restarted;
     });
 
-    const tell = Effect.fn("WorktreeServiceRestarts.tell")(function* (
+    const tell = Effect.fnUntraced(function* (
       worktreeId: WorktreeId,
       by: string,
       message: string,

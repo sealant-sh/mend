@@ -85,7 +85,7 @@ const make: Effect.Effect<
     return lock.withPermit(effect);
   };
 
-  const declaration = Effect.fn("ProjectPreviews.declaration")(function* (id: ProjectId) {
+  const declaration = Effect.fnUntraced(function* (id: ProjectId) {
     const checkout = yield* local
       .find(id)
       .pipe(Effect.mapError(() => refused("The project could not be read.")));
@@ -118,9 +118,7 @@ const make: Effect.Effect<
     return declared.preview?.fixed === true ? declared.preview : null;
   });
 
-  const requireDeclaration = Effect.fn("ProjectPreviews.requireDeclaration")(function* (
-    id: ProjectId,
-  ) {
+  const requireDeclaration = Effect.fnUntraced(function* (id: ProjectId) {
     if (setup._tag === "Off") return yield* refused("Previews are off on this Mend server.");
     const declared = yield* declaration(id);
     if (declared === null)
@@ -130,10 +128,7 @@ const make: Effect.Effect<
     return declared;
   });
 
-  const address = Effect.fn("ProjectPreviews.address")(function* (
-    id: ProjectId,
-    declared: PreviewDeclaration,
-  ) {
+  const address = Effect.fnUntraced(function* (id: ProjectId, declared: PreviewDeclaration) {
     const fixed = yield* previews
       .ensureProject(id, declared.service)
       .pipe(Effect.mapError(() => refused("The project is no longer available.")));
@@ -157,7 +152,7 @@ const make: Effect.Effect<
     return fixed;
   });
 
-  const read = Effect.fn("ProjectPreviews.read")(function* (id: ProjectId) {
+  const read = Effect.fnUntraced(function* (id: ProjectId) {
     const config = yield* declaration(id).pipe(Effect.result);
     const fixed = yield* previews.projectPreview(id);
     const preview = fixed?.preview ?? null;
@@ -210,10 +205,7 @@ const make: Effect.Effect<
     } satisfies ProjectPreviewView;
   });
 
-  const use = Effect.fn("ProjectPreviews.use")(function* (
-    id: ProjectId,
-    target: ProjectPreviewTarget,
-  ) {
+  const use = Effect.fnUntraced(function* (id: ProjectId, target: ProjectPreviewTarget) {
     return yield* serialize(
       id,
       Effect.gen(function* () {

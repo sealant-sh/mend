@@ -278,7 +278,7 @@ export const makeConversationImport = Effect.gen(function* () {
   const sessionOrNull = (id: SessionId) =>
     sessions.byId(id).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
 
-  const lookupAs = Effect.fn("ConversationImport.lookupAs")(function* (
+  const lookupAs = Effect.fnUntraced(function* (
     caller: SignIn,
     projectId: ProjectId,
     query: { readonly harness: ImportedHarness; readonly nativeId: string },
@@ -309,7 +309,7 @@ export const makeConversationImport = Effect.gen(function* () {
     });
 
   /** The un-launched session the caller owns in this project, refused in words otherwise. */
-  const existingTarget = Effect.fn("ConversationImport.existingTarget")(function* (
+  const existingTarget = Effect.fnUntraced(function* (
     project: Project,
     sessionId: SessionId,
     userId: string,
@@ -341,7 +341,7 @@ export const makeConversationImport = Effect.gen(function* () {
   });
 
   /** A new session of the caller's in the worktree, which must be this project's. */
-  const newTarget = Effect.fn("ConversationImport.newTarget")(function* (
+  const newTarget = Effect.fnUntraced(function* (
     project: Project,
     worktreeId: WorktreeId,
     userId: string,

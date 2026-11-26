@@ -240,7 +240,7 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
     const behind = new Map<ChangeId, { sessionId: SessionId; kinds: Set<PrepKind> }>();
     const retries = yield* FiberMap.make<ChangeId>();
 
-    const headOf = Effect.fn("ReviewPrep.headOf")(function* (worktreeId: WorktreeId) {
+    const headOf = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       if (!capture.enabled) return null;
       return (yield* capture.repo.headOf(worktreeId))?.head ?? null;
     });
@@ -248,9 +248,7 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
     // Capture mode (ADR-0002 "Review"): a summary the executor posted for the chain head is
     // `claimed` until a runner recomputes it; queue that pass at settle so the review page
     // reads `observed` by the time a human opens it.
-    const observeSummary = Effect.fn("ReviewPrep.observeSummary")(function* (
-      worktreeId: WorktreeId,
-    ) {
+    const observeSummary = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
       const head = yield* headOf(worktreeId);
       if (!capture.enabled || head === null) return;
       const summary = yield* capture.repo.summaryOf(head.id);
@@ -405,7 +403,7 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
         yield* FiberMap.run(retries, changeId, retry(changeId), { onlyIfMissing: true });
       });
 
-    const allRunning = Effect.fn("ReviewPrep.allRunning")(function* (
+    const allRunning = Effect.fnUntraced(function* (
       changeId: ChangeId,
       kinds: ReadonlySet<PrepKind>,
     ) {

@@ -245,7 +245,7 @@ const completeRead = (pr: typeof HostPullRequest.Type) =>
 const make: Effect.Effect<ProjectPullRequests["Service"], never, PullRequestWorkspaces> =
   Effect.gen(function* () {
     const workspaces = yield* PullRequestWorkspaces;
-    const list: ProjectPullRequests["Service"]["list"] = Effect.fn("ProjectPullRequests.list")(
+    const list: ProjectPullRequests["Service"]["list"] = Effect.fnUntraced(
       function* (userId, repository, search) {
         return yield* workspaces
           .within({ ownerUserId: userId, sessionId: null }, (workspace) =>
@@ -283,45 +283,45 @@ const make: Effect.Effect<ProjectPullRequests["Service"], never, PullRequestWork
           );
       },
     );
-    const detail: ProjectPullRequests["Service"]["detail"] = Effect.fn(
-      "ProjectPullRequests.detail",
-    )(function* (userId, repository, number) {
-      const [owner = "", name = ""] = repository.split("/");
-      return yield* workspaces
-        .within({ ownerUserId: userId, sessionId: null }, (workspace) =>
-          Effect.gen(function* () {
-            const result = yield* query(
-              workspace,
-              [
-                "-f",
-                `query=${DETAIL_QUERY}`,
-                "-f",
-                `owner=${owner}`,
-                "-f",
-                `name=${name}`,
-                "-F",
-                `number=${number}`,
-              ],
-              DetailResponse,
-            );
-            yield* completeRead(result.data.repository.pullRequest);
-            return {
-              viewer: result.data.viewer.login,
-              pullRequest: pullRequestOf(
-                result.data.repository.pullRequest,
-                yield* Clock.currentTimeMillis,
-              ),
-            };
-          }),
-        )
-        .pipe(
-          Effect.mapError((error) =>
-            error._tag === "PullRequestReadFailed"
-              ? error
-              : new PullRequestReadFailed({ message: error.message }),
-          ),
-        );
-    });
+    const detail: ProjectPullRequests["Service"]["detail"] = Effect.fnUntraced(
+      function* (userId, repository, number) {
+        const [owner = "", name = ""] = repository.split("/");
+        return yield* workspaces
+          .within({ ownerUserId: userId, sessionId: null }, (workspace) =>
+            Effect.gen(function* () {
+              const result = yield* query(
+                workspace,
+                [
+                  "-f",
+                  `query=${DETAIL_QUERY}`,
+                  "-f",
+                  `owner=${owner}`,
+                  "-f",
+                  `name=${name}`,
+                  "-F",
+                  `number=${number}`,
+                ],
+                DetailResponse,
+              );
+              yield* completeRead(result.data.repository.pullRequest);
+              return {
+                viewer: result.data.viewer.login,
+                pullRequest: pullRequestOf(
+                  result.data.repository.pullRequest,
+                  yield* Clock.currentTimeMillis,
+                ),
+              };
+            }),
+          )
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "PullRequestReadFailed"
+                ? error
+                : new PullRequestReadFailed({ message: error.message }),
+            ),
+          );
+      },
+    );
     const identity: ProjectPullRequests["Service"]["identity"] = (userId) =>
       workspaces
         .within({ ownerUserId: userId, sessionId: null }, (workspace) =>

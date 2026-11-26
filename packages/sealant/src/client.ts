@@ -1065,9 +1065,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       workspaceByKeyOf(sealant.workspaces, key),
     );
 
-    const fenceWorkspaceCreate = Effect.fn("SealantClient.fenceWorkspaceCreate")((key: string) =>
-      fenceWorkspaceCreateOf(sealant.workspaces, key),
-    );
+    const fenceWorkspaceCreate = (key: string) => fenceWorkspaceCreateOf(sealant.workspaces, key);
 
     const getWorkspace = Effect.fn("SealantClient.getWorkspace")((id: string) =>
       wrap(() => sealant.workspaces.get(id)),
@@ -1098,10 +1096,8 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
         ).pipe(Effect.mapError(personProcessRefusal)),
     );
 
-    const forwardUdp = Effect.fn("SealantClient.forwardUdp")(
-      (workspace: Workspace, port: number, host: "127.0.0.1" | "docker") =>
-        wrap(() => workspace.forward(port, { host, protocol: "udp" })),
-    );
+    const forwardUdp = (workspace: Workspace, port: number, host: "127.0.0.1" | "docker") =>
+      wrap(() => workspace.forward(port, { host, protocol: "udp" }));
 
     const openForward = Effect.fn("SealantClient.openForward")(
       (
@@ -1119,47 +1115,32 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
         wrap(() => stopWith(workspace, options)).pipe(Effect.map(workspaceStopAnswerOf)),
     );
 
-    const captureFlush = Effect.fn("SealantClient.captureFlush")(
-      (workspace: Workspace, kind: CaptureFlushKind) =>
-        wrap(() => workspace.capture.flush({ kind })),
-    );
+    const captureFlush = (workspace: Workspace, kind: CaptureFlushKind) =>
+      wrap(() => workspace.capture.flush({ kind }));
 
     const captureStatus = Effect.fn("SealantClient.captureStatus")((workspace: Workspace) =>
       captureStatusOf(workspace),
     );
 
-    const runtimeDeadline = Effect.fn("SealantClient.runtimeDeadline")((workspace: Workspace) =>
-      runtimeDeadlineOf(workspace),
-    );
+    const runtimeDeadline = (workspace: Workspace) => runtimeDeadlineOf(workspace);
 
-    const bootedImage = Effect.fn("SealantClient.bootedImage")((workspace: Workspace) =>
-      bootedImageOf(workspace),
-    );
+    const bootedImage = (workspace: Workspace) => bootedImageOf(workspace);
 
-    const runtimeResourceId = Effect.fn("SealantClient.runtimeResourceId")(
-      (workspace: Workspace, launchId?: string) => runtimeResourceIdOf(workspace, launchId),
-    );
+    const runtimeResourceId = (workspace: Workspace, launchId?: string) =>
+      runtimeResourceIdOf(workspace, launchId);
 
-    const launchedRuntime = Effect.fn("SealantClient.launchedRuntime")((workspace: Workspace) =>
-      launchedRuntimeOf(workspace),
-    );
+    const launchedRuntime = (workspace: Workspace) => launchedRuntimeOf(workspace);
 
-    const captureReplan = Effect.fn("SealantClient.captureReplan")(
-      (
-        workspace: Workspace,
-        options?: { readonly expectedOwnerMap: WorkspaceCaptureOwnerMap | null },
-      ) => wrap(() => workspace.capture.replan(options)),
-    );
+    const captureReplan = (
+      workspace: Workspace,
+      options?: { readonly expectedOwnerMap: WorkspaceCaptureOwnerMap | null },
+    ) => wrap(() => workspace.capture.replan(options));
 
-    const applyNetworkPolicy = Effect.fn("SealantClient.applyNetworkPolicy")(
-      (workspace: Workspace, options: ApplyNetworkPolicyOptions) =>
-        wrap(() => workspace.applyNetworkPolicy(options)),
-    );
+    const applyNetworkPolicy = (workspace: Workspace, options: ApplyNetworkPolicyOptions) =>
+      wrap(() => workspace.applyNetworkPolicy(options));
 
-    const revokeAccess = Effect.fn("SealantClient.revokeAccess")(
-      (workspace: Workspace, options: RevokeAccessOptions) =>
-        wrap(() => workspace.revokeAccess(options)),
-    );
+    const revokeAccess = (workspace: Workspace, options: RevokeAccessOptions) =>
+      wrap(() => workspace.revokeAccess(options));
 
     const expireWorkspace = Effect.fn("SealantClient.expireWorkspace")(
       (workspaceId: string, ttlSeconds: number) =>
@@ -1214,24 +1195,18 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       return yield* wrap(() => sealant.runs.get(wire.runId));
     });
 
-    const exec = Effect.fn("SealantClient.exec")((
-      workspace: Workspace,
-      argv: readonly string[],
-      options?: PersonExecOptions,
-    ) => {
+    const exec = (workspace: Workspace, argv: readonly string[], options?: PersonExecOptions) => {
       return withProcessUser(options, (sdkOptions) =>
         wrap(() => workspace.exec(argv, sdkOptions)),
       ).pipe(Effect.mapError(personProcessRefusal));
-    });
-    const bindWorkspace = Effect.fn("SealantClient.bindWorkspace")(
-      (workspace: Workspace, options: WorkspaceBindOptions) =>
-        wrap(async () => {
-          await workspace.ready();
-          return workspace.bind(options);
-        }),
-    );
+    };
+    const bindWorkspace = (workspace: Workspace, options: WorkspaceBindOptions) =>
+      wrap(async () => {
+        await workspace.ready();
+        return workspace.bind(options);
+      });
 
-    const diffCommits = Effect.fn("SealantClient.diffCommits")(function* (
+    const diffCommits = Effect.fnUntraced(function* (
       workspaceId: string,
       base: string,
       head: string,
@@ -1257,41 +1232,39 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       return { diff: unified.stdout, files };
     });
 
-    const inferenceRespond = Effect.fn("SealantClient.inferenceRespond")(
-      (options: InferenceRespondOptions | InferenceContinueOptions) =>
-        "sessionId" in options
-          ? inferenceRespondOp({
-              ownerUserId,
-              sessionId: options.sessionId,
-              toolResults: options.toolResults,
-            }).pipe(
-              Effect.provideContext(apiContext),
-              Effect.mapError(toPlatformError),
-              Effect.map(toInferenceResponse),
-            )
-          : inferenceRespondOp({
-              ownerUserId,
-              prompt: options.prompt,
-              system: options.system,
-              model: options.model,
-              maxTurns: options.maxTurns,
-              tools: options.tools?.map((tool) => ({
-                name: tool.name,
-                description: tool.description,
-                inputSchema: tool.inputSchema,
-              })),
-              responseFormat: options.responseFormat,
-              credentials: {
-                profileId: options.credentials.profile,
-                claude: accountReference(options.credentials.claude),
-                codex: accountReference(options.credentials.codex),
-              },
-            }).pipe(
-              Effect.provideContext(apiContext),
-              Effect.mapError(toPlatformError),
-              Effect.map(toInferenceResponse),
-            ),
-    );
+    const inferenceRespond = (options: InferenceRespondOptions | InferenceContinueOptions) =>
+      "sessionId" in options
+        ? inferenceRespondOp({
+            ownerUserId,
+            sessionId: options.sessionId,
+            toolResults: options.toolResults,
+          }).pipe(
+            Effect.provideContext(apiContext),
+            Effect.mapError(toPlatformError),
+            Effect.map(toInferenceResponse),
+          )
+        : inferenceRespondOp({
+            ownerUserId,
+            prompt: options.prompt,
+            system: options.system,
+            model: options.model,
+            maxTurns: options.maxTurns,
+            tools: options.tools?.map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema,
+            })),
+            responseFormat: options.responseFormat,
+            credentials: {
+              profileId: options.credentials.profile,
+              claude: accountReference(options.credentials.claude),
+              codex: accountReference(options.credentials.codex),
+            },
+          }).pipe(
+            Effect.provideContext(apiContext),
+            Effect.mapError(toPlatformError),
+            Effect.map(toInferenceResponse),
+          );
 
     const recordStream = (run: Run, options?: { readonly from?: bigint }) =>
       Stream.fromAsyncIterable(
@@ -1365,25 +1338,23 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       );
     });
 
-    const resolveWorkspacePackage = Effect.fn("SealantClient.resolveWorkspacePackage")(
-      (packageName: string, os: WorkspaceImageOs) =>
-        Effect.gen(function* () {
-          const client = yield* SealantApiClient;
-          const resolution = yield* client.packages.resolvePackage({
-            query: { query: packageName, targetOs: os },
-          });
-          const osSupport = resolution.osSupport[os];
-          return {
-            requested: resolution.requested,
-            normalized: resolution.normalized,
-            status: resolution.status,
-            canonicalId: resolution.canonicalId ?? null,
-            supported: osSupport.supported,
-            packageName: osSupport.packageName ?? null,
-            alternatives: resolution.alternatives.map((alternative) => alternative.projectName),
-          } satisfies WorkspacePackageResolution;
-        }).pipe(Effect.provideContext(apiContext), Effect.mapError(toPlatformError)),
-    );
+    const resolveWorkspacePackage = (packageName: string, os: WorkspaceImageOs) =>
+      Effect.gen(function* () {
+        const client = yield* SealantApiClient;
+        const resolution = yield* client.packages.resolvePackage({
+          query: { query: packageName, targetOs: os },
+        });
+        const osSupport = resolution.osSupport[os];
+        return {
+          requested: resolution.requested,
+          normalized: resolution.normalized,
+          status: resolution.status,
+          canonicalId: resolution.canonicalId ?? null,
+          supported: osSupport.supported,
+          packageName: osSupport.packageName ?? null,
+          alternatives: resolution.alternatives.map((alternative) => alternative.projectName),
+        } satisfies WorkspacePackageResolution;
+      }).pipe(Effect.provideContext(apiContext), Effect.mapError(toPlatformError));
 
     return {
       createWorkspace,
@@ -1683,7 +1654,7 @@ export const SealantClientsLive: Layer.Layer<
        * picks the account of the secret's own class instead, so a key never replaces a
        * subscription: there the connect names no account.
        */
-      const targetOf = Effect.fn("SealantClients.connectTarget")(function* (
+      const targetOf = Effect.fnUntraced(function* (
         ownerUserId: string,
         input: ConnectAccountInput,
         features: SealantFeatures,
@@ -1732,7 +1703,7 @@ export const SealantClientsLive: Layer.Layer<
         }
       });
       /** What a connect asks of sealant beyond its target, refused here when sealant cannot do it. */
-      const classOf = Effect.fn("SealantClients.connectClass")(function* (
+      const classOf = Effect.fnUntraced(function* (
         input: ConnectAccountInput,
         features: SealantFeatures,
       ) {
@@ -1791,7 +1762,7 @@ export const SealantClientsLive: Layer.Layer<
        * refuse to start. When exactly one usable login of that provider is left, it becomes the
        * default, since no other choice is possible.
        */
-      const chooseTheOneLeft = Effect.fn("SealantClients.chooseTheOneLeft")(function* (
+      const chooseTheOneLeft = Effect.fnUntraced(function* (
         ownerUserId: string,
         removed: ConnectedAccount,
         before: ReadonlyArray<ConnectedAccount>,
@@ -1811,7 +1782,7 @@ export const SealantClientsLive: Layer.Layer<
           connectedAccountId: left.id,
         }).pipe(Effect.provideContext(adminContext), Effect.mapError(toPlatformError));
       });
-      const disconnect = Effect.fn("SealantClients.disconnect")(function* (id: string) {
+      const disconnect = Effect.fnUntraced(function* (id: string) {
         const ownerUserId = yield* sealantUserIdFor(userId);
         const before = yield* listOf(ownerUserId);
         const archived = yield* archiveConnectedAccountOp(id, ownerUserId).pipe(
@@ -1838,7 +1809,7 @@ export const SealantClientsLive: Layer.Layer<
       };
     };
 
-    const workspaceSshInfo = Effect.fn("SealantClients.workspaceSshInfo")(function* () {
+    const workspaceSshInfo = Effect.fnUntraced(function* () {
       const state = yield* getSetupStateOp().pipe(
         Effect.provideContext(adminContext),
         Effect.mapError(toPlatformError),
@@ -1921,18 +1892,15 @@ export const SealantClientsLive: Layer.Layer<
 
     const boatAccounts = makeBoatAccountsApi(admin, toPlatformError);
 
-    const controlPlaneFeatures = Effect.fn("SealantClients.controlPlaneFeatures")(function* () {
+    const controlPlaneFeatures = Effect.fnUntraced(function* () {
       return yield* wrap(() => admin.features());
     });
 
-    const workspaceRuntimes = Effect.fn("SealantClients.workspaceRuntimes")(function* () {
+    const workspaceRuntimes = Effect.fnUntraced(function* () {
       return toWorkspaceRuntimes(yield* wrap(() => admin.workspaces.runtimes()));
     });
 
-    const bindPerson = Effect.fn("SealantClients.bindPerson")(function* (
-      userId: string,
-      person: PersonBindingInput,
-    ) {
+    const bindPerson = Effect.fnUntraced(function* (userId: string, person: PersonBindingInput) {
       const sealantUserId = yield* sealantUserIdFor(userId);
       return yield* wrap(() => admin.users.bindPerson(sealantUserId, person)).pipe(
         Effect.as("bound" as const),

@@ -166,7 +166,7 @@ const make: Effect.Effect<
         Effect.ensuring(Effect.sync(() => recordings.delete(id))),
       );
     }, Effect.uninterruptible),
-    onFinished: Effect.fn("ScreenRecorder.onFinished")(function* (id) {
+    onFinished: Effect.fnUntraced(function* (id) {
       return yield* Deferred.await((yield* lookup(id)).result);
     }),
   });

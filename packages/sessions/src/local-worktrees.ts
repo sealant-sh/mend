@@ -42,7 +42,7 @@ export const ProjectLocalWorktreesLive: Layer.Layer<
     const allocations = yield* ProjectLocalWorktreesRepo;
     const engine = yield* SessionEngine;
     const starts = new Map<ProjectId, Semaphore.Semaphore>();
-    const find = Effect.fn("ProjectLocalWorktrees.find")(function* (projectId: ProjectId) {
+    const find = Effect.fnUntraced(function* (projectId: ProjectId) {
       yield* projects.byId(projectId);
       const allocated = yield* allocations.find(projectId);
       return allocated === null

@@ -43,7 +43,7 @@ const parseSkillCandidate = (path: string) => {
 };
 
 /** Discover skill entry files through Mend's visibility-checked API, never arbitrary host files. */
-export const readRepositorySkills = Effect.fn("readRepositorySkills")(function* (
+export const readRepositorySkills = Effect.fnUntraced(function* (
   mend: Pick<MendClient["Service"], "projectFiles" | "worktreeContents">,
   deviceToken: string,
   location: {

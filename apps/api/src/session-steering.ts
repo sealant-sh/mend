@@ -126,7 +126,7 @@ const OWNER_RUNS = {
  * agent started with the caller's words, which is typing into it, and a command such as a
  * Service. Call it after `SessionSteering.session`, so a caller who cannot steer at all hears that.
  */
-export const requireOwnerRuns = Effect.fn("SessionSteering.requireOwnerRuns")(function* (
+export const requireOwnerRuns = Effect.fnUntraced(function* (
   session: Session,
   act: keyof typeof OWNER_RUNS,
 ) {
@@ -225,10 +225,7 @@ export const SessionSteeringLive: Layer.Layer<
     const projects = yield* ProjectsRepo;
     const sessions = yield* SessionsRepo;
 
-    const authorizeUser = Effect.fn("SessionSteering.authorizeUser")(function* (
-      session: Session,
-      actor: Actor,
-    ) {
+    const authorizeUser = Effect.fnUntraced(function* (session: Session, actor: Actor) {
       yield* access
         .projectAs(actor, session.projectId)
         .pipe(Effect.mapError(() => new NotFound({ id: session.id })));
@@ -245,10 +242,7 @@ export const SessionSteeringLive: Layer.Layer<
         return viewer?.organizationId === project.organizationId;
       });
 
-    const authorizeTerminal = Effect.fn("SessionSteering.authorizeTerminal")(function* (
-      session: Session,
-      actor: Actor,
-    ) {
+    const authorizeTerminal = Effect.fnUntraced(function* (session: Session, actor: Actor) {
       const steered = yield* authorizeUser(session, actor).pipe(Effect.result);
       if (steered._tag === "Success") return { session, steer: true };
       if (session.ownerUserId !== actor.userId) return yield* steered.failure;
@@ -257,14 +251,14 @@ export const SessionSteeringLive: Layer.Layer<
       return { session, steer: false };
     });
 
-    const session = Effect.fn("SessionSteering.session")(function* (id: SessionId) {
+    const session = Effect.fnUntraced(function* (id: SessionId) {
       const caller = yield* CurrentUser;
       const row = yield* access.session(id);
       if (!canSteerSession(row, caller.user.id)) return yield* refuse(row);
       return row;
     });
 
-    const owned = Effect.fn("SessionSteering.owned")(function* (id: SessionId) {
+    const owned = Effect.fnUntraced(function* (id: SessionId) {
       const caller = yield* CurrentUser;
       const row = yield* access.session(id);
       if (row.ownerUserId === null || row.ownerUserId !== caller.user.id) {
@@ -282,10 +276,7 @@ export const SessionSteeringLive: Layer.Layer<
      * 4 of mend#558). A Stop only ends and saves their own work. NotFound otherwise, as a hidden
      * session answers.
      */
-    const ownSessionOfMember = Effect.fn("SessionSteering.ownSessionOfMember")(function* (
-      id: SessionId,
-      caller: SignIn,
-    ) {
+    const ownSessionOfMember = Effect.fnUntraced(function* (id: SessionId, caller: SignIn) {
       const row = yield* sessions.byId(id).pipe(Effect.mapError(() => new NotFound({ id })));
       if (row.ownerUserId !== caller.userId) return yield* new NotFound({ id });
       if (!(yield* actsIn(caller, row).pipe(Effect.mapError(() => new NotFound({ id }))))) {
@@ -294,7 +285,7 @@ export const SessionSteeringLive: Layer.Layer<
       return row;
     });
 
-    const stop = Effect.fn("SessionSteering.stop")(function* (id: SessionId) {
+    const stop = Effect.fnUntraced(function* (id: SessionId) {
       const caller = yield* CurrentUser;
       const visible = yield* access.session(id).pipe(Effect.result);
       if (visible._tag === "Failure") {
@@ -314,25 +305,25 @@ export const SessionSteeringLive: Layer.Layer<
         Effect.catchTag("NotFound", () => Effect.fail(new NotFound({ id: childId }))),
       );
 
-    const process = Effect.fn("SessionSteering.process")(function* (id: SessionProcessId) {
+    const process = Effect.fnUntraced(function* (id: SessionProcessId) {
       const row = yield* processes.byId(id);
       if (row === null) return yield* new NotFound({ id });
       return { process: row, session: yield* through(id, row.sessionId) };
     });
 
-    const service = Effect.fn("SessionSteering.service")(function* (id: ServiceId) {
+    const service = Effect.fnUntraced(function* (id: ServiceId) {
       const row = yield* services.byId(id);
       if (row === null) return yield* new NotFound({ id });
       return { service: row, session: yield* through(id, row.sessionId) };
     });
 
-    const turn = Effect.fn("SessionSteering.turn")(function* (id: AgentTurnId) {
+    const turn = Effect.fnUntraced(function* (id: AgentTurnId) {
       const row = yield* conversation.byTurnId(id);
       if (row === null) return yield* new NotFound({ id });
       return { turn: row, session: yield* through(id, row.sessionId) };
     });
 
-    const agentRequest = Effect.fn("SessionSteering.agentRequest")(function* (id: AgentRequestId) {
+    const agentRequest = Effect.fnUntraced(function* (id: AgentRequestId) {
       const row = yield* conversation.byRequestId(id);
       if (row === null) return yield* new NotFound({ id });
       return { request: row, session: yield* through(id, row.sessionId) };

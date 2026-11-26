@@ -425,7 +425,7 @@ const packDelta = (quarantine: Quarantine, snapshot: string, mergeBase: string) 
     }));
   });
 
-export const admitHandoff = Effect.fn("admitHandoff")(function* (input: AdmitHandoffInput) {
+export const admitHandoff = Effect.fnUntraced(function* (input: AdmitHandoffInput) {
   const { header, snapshot } = yield* readHeader(input.bundle);
   const admit = Effect.gen(function* () {
     const quarantine = yield* openQuarantine(input);

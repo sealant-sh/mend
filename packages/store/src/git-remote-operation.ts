@@ -120,7 +120,7 @@ const parseUrls = (
  * Git's ordered effective url.* settings, including evaluated conditional/worktree config. Git
  * itself applies the rules; unrelated local settings and location overrides never enter scratch.
  */
-export const resolveGitRemote = Effect.fn("GitRemote.resolve")(function* (
+export const resolveGitRemote = Effect.fnUntraced(function* (
   operation: GitRemoteOperation,
 ): Effect.fn.Return<ReadonlyArray<string>, GitRemoteResolutionError, Scope.Scope> {
   if (
@@ -288,7 +288,7 @@ const copyTemplate = async (source: string, destination: string): Promise<void> 
   }
 };
 
-const resolveGitClone = Effect.fn("GitRemote.resolveClone")(function* (
+const resolveGitClone = Effect.fnUntraced(function* (
   operation: Extract<GitRemoteOperation, { readonly direction: "clone" }>,
 ): Effect.fn.Return<GitRemoteResolution, GitRemoteResolutionError, Scope.Scope> {
   const env = { ...process.env, ...operation.env };

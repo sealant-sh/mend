@@ -257,7 +257,7 @@ export const RemovalLive: Layer.Layer<
     // What reading a change's standing asks for: landings, the worktree's files, origin.
     const standingServices = yield* Effect.context<StandingServices>();
 
-    const personOf = Effect.fn("Removal.personOf")(function* (userId: string | null) {
+    const personOf = Effect.fnUntraced(function* (userId: string | null) {
       if (userId === null) return null;
       const facts = yield* users.byId(userId);
       return { userId, name: facts?.name ?? userId } satisfies Person;
@@ -267,7 +267,7 @@ export const RemovalLive: Layer.Layer<
      * Every session working in the worktree (`RemovalFencesRepo.sessionsIn`, the inverse of the
      * places the fence refuses new work in), with how each works there.
      */
-    const membersOf = Effect.fn("Removal.membersOf")(function* (worktree: Worktree) {
+    const membersOf = Effect.fnUntraced(function* (worktree: Worktree) {
       const held = new Set(
         (yield* repositories.listForWorktree(worktree.id)).map((row) => row.sessionId),
       );
@@ -289,7 +289,7 @@ export const RemovalLive: Layer.Layer<
     });
 
     /** Each settled member's unexited processes and open Service forwards. */
-    const processesAndForwards = Effect.fn("Removal.processesAndForwards")(function* (
+    const processesAndForwards = Effect.fnUntraced(function* (
       members: ReadonlyArray<Member>,
       openServices: ReadonlySet<string>,
     ) {
@@ -320,7 +320,7 @@ export const RemovalLive: Layer.Layer<
      * worktrees. Admitted starts are read first: one that ends before its session is read has
      * written what the session read then shows.
      */
-    const worktreeHolds = Effect.fn("Removal.worktreeHolds")(function* (
+    const worktreeHolds = Effect.fnUntraced(function* (
       worktree: Worktree,
       openServices: ReadonlySet<string>,
     ) {
@@ -362,7 +362,7 @@ export const RemovalLive: Layer.Layer<
      * stands, and the repositories nested inside it (docs/adr/0011), kept after the session that
      * added them is gone. A change that cannot be read stands in the way with the rest.
      */
-    const worktreeFacts = Effect.fn("Removal.worktreeFacts")(function* (
+    const worktreeFacts = Effect.fnUntraced(function* (
       project: Project,
       worktree: Worktree,
       callerUserId: string,
@@ -415,7 +415,7 @@ export const RemovalLive: Layer.Layer<
      * next removal to finish at once. A removal that meets another under way reports that with
      * every other blocker, read without a mark.
      */
-    const removeWorktree = Effect.fn("Removal.worktree")(function* (
+    const removeWorktree = Effect.fnUntraced(function* (
       target: Worktree,
       caller: RemovalCaller,
       force: boolean,
@@ -541,10 +541,7 @@ export const RemovalLive: Layer.Layer<
      * mark, and either gives the mark back and refuses, or keeps the project in one transaction,
      * which leaves it listed or removed and never half.
      */
-    const removeProject = Effect.fn("Removal.project")(function* (
-      target: Project,
-      caller: RemovalCaller,
-    ) {
+    const removeProject = Effect.fnUntraced(function* (target: Project, caller: RemovalCaller) {
       const row = { kind: "project", id: target.id } as const;
       const notFound = new NotFound({ id: target.id });
       // Soft removal remains reversible. Resource containers and data are archived at purge,
@@ -600,7 +597,7 @@ export const RemovalLive: Layer.Layer<
       );
     });
 
-    const disk = Effect.fn("Removal.disk")(function* (viewer: Viewer) {
+    const disk = Effect.fnUntraced(function* (viewer: Viewer) {
       // An owner answers for the organization's disk: a departed member's kept project too.
       const kept = (yield* projects.removedForOrganization(viewer.organizationId)).filter(
         ({ project }) => viewer.role === "owner" || canSeeProject(project, viewer),
@@ -631,7 +628,7 @@ export const RemovalLive: Layer.Layer<
       });
     });
 
-    const removed = Effect.fn("Removal.removed")(function* (viewer: Viewer) {
+    const removed = Effect.fnUntraced(function* (viewer: Viewer) {
       return (yield* projects.removedForOrganization(viewer.organizationId))
         .filter(({ project }) => canSeeProject(project, viewer))
         .map(
@@ -658,10 +655,7 @@ export const RemovalLive: Layer.Layer<
         "Only the private project's creator or an organization owner for a shared project can Restore or purge it.",
     });
 
-    const authorizedRetained = Effect.fn("Removal.authorizedRetained")(function* (
-      id: ProjectId,
-      viewer: Viewer,
-    ) {
+    const authorizedRetained = Effect.fnUntraced(function* (id: ProjectId, viewer: Viewer) {
       const kept = yield* projects.removedById(id);
       if (kept === null || !canSeeProject(kept.project, viewer)) return yield* new NotFound({ id });
       if (!canRemoveProject(kept.project, viewer)) return yield* retentionForbidden;
@@ -724,10 +718,7 @@ export const RemovalLive: Layer.Layer<
      * The organization's record that `id` was purged, when the viewer is someone who could have
      * purged it: an owner for a shared project, its creator (who purged it) for a private one.
      */
-    const purgedEarlier = Effect.fn("Removal.purgedEarlier")(function* (
-      id: ProjectId,
-      viewer: Viewer,
-    ) {
+    const purgedEarlier = Effect.fnUntraced(function* (id: ProjectId, viewer: Viewer) {
       const event = yield* audit.latest({
         organizationId: viewer.organizationId,
         action: "project.purged",
@@ -744,11 +735,7 @@ export const RemovalLive: Layer.Layer<
       return canRemoveProject(tenancy, viewer) ? event : null;
     });
 
-    const purge = Effect.fn("Removal.purge")(function* (
-      id: ProjectId,
-      viewer: Viewer,
-      confirm: string,
-    ) {
+    const purge = Effect.fnUntraced(function* (id: ProjectId, viewer: Viewer, confirm: string) {
       // The row goes in the transaction that records `project.purged`, so an id has one or the other.
       const earlier = yield* purgedEarlier(id, viewer);
       if (earlier !== null) {

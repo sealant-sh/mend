@@ -309,7 +309,7 @@ export const resourceRuntimeLayer = (
           { concurrency: "unbounded" },
         ).pipe(Effect.map(([names, secretNames]) => new Set([...names, ...secretNames])));
 
-      const bindingsOf = Effect.fn("ResourceRuntime.bindingsOf")(function* (
+      const bindingsOf = Effect.fnUntraced(function* (
         projectId: ProjectId,
         worktreeId: WorktreeId,
       ) {
@@ -325,10 +325,7 @@ export const resourceRuntimeLayer = (
         });
       });
 
-      const bindsAny = Effect.fn("ResourceRuntime.bindsAny")(function* (
-        projectId: ProjectId,
-        worktreeId: WorktreeId,
-      ) {
+      const bindsAny = Effect.fnUntraced(function* (projectId: ProjectId, worktreeId: WorktreeId) {
         return resourceBindings(yield* repo.bindingRows(projectId, worktreeId)).length > 0;
       });
 
@@ -365,10 +362,7 @@ export const resourceRuntimeLayer = (
         return { failed, atNextStart } satisfies RelinkOutcome;
       });
 
-      const envOf = Effect.fn("ResourceRuntime.envOf")(function* (
-        projectId: ProjectId,
-        worktreeId: WorktreeId,
-      ) {
+      const envOf = Effect.fnUntraced(function* (projectId: ProjectId, worktreeId: WorktreeId) {
         const [bound, names] = yield* Effect.all(
           [bindingsOf(projectId, worktreeId), projectEnvNames(projectId)],
           { concurrency: "unbounded" },
@@ -381,7 +375,7 @@ export const resourceRuntimeLayer = (
       });
 
       /** Makes the worktree's own database on its server once, and records how it began. */
-      const makeOwnDatabase = Effect.fn("ResourceRuntime.ensureOwnDatabase")(function* (
+      const makeOwnDatabase = Effect.fnUntraced(function* (
         client: ResourceScope,
         key: string,
         definitionId: ResourceDefinitionId,
@@ -450,7 +444,7 @@ export const resourceRuntimeLayer = (
           ),
         );
 
-      const prepare = Effect.fn("ResourceRuntime.prepare")(function* (input: PrepareInput) {
+      const prepare = Effect.fnUntraced(function* (input: PrepareInput) {
         const [bound, names] = yield* Effect.all(
           [bindingsOf(input.projectId, input.worktreeId), projectEnvNames(input.projectId)],
           { concurrency: "unbounded" },
@@ -577,7 +571,7 @@ export const resourceRuntimeLayer = (
           ),
         );
 
-      const start = Effect.fn("ResourceRuntime.start")(function* (
+      const start = Effect.fnUntraced(function* (
         definition: StoredResourceInstance,
         _worktreeId: WorktreeId | null,
       ) {
@@ -597,7 +591,7 @@ export const resourceRuntimeLayer = (
         );
       });
 
-      const stop = Effect.fn("ResourceRuntime.stop")(function* (
+      const stop = Effect.fnUntraced(function* (
         definition: StoredResourceInstance,
         worktreeId: WorktreeId | null,
         by: string,
@@ -608,7 +602,7 @@ export const resourceRuntimeLayer = (
         );
       });
 
-      const observe = Effect.fn("ResourceRuntime.observe")(function* (projectId: ProjectId) {
+      const observe = Effect.fnUntraced(function* (projectId: ProjectId) {
         return yield* scopeOf(projectId).pipe(
           Effect.flatMap((client) => client.list()),
           Effect.map(

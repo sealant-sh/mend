@@ -4793,7 +4793,7 @@ const refuseRange = (reason: "unknown-checkpoint" | "reversed") =>
  * The asker's last review of the change: where they last sent comments on it. Null when they never
  * have, or when that checkpoint is no longer in the worktree's chain.
  */
-const lastReviewOf = Effect.fn("SessionChanges.lastReviewOf")(function* (
+const lastReviewOf = Effect.fnUntraced(function* (
   changeId: ChangeId,
   worktreeId: WorktreeId,
   userId: string,
@@ -4805,10 +4805,7 @@ const lastReviewOf = Effect.fn("SessionChanges.lastReviewOf")(function* (
   return { checkpoint, at: sent.sentAt } satisfies LastReviewed;
 });
 
-const loadReviewContext = Effect.fn("SessionChanges.loadReviewContext")(function* (
-  changeId: ChangeId,
-  sliceId: ReviewSliceId,
-) {
+const loadReviewContext = Effect.fnUntraced(function* (changeId: ChangeId, sliceId: ReviewSliceId) {
   const changes = yield* WorktreeChangesRepo;
   const worktrees = yield* WorktreesRepo;
   const projects = yield* ProjectsRepo;

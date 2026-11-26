@@ -627,10 +627,7 @@ export const ProtocolHostLive: Layer.Layer<
      */
     const handingOver = new Map<SessionId, SessionProcessId>();
 
-    const lookupTurn = Effect.fn("ProtocolHost.lookupTurn")(function* (
-      sessionId: SessionId,
-      providerTurnId: string,
-    ) {
+    const lookupTurn = Effect.fnUntraced(function* (sessionId: SessionId, providerTurnId: string) {
       for (let attempt = 0; attempt < 100; attempt += 1) {
         const turn = yield* conversations.byProviderTurnId(sessionId, providerTurnId);
         if (turn !== null) return turn;
@@ -1329,7 +1326,7 @@ export const ProtocolHostLive: Layer.Layer<
         );
       });
 
-    const projectEvent = Effect.fn("ProtocolHost.projectEvent")(function* (
+    const projectEvent = Effect.fnUntraced(function* (
       entry: HostedProcess,
       event: AgentEvent,
       position: ProviderEventPosition,
@@ -1502,7 +1499,7 @@ export const ProtocolHostLive: Layer.Layer<
         for (const from of queuedOn) yield* conversations.requeueQueuedTurns(from, to);
       });
 
-    const attachInternal = Effect.fn("ProtocolHost.attachInternal")(function* (
+    const attachInternal = Effect.fnUntraced(function* (
       input: AttachProtocolProcessInput,
       rehydrateInput: (AgentRehydrateOptions & { readonly highWater: bigint }) | null,
     ) {
@@ -1993,7 +1990,7 @@ export const ProtocolHostLive: Layer.Layer<
         return true;
       });
 
-    const carrySteer = Effect.fn("ProtocolHost.carrySteer")(function* (
+    const carrySteer = Effect.fnUntraced(function* (
       steer: AgentTurnSteer,
       reason: TurnSteerQueueReason,
     ) {
@@ -2035,7 +2032,7 @@ export const ProtocolHostLive: Layer.Layer<
      * as it is hosted (`attachInternal`); one hosted between the read above and this admission
      * has taken them already, so this send gives its turn over and dispatches it.
      */
-    const waitForStart = Effect.fn("ProtocolHost.waitForStart")(function* (
+    const waitForStart = Effect.fnUntraced(function* (
       input: SendMessageInput,
       reason: MessageTurnReason,
     ) {
@@ -2056,7 +2053,7 @@ export const ProtocolHostLive: Layer.Layer<
       );
     });
 
-    const sendTurnMessage = Effect.fn("ProtocolHost.sendTurnMessage")(function* (
+    const sendTurnMessage = Effect.fnUntraced(function* (
       input: SendMessageInput,
       reason: MessageTurnReason,
       starting = false,
@@ -2180,7 +2177,7 @@ export const ProtocolHostLive: Layer.Layer<
       return resolved;
     });
 
-    const detach = Effect.fn("ProtocolHost.detach")(function* (processId: SessionProcessId) {
+    const detach = Effect.fnUntraced(function* (processId: SessionProcessId) {
       const entry = hosted.get(processId);
       if (entry === undefined) return;
       hosted.delete(processId);
@@ -2189,9 +2186,7 @@ export const ProtocolHostLive: Layer.Layer<
       yield* entry.flushItems;
     });
 
-    const quiescence = Effect.fn("ProtocolHost.quiescence")(function* (
-      processId: SessionProcessId,
-    ) {
+    const quiescence = Effect.fnUntraced(function* (processId: SessionProcessId) {
       const entry = hosted.get(processId);
       if (entry === undefined) return null;
       return yield* entry.adapter.quiescence().pipe(Effect.orElseSucceed(() => null));
@@ -2205,7 +2200,7 @@ export const ProtocolHostLive: Layer.Layer<
       return entry === undefined ? Effect.void : Effect.asVoid(waitQuiescent(entry, waiting));
     };
 
-    const endWork = Effect.fn("ProtocolHost.endWork")(function* (
+    const endWork = Effect.fnUntraced(function* (
       processId: SessionProcessId,
       work: Pick<AgentBackgroundWork, "kind" | "id">,
     ) {
@@ -2216,7 +2211,7 @@ export const ProtocolHostLive: Layer.Layer<
         .pipe(Effect.mapError(() => new ProtocolHostNotLiveError({ processId })));
     });
 
-    const detachForHandOver = Effect.fn("ProtocolHost.detachForHandOver")(function* (
+    const detachForHandOver = Effect.fnUntraced(function* (
       processId: SessionProcessId,
       queueOnConversation = true,
     ) {

@@ -4292,7 +4292,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * carries its directory's current files (ADR-0002 "Consequences", amended). A no-op once
        * the chain has a head, and under the co-located store.
        */
-      const ensureCaptureZero = Effect.fn("SessionEngine.ensureCaptureZero")(function* (
+      const ensureCaptureZero = Effect.fnUntraced(function* (
         projectId: ProjectId,
         worktreeId: WorktreeId,
       ) {
@@ -4715,7 +4715,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Whether every answer asked of the executor in `workspaceId` was published within `wait`:
        * looked at every `EVIDENCE_SETTLE_LOOK` until it is, or the wait runs out.
        */
-      const awaitEvidenceSettled = Effect.fn("SessionEngine.awaitEvidenceSettled")(function* (
+      const awaitEvidenceSettled = Effect.fnUntraced(function* (
         workspaceId: string,
         wait: Duration.Duration,
       ) {
@@ -4770,9 +4770,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * The executor's evidence as a decision reads it: what is kept, the version it read, and
        * whether it is settled. Null when nothing is kept.
        */
-      const evidenceToken = Effect.fn("SessionEngine.evidenceToken")(function* (
-        workspaceId: string,
-      ) {
+      const evidenceToken = Effect.fnUntraced(function* (workspaceId: string) {
         const evidence = yield* sessions.executorEvidenceOf(workspaceId);
         return {
           workspaceId,
@@ -4781,17 +4779,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
       });
       /** Whether the evidence a decision read is still the current one, and settled. */
-      const evidenceStillCurrent = Effect.fn("SessionEngine.evidenceStillCurrent")(
-        function* (token: {
-          readonly workspaceId: string;
-          readonly version: number;
-          readonly settled: boolean;
-        }) {
-          if (!token.settled || !(yield* evidenceSettled(token.workspaceId))) return false;
-          const now = yield* sessions.executorEvidenceOf(token.workspaceId);
-          return (now?.version ?? 0) === token.version;
-        },
-      );
+      const evidenceStillCurrent = Effect.fnUntraced(function* (token: {
+        readonly workspaceId: string;
+        readonly version: number;
+        readonly settled: boolean;
+      }) {
+        if (!token.settled || !(yield* evidenceSettled(token.workspaceId))) return false;
+        const now = yield* sessions.executorEvidenceOf(token.workspaceId);
+        return (now?.version ?? 0) === token.version;
+      });
 
       /**
        * `workspace.capture.flush()` (SDK 0.31.0, sealantd ADR-0015) on one executor. `suspend`: a
@@ -4979,7 +4975,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           persistReading(session, workspaceId, reading, kind, fence),
         );
       });
-      const persistReading = Effect.fn("SessionEngine.persistReading")(function* (
+      const persistReading = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: string,
         reading: CaptureReading,
@@ -5153,7 +5149,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         fencedObservation(workspace.id, (fence) =>
           observeCaptureStatusFenced(session, workspace, fence),
         );
-      const observeCaptureStatusFenced = Effect.fn("SessionEngine.observeCaptureStatus")(function* (
+      const observeCaptureStatusFenced = Effect.fnUntraced(function* (
         session: Session,
         workspace: Workspace,
         fence: EvidenceFence,
@@ -5289,7 +5285,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * a small snap that failed, a path it could not read or a small refusal does, however empty
        * the queue (`captureCaughtUp`).
        */
-      const flushLeaseHolder = Effect.fn("SessionEngine.flushLeaseHolder")(function* (
+      const flushLeaseHolder = Effect.fnUntraced(function* (
         worktreeId: WorktreeId,
         why: string,
         /**
@@ -5405,9 +5401,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         terminating.has(workspaceId) || (ending && drains.has(workspaceId));
 
       /** The executor holding `worktreeId`'s lease, when a Stop is under way on it; else null. */
-      const executorStopping = Effect.fn("SessionEngine.executorStopping")(function* (
-        worktreeId: WorktreeId,
-      ) {
+      const executorStopping = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
         if (capture === null) return null;
         const lease = yield* capture.repo.leaseOf(worktreeId);
         if (lease === null || lease.executorId === null || lease.executorId.startsWith("mend:")) {
@@ -5428,7 +5422,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * executor as before. False when it has not settled in time. Asked outside the checkpoint
        * writer, which the Stop's own checkpoint needs before the executor can end.
        */
-      const awaitStopSettled = Effect.fn("SessionEngine.awaitStopSettled")(function* (
+      const awaitStopSettled = Effect.fnUntraced(function* (
         worktreeId: WorktreeId,
         wait: Duration.Duration,
       ) {
@@ -5451,7 +5445,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * flush may still be shipping): `refused` past it, from no reading, and the checkpoint
        * observes the registered head.
        */
-      const drainWordFor = Effect.fn("SessionEngine.drainWordFor")(function* (
+      const drainWordFor = Effect.fnUntraced(function* (
         workspaceId: SealantWorkspaceId,
         askedAs: number,
       ): Effect.fn.Return<{
@@ -5593,7 +5587,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * executor admits nothing more (no exec, no session, no replan), so nothing is started,
        * joined or resumed in it — the next run is a fresh executor.
        */
-      const workspaceFinalFlushed = Effect.fn("SessionEngine.workspaceFinalFlushed")(function* (
+      const workspaceFinalFlushed = Effect.fnUntraced(function* (
         worktreeId: WorktreeId,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -5655,7 +5649,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * session's own row repeats answers the executor's row already holds, without the position
        * that orders them, so it is not consulted.
        */
-      const executorAnswersOf = Effect.fn("SessionEngine.executorAnswersOf")(function* (
+      const executorAnswersOf = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -5729,7 +5723,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * answer was lost. `unknown`: no answer in `STANDBY_IDENTITY_READS` asks, or one that names
        * neither. Each answer is recorded as any status answer is.
        */
-      const readClaimedStandby = Effect.fn("SessionEngine.readClaimedStandby")(function* (
+      const readClaimedStandby = Effect.fnUntraced(function* (
         session: Session,
         workspace: Workspace,
         placeholder: StandbyPlaceholder,
@@ -5762,7 +5756,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * final flush, bound to that executor and its epoch, with no capture registered after it
        * under that epoch. Null otherwise.
        */
-      const executorSealRecordOf = Effect.fn("SessionEngine.executorSealRecordOf")(function* (
+      const executorSealRecordOf = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -5806,7 +5800,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * stopping, or any joined session of the same executor — the answer is the executor's
        * (`executorAnswersOf`, review 2026-09-28 (5) #3). Null otherwise.
        */
-      const executorSealOf = Effect.fn("SessionEngine.executorSealOf")(function* (
+      const executorSealOf = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -5913,7 +5907,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * a later replacement's end was taken for an earlier executor's, whose unsaved work its
        * released lease fenced off).
        */
-      const leaseExecutorWorkspace = Effect.fn("SessionEngine.leaseExecutorWorkspace")(function* (
+      const leaseExecutorWorkspace = Effect.fnUntraced(function* (
         holder: Session,
         lease: { readonly launchId?: string | null },
       ) {
@@ -5933,7 +5927,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * launch of the holder's under way in this process other than the one asking, or a
        * platform that does not answer.
        */
-      const resolveLeaseExecutor = Effect.fn("SessionEngine.resolveLeaseExecutor")(function* (
+      const resolveLeaseExecutor = Effect.fnUntraced(function* (
         holder: Session,
         lease: { readonly launchId?: string | null; readonly live: boolean },
         asking: SessionId | null,
@@ -5991,7 +5985,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * launch the platform fenced (nothing was made), or its own workspace confirmed gone.
        * `workspaceId` is that executor's when known. Only for a lease that is not live.
        */
-      const judgeLapsedLease = Effect.fn("SessionEngine.judgeLapsedLease")(function* (
+      const judgeLapsedLease = Effect.fnUntraced(function* (
         holder: Session | null,
         lease: { readonly launchId?: string | null; readonly live: boolean },
         asking: SessionId | null,
@@ -6036,7 +6030,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * in `plan.get` for that lease (alpha 2026-10-03, 8fe91d79: four replacements in a row, each
        * past the platform's readiness budget, `launch-retained`).
        */
-      const leaseHolderWorkspace = Effect.fn("SessionEngine.leaseHolderWorkspace")(function* (
+      const leaseHolderWorkspace = Effect.fnUntraced(function* (
         session: Session,
         ownLaunch: string | null,
       ) {
@@ -6213,7 +6207,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * executor it joins. Nothing is stopped and nothing is assumed to have ended. Past
        * `leaseWait` the last reading is answered, and the caller refuses it as before.
        */
-      const awaitWorktreeHolder = Effect.fn("SessionEngine.awaitWorktreeHolder")(
+      const awaitWorktreeHolder = Effect.fnUntraced(
         function* (
           session: Session,
           ownLaunch: string | null,
@@ -6298,9 +6292,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * and holds whatever it has not shipped: nothing is stopped (`answering`). One the platform
        * did not answer for is left alone too (`unknown`). `live-lease`: attach instead.
        */
-      const confirmDeadExecutor = Effect.fn("SessionEngine.confirmDeadExecutor")(function* (
-        session: Session,
-      ) {
+      const confirmDeadExecutor = Effect.fnUntraced(function* (session: Session) {
         if (capture === null) return "live-lease" as const;
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
         if (lease !== null && lease.live) return "live-lease" as const;
@@ -6685,9 +6677,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Whether an end may put its work off to the drain's final flush: capture mode, and
        * nothing but what is ending holds the workspace (so the sweep that follows drains it).
        */
-      const endsAtFinal = Effect.fn("SessionEngine.endsAtFinal")(function* (
-        workspaceId: SealantWorkspaceId | null,
-      ) {
+      const endsAtFinal = Effect.fnUntraced(function* (workspaceId: SealantWorkspaceId | null) {
         if (capture === null || workspaceId === null) return false;
         if (discards.has(workspaceId)) return false;
         if (queueClosed.has(workspaceId)) return false;
@@ -6715,9 +6705,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       >();
       /** Everything whose change between rounds is worth a look at once: that, and the head. */
-      const keptDrainState = Effect.fn("SessionEngine.keptDrainState")(function* (
-        session: Session,
-      ) {
+      const keptDrainState = Effect.fnUntraced(function* (session: Session) {
         const chain = capture === null ? null : yield* capture.repo.headOf(session.worktreeId);
         return JSON.stringify([
           keptDrainReading(session),
@@ -6729,9 +6717,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Record a round that kept its workspace: the first wait when the round read something new
        * (another reason, fewer pending), else the last wait doubled, up to the cap.
        */
-      const noteKeptDrain = Effect.fn("SessionEngine.noteKeptDrain")(function* (
-        sessionId: SessionId,
-      ) {
+      const noteKeptDrain = Effect.fnUntraced(function* (sessionId: SessionId) {
         const session = yield* sessions
           .byId(sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
@@ -6757,9 +6743,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Whether the reaper leaves a kept drain alone this tick: its wait has not run out and
        * nothing about it changed — the head, the reason, what is pending, the workspace still up.
        */
-      const keptDrainWaits = Effect.fn("SessionEngine.keptDrainWaits")(function* (
-        session: Session,
-      ) {
+      const keptDrainWaits = Effect.fnUntraced(function* (session: Session) {
         const kept = keptDrains.get(session.id);
         if (kept === undefined || session.captureNotSavedAt === null) return false;
         if (session.sealantWorkspaceId === null || clock.currentTimeMillisUnsafe() >= kept.nextAtMs)
@@ -6777,7 +6761,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the row names that executor under that very launch, never for an earlier executor of the
        * session whose end is observed after a later one took the worktree.
        */
-      const releaseLeaseOfWorkspace = Effect.fn("SessionEngine.releaseLeaseOfWorkspace")(function* (
+      const releaseLeaseOfWorkspace = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -6813,9 +6797,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** A removal asked while the workspace was up happens once it has gone. */
-      const removeIfRequested = Effect.fn("SessionEngine.removeIfRequested")(function* (
-        sessionId: SessionId,
-      ) {
+      const removeIfRequested = Effect.fnUntraced(function* (sessionId: SessionId) {
         const session = yield* sessions
           .byId(sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
@@ -6830,9 +6812,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Watch the platform until it reports the workspace terminated (a terminal status, or no
        * such workspace), bounded. True once observed.
        */
-      const awaitTerminated = Effect.fn("SessionEngine.awaitTerminated")(function* (
-        workspaceId: SealantWorkspaceId,
-      ) {
+      const awaitTerminated = Effect.fnUntraced(function* (workspaceId: SealantWorkspaceId) {
         const deadline =
           clock.currentTimeMillisUnsafe() + Duration.toMillis(drainPolicy.terminationWait);
         while (true) {
@@ -6849,7 +6829,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * (`executorSealOf`) — sealant keeps an executor's disk unless it observed `complete: true`
        * itself or is told this. Nothing is attested that the store did not seal.
        */
-      const stopOptionsFor = Effect.fn("SessionEngine.stopOptionsFor")(function* (
+      const stopOptionsFor = Effect.fnUntraced(function* (
         sessionId: SessionId,
         workspace: Workspace,
         options?: { readonly discardUnsaved: boolean },
@@ -6938,7 +6918,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * on the session beside its workspace once the platform reports it — what a stop's
        * completion attestation names (`stopOptionsFor`). Nothing when the SDK cannot say.
        */
-      const noteExecutorResource = Effect.fn("SessionEngine.noteExecutorResource")(function* (
+      const noteExecutorResource = Effect.fnUntraced(function* (
         sessionId: SessionId,
         workspace: Workspace,
       ) {
@@ -7075,9 +7055,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * A `stopping` session whose drain has ended settles now (`SessionsRepo.settle`): its
        * workspace's termination was observed, or something reopened it (the fold reads `idle`).
        */
-      const settleIfStopping = Effect.fn("SessionEngine.settleIfStopping")(function* (
-        sessionId: SessionId,
-      ) {
+      const settleIfStopping = Effect.fnUntraced(function* (sessionId: SessionId) {
         const session = yield* sessions
           .byId(sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
@@ -7093,7 +7071,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * The drain is over (saved and terminated, gone, in use, or discarded): settle what it held.
        * A discard stays on the session: `stopped · unsaved work discarded by … at …`.
        */
-      const endDrain = Effect.fn("SessionEngine.endDrain")(function* (
+      const endDrain = Effect.fnUntraced(function* (
         sessionId: SessionId,
         discarded?: { readonly at: Date; readonly by: string },
       ) {
@@ -7108,7 +7086,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * launch keeps its own words beside it (`restatedSummary`). A harness's own end stands, and
        * a session that is not settled is left to its fold.
        */
-      const restateSettled = Effect.fn("SessionEngine.restateSettled")(function* (
+      const restateSettled = Effect.fnUntraced(function* (
         sessionId: SessionId,
         latest: { readonly outcome: SessionOutcome; readonly words: string },
       ) {
@@ -7146,7 +7124,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Stop (e2e run 9: one of ten deadline-preserved sessions read `stopped`, summary null).
        * Only over a settled `stopped` session with nothing else to say.
        */
-      const sayEndedOutsideMend = Effect.fn("SessionEngine.sayEndedOutsideMend")(function* (
+      const sayEndedOutsideMend = Effect.fnUntraced(function* (
         sessionId: SessionId,
         words: string,
       ) {
@@ -7165,7 +7143,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** The platform ended it already: nothing to save or stop; tidy up behind it. */
-      const tidyAfterGone = Effect.fn("SessionEngine.tidyAfterGone")(function* (
+      const tidyAfterGone = Effect.fnUntraced(function* (
         sessionId: SessionId,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -7182,9 +7160,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Whether anything Mend placed in the workspace still runs there: a live process or an open
        * Service forward. A drain that is not forced yields to it.
        */
-      const workspaceInUse = Effect.fn("SessionEngine.workspaceInUse")(function* (
-        workspaceId: SealantWorkspaceId,
-      ) {
+      const workspaceInUse = Effect.fnUntraced(function* (workspaceId: SealantWorkspaceId) {
         return (
           (yield* processes.listLiveForWorkspace(workspaceId)).filter(
             (process) => holdsWorkspace(process.kind) && !isWakeShell(process),
@@ -7260,56 +7236,58 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the end is observed. Null: not such a standby, or one Mend could not read, and the drain
        * goes on as before.
        */
-      const discardStandbyNeverClaimed = Effect.fn("SessionEngine.discardStandbyNeverClaimed")(
-        function* (session: Session, workspace: Workspace, reason: CaptureDrainReason) {
-          const workspaceId = SealantWorkspaceId.make(workspace.id);
-          const placeholder = yield* standbyPlaceholderOf(session, workspaceId);
-          if (placeholder === null) return null;
-          if (yield* processes.existsForWorkspace(workspaceId)) return null;
-          if ((yield* workspaceInUse(workspaceId)) > 0) return null;
-          const identity = yield* readClaimedStandby(session, workspace, placeholder, null);
-          if (identity !== "standby") return null;
-          const annotations = { sessionId: session.id, workspaceId, reason };
-          yield* Effect.logInfo(
-            "session engine: capture drain · the claimed standby never took this session's worktree and nothing ran in it · discarding it",
-          ).pipe(Effect.annotateLogs({ ...annotations, epoch: placeholder.epoch }));
-          // What a Stop put off has no capture of this executor's to read: none was registered.
-          yield* runDeferred(workspaceId, "refused", null, true);
-          const terminated = yield* terminateWorkspace(session.id, workspace, {
-            discardUnsaved: true,
-          });
-          if (!terminated.ended) {
-            yield* recordKept(
-              session.id,
-              workspaceId,
-              terminated.retained?.reason ??
-                "the claimed standby's discard is asked · its end is not observed yet",
-              terminated.retained !== null,
-            );
-            return "kept" as const;
-          }
-          yield* Effect.logInfo(
-            "session engine: capture drain · the claimed standby ended · nothing of the session was on it",
-          ).pipe(Effect.annotateLogs(annotations));
-          yield* endDrain(session.id);
-          // A launch that gave up on it before this rule settled with words of a standby that
-          // may hold work: they now say what it was.
-          const settled = yield* sessions
-            .byId(session.id)
-            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-          if (
-            settled !== null &&
-            settled.settledAt !== null &&
-            settled.status === "failed" &&
-            settled.summary !== null &&
-            CLAIMED_STANDBY_WORDS.some((words) => settled.summary?.includes(words) === true)
-          ) {
-            yield* sessions.restate(session.id, "failed", CLAIMED_STANDBY_ENDED);
-          }
-          yield* removeIfRequested(session.id);
-          return "terminated" as const;
-        },
-      );
+      const discardStandbyNeverClaimed = Effect.fnUntraced(function* (
+        session: Session,
+        workspace: Workspace,
+        reason: CaptureDrainReason,
+      ) {
+        const workspaceId = SealantWorkspaceId.make(workspace.id);
+        const placeholder = yield* standbyPlaceholderOf(session, workspaceId);
+        if (placeholder === null) return null;
+        if (yield* processes.existsForWorkspace(workspaceId)) return null;
+        if ((yield* workspaceInUse(workspaceId)) > 0) return null;
+        const identity = yield* readClaimedStandby(session, workspace, placeholder, null);
+        if (identity !== "standby") return null;
+        const annotations = { sessionId: session.id, workspaceId, reason };
+        yield* Effect.logInfo(
+          "session engine: capture drain · the claimed standby never took this session's worktree and nothing ran in it · discarding it",
+        ).pipe(Effect.annotateLogs({ ...annotations, epoch: placeholder.epoch }));
+        // What a Stop put off has no capture of this executor's to read: none was registered.
+        yield* runDeferred(workspaceId, "refused", null, true);
+        const terminated = yield* terminateWorkspace(session.id, workspace, {
+          discardUnsaved: true,
+        });
+        if (!terminated.ended) {
+          yield* recordKept(
+            session.id,
+            workspaceId,
+            terminated.retained?.reason ??
+              "the claimed standby's discard is asked · its end is not observed yet",
+            terminated.retained !== null,
+          );
+          return "kept" as const;
+        }
+        yield* Effect.logInfo(
+          "session engine: capture drain · the claimed standby ended · nothing of the session was on it",
+        ).pipe(Effect.annotateLogs(annotations));
+        yield* endDrain(session.id);
+        // A launch that gave up on it before this rule settled with words of a standby that
+        // may hold work: they now say what it was.
+        const settled = yield* sessions
+          .byId(session.id)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (
+          settled !== null &&
+          settled.settledAt !== null &&
+          settled.status === "failed" &&
+          settled.summary !== null &&
+          CLAIMED_STANDBY_WORDS.some((words) => settled.summary?.includes(words) === true)
+        ) {
+          yield* sessions.restate(session.id, "failed", CLAIMED_STANDBY_ENDED);
+        }
+        yield* removeIfRequested(session.id);
+        return "terminated" as const;
+      });
 
       const runDrain = Effect.fn("SessionEngine.runDrain")(function* (
         sessionId: SessionId,
@@ -7790,7 +7768,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }),
         );
 
-      const windDownPerson = Effect.fn("SessionEngine.windDownPerson")(function* (
+      const windDownPerson = Effect.fnUntraced(function* (
         userId: string,
         organizationId: OrganizationId,
       ) {
@@ -8010,7 +7988,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return { stopped, refused, retired: [...retired] };
       });
 
-      const discardUnsavedAndStop = Effect.fn("SessionEngine.discardUnsavedAndStop")(function* (
+      const discardUnsavedAndStop = Effect.fnUntraced(function* (
         sessionId: SessionId,
         discardedBy?: string | null,
       ) {
@@ -8177,9 +8155,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * outside capture mode, when the session does not hold its worktree, or when nobody
        * answered. The idle stop reads it before stopping (a `capture` hold).
        */
-      const readCaptures = Effect.fn("SessionEngine.readCaptures")(function* (
-        sessionId: SessionId,
-      ) {
+      const readCaptures = Effect.fnUntraced(function* (sessionId: SessionId) {
         if (capture === null) return null;
         const session = yield* sessions.byId(sessionId);
         if (session.sealantWorkspaceId === null) return null;
@@ -8242,9 +8218,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return "pending" as const;
       });
 
-      const captureHolds = Effect.fn("SessionEngine.captureHolds")(function* (
-        worktreeId: WorktreeId,
-      ) {
+      const captureHolds = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
         if (capture === null) return [];
         const members = yield* sessions.listForWorktree(worktreeId);
         const holds: Array<CaptureHold> = [];
@@ -8523,15 +8497,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
 
       /** Every create whose answer is not on its row and that no launch here is asking. */
-      const resolveExecutorCreates = Effect.fn("SessionEngine.resolveExecutorCreates")(
-        function* () {
-          if (capture === null) return;
-          for (const pending of yield* sessions.listExecutorCreates()) {
-            if (creatingExecutors.has(pending.sessionId)) continue;
-            yield* resolveExecutorCreate(pending.sessionId, pending.key);
-          }
-        },
-      );
+      const resolveExecutorCreates = Effect.fnUntraced(function* () {
+        if (capture === null) return;
+        for (const pending of yield* sessions.listExecutorCreates()) {
+          if (creatingExecutors.has(pending.sessionId)) continue;
+          yield* resolveExecutorCreate(pending.sessionId, pending.key);
+        }
+      });
 
       /** Sessions the reaper is already replacing; one replacement at a time per session. */
       const replacing = new Set<SessionId>();
@@ -9224,7 +9196,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * store (the launch row, then the lease and its holder's launch). Nothing reaches the
        * platform.
        */
-      const mintPickup = Effect.fn("SessionEngine.mintPickup")(function* (
+      const mintPickup = Effect.fnUntraced(function* (
         purpose: PickupBinding["purpose"],
         session: Session,
         personId: string | null,
@@ -9319,7 +9291,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * What an identity ticket answers, made now: the person's Mend token of the launch, and
        * their git author when they have one. Nothing is minted for a ticket nobody redeems.
        */
-      const identityFilesAt = Effect.fn("SessionEngine.identityFilesAt")(function* (
+      const identityFilesAt = Effect.fnUntraced(function* (
         binding: PickupBinding,
         files: ReadonlyArray<PickupFile>,
       ) {
@@ -9559,9 +9531,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * reaper tick that read the session before the launch, has no say over it. Answers the run
        * it settled, or null.
        */
-      const settleRunsOfSettled = Effect.fn("SessionEngine.settleRunsOfSettled")(function* (
-        sessionId: SessionId,
-      ) {
+      const settleRunsOfSettled = Effect.fnUntraced(function* (sessionId: SessionId) {
         const session = yield* sessions
           .byId(sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
@@ -9611,7 +9581,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         });
 
-      const settleSession = Effect.fn("SessionEngine.settleSession")(function* (
+      const settleSession = Effect.fnUntraced(function* (
         sessionId: SessionId,
         outcome: SessionOutcome,
         summary: string | null,
@@ -9630,9 +9600,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * mend#1209): a resume reserves the display and opens its process with it, so a release
        * decided before it and landing after would free a display the resumed session runs on.
        */
-      const releaseDisplayIfEnded = Effect.fn("SessionEngine.releaseDisplayIfEnded")(function* (
-        sessionId: SessionId,
-      ) {
+      const releaseDisplayIfEnded = Effect.fnUntraced(function* (sessionId: SessionId) {
         const screen = yield* screens.ofSession(sessionId);
         if (screen === null) return;
         const session = yield* sessions
@@ -9659,7 +9627,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * and summary and said once. Startup runs it and the lease reaper every tick. A run whose
        * session is not settled is live work, or the fold's to settle: left alone.
        */
-      const reconcileStaleRuns = Effect.fn("SessionEngine.reconcileStaleRuns")(function* () {
+      const reconcileStaleRuns = Effect.fnUntraced(function* () {
         for (const run of yield* sessionRuns.listActive()) {
           const session = yield* sessions
             .byId(run.sessionId)
@@ -9691,9 +9659,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * run attached from outside is supervised without a row, as `agentIsLive` and the fold
        * read it, and so is a run another launch recorded a moment ago).
        */
-      const createSessionRun = Effect.fn("SessionEngine.createSessionRun")(function* (
-        input: NewSessionRun,
-      ) {
+      const createSessionRun = Effect.fnUntraced(function* (input: NewSessionRun) {
         return yield* sessionRuns.create(input).pipe(
           Effect.catchTag("SessionRunActiveError", (error) =>
             Effect.gen(function* () {
@@ -9901,9 +9867,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const withServiceLifecycle = Semaphore.withPermit(serviceLifecycle);
       const withWorktreeGit = makeWorktreeGitGate();
 
-      const previewOfServiceAllocatingFirst = Effect.fn(
-        "SessionEngine.previewOfServiceAllocatingFirst",
-      )(function* (serviceId: ServiceId) {
+      const previewOfServiceAllocatingFirst = Effect.fnUntraced(function* (serviceId: ServiceId) {
         const service = yield* services.byId(serviceId);
         const session =
           service === null
@@ -9943,10 +9907,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ? Effect.map(previews.nextControlSeq(), (seq) => ({ ...cause, seq }))
           : Effect.succeed(cause);
 
-      const clearStop = Effect.fn("SessionEngine.clearStop")(function* (
-        serviceId: ServiceId,
-        cause: AcceptedStart,
-      ) {
+      const clearStop = Effect.fnUntraced(function* (serviceId: ServiceId, cause: AcceptedStart) {
         if (cause.kind !== "person") return;
         const ids = yield* previews.previewsOfService(serviceId);
         yield* Effect.forEach(
@@ -9956,9 +9917,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
-      const readServiceView = Effect.fn("SessionEngine.readServiceView")(function* (
-        serviceId: ServiceId,
-      ) {
+      const readServiceView = Effect.fnUntraced(function* (serviceId: ServiceId) {
         const service = yield* services.byId(serviceId);
         if (service === null) return yield* Effect.die(`Service ${serviceId} disappeared`);
         const attempts = yield* processes.listForService(service.id);
@@ -10218,9 +10177,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
 
-      const refreshChangeHead = Effect.fn("SessionEngine.refreshChangeHead")(function* (
-        session: Session,
-      ) {
+      const refreshChangeHead = Effect.fnUntraced(function* (session: Session) {
         const change = yield* changes.byWorktree(session.worktreeId);
         if (change === null) return;
         const latest = yield* checkpoints.latestForWorktree(session.worktreeId);
@@ -10349,7 +10306,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
       /** The agent process whose record is this run, if the launch recorded one. */
-      const agentProcessForRun = Effect.fn("SessionEngine.agentProcessForRun")(function* (
+      const agentProcessForRun = Effect.fnUntraced(function* (
         sessionId: SessionId,
         sealantRunId: SealantRunId,
       ) {
@@ -10453,7 +10410,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * provider checks the actual named origin; a refusal skips network work while the Store
        * keeps local base resolution available. A legacy unidentified owner has no operator role.
        */
-      const provisionRemoteEnv = Effect.fn("SessionEngine.provisionRemoteEnv")(function* (
+      const provisionRemoteEnv = Effect.fnUntraced(function* (
         project: Project,
         ownerUserId: string | null,
       ) {
@@ -10488,7 +10445,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * base state, no session attached), change row. A worktree with zero
        * sessions is a legal durable place.
        */
-      const ensureWorktreeIn = Effect.fn("SessionEngine.ensureWorktreeIn")(function* (
+      const ensureWorktreeIn = Effect.fnUntraced(function* (
         project: Project,
         input: { readonly name: string | null; readonly start: WorktreeStart },
         ownerUserId: string | null,
@@ -10601,10 +10558,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (existing === undefined) creationWriters.set(row.id, writer);
         return writer.withPermit(finishWorktreeCreation(project, row));
       };
-      const finishWorktreeCreation = Effect.fn("SessionEngine.completeWorktreeCreation")(function* (
-        project: Project,
-        row: Worktree,
-      ) {
+      const finishWorktreeCreation = Effect.fnUntraced(function* (project: Project, row: Worktree) {
         if ((yield* checkpoints.countForWorktree(row.id)) === 0) {
           if (sessionRepo.attachWorktree !== undefined) {
             yield* sessionRepo.attachWorktree(project.id, row.id);
@@ -10627,7 +10581,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** A new conversation inside a worktree: session row + its start checkpoint. */
-      const provisionSessionIn = Effect.fn("SessionEngine.provisionSessionIn")(function* (
+      const provisionSessionIn = Effect.fnUntraced(function* (
         project: Project,
         worktree: Worktree,
         input: {
@@ -10666,7 +10620,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the pool mounts the project's worktrees root and the launch binds this one. Any failure
        * here falls back to the cold path; a claim must never cost a session.
        */
-      const provisionInWorktree = Effect.fn("SessionEngine.provisionInWorktree")(function* (
+      const provisionInWorktree = Effect.fnUntraced(function* (
         project: Project,
         worktree: Worktree,
         input: {
@@ -10697,7 +10651,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* provisionSessionIn(project, worktree, input);
       });
 
-      const provisionAs = Effect.fn("SessionEngine.provisionAs")(function* (input: ProvisionInput) {
+      const provisionAs = Effect.fnUntraced(function* (input: ProvisionInput) {
         const project = yield* projects.byId(input.projectId);
         // The operator's layout is for a worktree this start makes (docs/adr/0016): an existing
         // one keeps its own, and asking for another is refused before anything is made.
@@ -11096,7 +11050,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Runs when the process ends; must never break that path (callers go through
        * `tryHarvest`).
        */
-      const harvestHarnessState = Effect.fn("SessionEngine.harvestHarnessState")(function* (
+      const harvestHarnessState = Effect.fnUntraced(function* (
         agentProcess: SessionProcess,
         /** The one provider session to save, and no other: read from the home, not by recency. */
         conversation: string | null = null,
@@ -11403,7 +11357,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * worktree's own layout, which a `person` worktree never leaves. With the flag off and
        * nothing recorded, the shared home with no read at all. Null: its person is not known.
        */
-      const conversationPlaceFor = Effect.fn("SessionEngine.conversationPlaceFor")(function* (
+      const conversationPlaceFor = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId | null,
         harness: string,
@@ -11440,18 +11394,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * The provider session ids other sessions of the same person in the worktree are known to
        * hold: never this session's conversation, though they share the person's saved directory.
        */
-      const conversationsOfOtherSessions = Effect.fn("SessionEngine.conversationsOfOtherSessions")(
-        function* (session: Session) {
-          const others = (yield* sessions.listForWorktree(session.worktreeId)).filter(
-            (member) => member.id !== session.id && member.ownerUserId === session.ownerUserId,
-          );
-          if (others.length === 0) return new Set<string>();
-          const rows = yield* processes.listForSessions(others.map((member) => member.id));
-          return new Set(
-            rows.flatMap((row) => (row.providerSessionId === null ? [] : [row.providerSessionId])),
-          );
-        },
-      );
+      const conversationsOfOtherSessions = Effect.fnUntraced(function* (session: Session) {
+        const others = (yield* sessions.listForWorktree(session.worktreeId)).filter(
+          (member) => member.id !== session.id && member.ownerUserId === session.ownerUserId,
+        );
+        if (others.length === 0) return new Set<string>();
+        const rows = yield* processes.listForSessions(others.map((member) => member.id));
+        return new Set(
+          rows.flatMap((row) => (row.providerSessionId === null ? [] : [row.providerSessionId])),
+        );
+      });
 
       /**
        * Every read of the head capture `self` makes shares one pass (`withCaptureReadPass`): the
@@ -11469,7 +11421,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * (`opencodeConversationOf`): the other opencode processes that open the same database are
        * what could have started one of them instead. Null when it cannot be told.
        */
-      const opencodeConversationFor = Effect.fn("SessionEngine.opencodeConversationFor")(function* (
+      const opencodeConversationFor = Effect.fnUntraced(function* (
         session: Session,
         agent: SessionProcess,
         listed: ReadonlyArray<OpencodeConversation>,
@@ -11615,7 +11567,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (existing === undefined) harvestLocks.set(agent.id, lock);
         return lock.withPermit(harvestFromCaptureAlone(session, agent, onlyConversation));
       };
-      const capturedHomeOf = Effect.fn("SessionEngine.capturedHomeOf")(function* (
+      const capturedHomeOf = Effect.fnUntraced(function* (
         session: Session,
         agent: SessionProcess,
         captureId: string | null = null,
@@ -11692,7 +11644,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       type CapturedHome = NonNullable<Effect.Success<ReturnType<typeof capturedHomeOf>>>;
-      const capturedTranscriptIn = Effect.fn("SessionEngine.capturedTranscriptIn")(function* (
+      const capturedTranscriptIn = Effect.fnUntraced(function* (
         session: Session,
         knownId: string | null,
         home: CapturedHome,
@@ -11733,7 +11685,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** `onlyConversation`: the one provider session to save, and no other. */
-      const harvestFromCaptureAlone = Effect.fn("SessionEngine.harvestFromCapture")(function* (
+      const harvestFromCaptureAlone = Effect.fnUntraced(function* (
         session: Session,
         agent: SessionProcess,
         onlyConversation: string | null,
@@ -11919,9 +11871,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return { stateDir, manifest: stateManifest } satisfies LocatedHarnessState;
       });
 
-      const harvestFromHarnessHome = Effect.fn("SessionEngine.harvestFromHarnessHome")(function* (
-        session: Session,
-      ) {
+      const harvestFromHarnessHome = Effect.fnUntraced(function* (session: Session) {
         const harness = session.harness;
         if (HARNESS_STATE[harness] === undefined) return null;
         const project = yield* projects.byId(session.projectId);
@@ -12001,9 +11951,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return { stateDir, manifest } satisfies LocatedHarnessState;
       });
 
-      const closeWorkspaceServiceForwards = Effect.fn(
-        "SessionEngine.closeWorkspaceServiceForwards",
-      )(function* (workspaceId: SealantWorkspaceId) {
+      const closeWorkspaceServiceForwards = Effect.fnUntraced(function* (
+        workspaceId: SealantWorkspaceId,
+      ) {
         yield* withServiceLifecycle(
           Effect.gen(function* () {
             const openForwards = (yield* serviceForwards.listOpen()).filter(
@@ -12025,7 +11975,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * workspace-id guard in SessionsRepo prevents a late result from contaminating a fresh
        * resume. A platform failure is a durable fact, not a reason to end the lease.
        */
-      const renewWorkspaceLease = Effect.fn("SessionEngine.renewWorkspaceLease")(function* (
+      const renewWorkspaceLease = Effect.fnUntraced(function* (
         sessionId: SessionId,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -12228,7 +12178,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
       /** Await one executor's final ship before any capture-backed harvest reads the chain head. */
-      const flushBeforeHarvest = Effect.fn("SessionEngine.flushBeforeHarvest")(function* (
+      const flushBeforeHarvest = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId | null,
         why: string,
@@ -12443,9 +12393,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * The session's harness state as one "latest" view over per-process captures: the newest
        * agent process with a committed manifest, else the pre-2026-08-21 session-root capture.
        */
-      const harnessStateFor = Effect.fn("SessionEngine.harnessStateFor")(function* (
-        session: Session,
-      ) {
+      const harnessStateFor = Effect.fnUntraced(function* (session: Session) {
         const project = yield* projects.byId(session.projectId);
         const agents = agentProcessesOf(yield* processes.listForSession(session.id));
         const processDirs = agents
@@ -12477,7 +12425,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * run reported, else what the last agent process's exit says, else `completed` (nothing
        * ever ran — the caller names the outcome it wants in that case).
        */
-      const settledOutcomeOf = Effect.fn("SessionEngine.settledOutcomeOf")(function* (
+      const settledOutcomeOf = Effect.fnUntraced(function* (
         sessionId: SessionId,
         rows: ReadonlyArray<SessionProcess>,
       ): Effect.fn.Return<{ readonly outcome: SessionOutcome; readonly summary: string | null }> {
@@ -12576,7 +12524,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * to it. Unless the owner stopped this launch, a drain that ends such an executor settles
        * `failed` with the launch's own words, never an older run's `completed`.
        */
-      const launchNeverRan = Effect.fn("SessionEngine.launchNeverRan")(function* (
+      const launchNeverRan = Effect.fnUntraced(function* (
         session: Session,
         rows: ReadonlyArray<SessionProcess>,
       ) {
@@ -12593,7 +12541,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Mend · saved at …`; anything else → `failed` and `executor lost · last saved … · changes
        * after that were not saved`, with Mend's last reading of its queue when that came after.
        */
-      const executorEndOfSession = Effect.fn("SessionEngine.executorEndOfSession")(function* (
+      const executorEndOfSession = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId | null,
       ) {
@@ -12696,7 +12644,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * under the executor's permit, the evidence it was read from is still the current version
        * and settled — else it is read again, under the permit, and that is what is committed.
        */
-      const confirmedExecutorEnd = Effect.fn("SessionEngine.confirmedExecutorEnd")(function* (
+      const confirmedExecutorEnd = Effect.fnUntraced(function* (
         session: Session,
         end: {
           readonly outcome: SessionOutcome;
@@ -12840,7 +12788,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * it on its own disk, to save what it holds. One that answers an exec while retained is that
        * restart: not the boot the harness ran in. False when sealant cannot be asked or does not say.
        */
-      const executorRetained = Effect.fn("SessionEngine.executorRetained")(function* (
+      const executorRetained = Effect.fnUntraced(function* (
         session: Session,
         workspace: Workspace,
       ) {
@@ -13229,26 +13177,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * A Service attempt's end and its forward's close, in one lifecycle transition: a start
        * finishing meanwhile reads the attempt ended and binds nothing for it.
        */
-      const endServiceAttempt = Effect.fn("SessionEngine.endServiceAttempt")(
-        (process: SessionProcess, how: "exited" | "stopped", exitCode: number | null) =>
-          withServiceLifecycle(
-            Effect.gen(function* () {
-              yield* processes.markExited(process.id, how, exitCode);
-              if (process.serviceId === null) return;
-              const service = yield* services.byId(process.serviceId);
-              if (service === null || service.currentAttemptId !== process.id) return;
-              yield* serviceHost.stop(service.id);
-              if (service.currentForwardId !== null) {
-                yield* serviceForwards.markClosed(service.currentForwardId);
-                yield* services.compareAndSetCurrentForward(
-                  service.id,
-                  service.currentForwardId,
-                  null,
-                );
-              }
-            }),
-          ),
-      );
+      const endServiceAttempt = (
+        process: SessionProcess,
+        how: "exited" | "stopped",
+        exitCode: number | null,
+      ) =>
+        withServiceLifecycle(
+          Effect.gen(function* () {
+            yield* processes.markExited(process.id, how, exitCode);
+            if (process.serviceId === null) return;
+            const service = yield* services.byId(process.serviceId);
+            if (service === null || service.currentAttemptId !== process.id) return;
+            yield* serviceHost.stop(service.id);
+            if (service.currentForwardId !== null) {
+              yield* serviceForwards.markClosed(service.currentForwardId);
+              yield* services.compareAndSetCurrentForward(
+                service.id,
+                service.currentForwardId,
+                null,
+              );
+            }
+          }),
+        );
 
       // ─── observed external agents (the harness home as a sensor) ──────────
       //
@@ -13392,7 +13342,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * launcher's, so an agent run by hand runs as the owner of a session there, and one
        * person's agents are never read into another's session. Null: no one's to read.
        */
-      const observationSightOf = Effect.fn("SessionEngine.observationSightOf")(function* (
+      const observationSightOf = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
         rows: ReadonlyArray<SessionProcess>,
@@ -13465,124 +13415,122 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         } satisfies ObservationSight;
       });
 
-      const observeSessionExternalAgents = Effect.fn("SessionEngine.observeSessionExternalAgents")(
-        function* (sessionId: SessionId) {
-          const session = yield* sessions.byId(sessionId);
-          if (session.sealantWorkspaceId === null) return;
-          const workspaceId = session.sealantWorkspaceId;
-          const rows = yield* processes.listForSession(sessionId);
-          const sight = yield* observationSightOf(session, workspaceId, rows);
-          if (sight === null) return;
-          // While the engine runs its own agent in this home, transcript writes are presumed to
-          // be its — observation only fills the gap where mend is otherwise blind.
-          const engineAgentLive = sight.writers.some(
-            (row) => isLiveAgentProcess(row) && isEngineAgentProcess(row),
+      const observeSessionExternalAgents = Effect.fnUntraced(function* (sessionId: SessionId) {
+        const session = yield* sessions.byId(sessionId);
+        if (session.sealantWorkspaceId === null) return;
+        const workspaceId = session.sealantWorkspaceId;
+        const rows = yield* processes.listForSession(sessionId);
+        const sight = yield* observationSightOf(session, workspaceId, rows);
+        if (sight === null) return;
+        // While the engine runs its own agent in this home, transcript writes are presumed to
+        // be its — observation only fills the gap where mend is otherwise blind.
+        const engineAgentLive = sight.writers.some(
+          (row) => isLiveAgentProcess(row) && isEngineAgentProcess(row),
+        );
+        // An engine agent's final writes stay fresh for a while after it exits; only
+        // activity that postdates the newest engine-agent exit reads as external.
+        const lastEngineExitMs = sight.writers.reduce(
+          (latest, row) =>
+            isEngineAgentProcess(row) && row.exitedAt !== null && row.exitedAt.getTime() > latest
+              ? row.exitedAt.getTime()
+              : latest,
+          0,
+        );
+        const now = clock.currentTimeMillisUnsafe();
+        for (const harness of Object.keys(HARNESS_STATE)) {
+          const observed = rows.find(
+            (row) =>
+              row.kind === "agent-external" &&
+              row.harness === harness &&
+              row.exitedAt === null &&
+              row.sealantWorkspaceId === workspaceId,
           );
-          // An engine agent's final writes stay fresh for a while after it exits; only
-          // activity that postdates the newest engine-agent exit reads as external.
-          const lastEngineExitMs = sight.writers.reduce(
-            (latest, row) =>
-              isEngineAgentProcess(row) && row.exitedAt !== null && row.exitedAt.getTime() > latest
-                ? row.exitedAt.getTime()
-                : latest,
-            0,
+          // While an agent of Mend's writes into the same home, an observed row follows its own
+          // conversation: the newest transcript there may be the engine's.
+          const transcript = yield* sight.locate(
+            harness,
+            engineAgentLive ? (observed?.providerSessionId ?? null) : null,
           );
-          const now = clock.currentTimeMillisUnsafe();
-          for (const harness of Object.keys(HARNESS_STATE)) {
-            const observed = rows.find(
-              (row) =>
-                row.kind === "agent-external" &&
-                row.harness === harness &&
-                row.exitedAt === null &&
-                row.sealantWorkspaceId === workspaceId,
-            );
-            // While an agent of Mend's writes into the same home, an observed row follows its own
-            // conversation: the newest transcript there may be the engine's.
-            const transcript = yield* sight.locate(
-              harness,
-              engineAgentLive ? (observed?.providerSessionId ?? null) : null,
-            );
-            // No answer this pass (a read that failed, a head still saving): an observed row stays
-            // as it is, and nothing new is observed, until a pass can read the home again.
-            if (transcript === HOME_UNREAD) continue;
-            const fresh = transcript !== null && now - transcript.mtimeMs < EXTERNAL_AGENT_QUIET_MS;
-            if (observed !== undefined) {
-              if (!fresh) {
-                // The writes went quiet: record the observed end, harvest the conversation,
-                // checkpoint the turn boundary — but never sweep the workspace. Quiet is an
-                // inference, not an exit: the agent may sit between turns, and its next write
-                // revives it as a fresh observed row. The workspace outlives the inference;
-                // the platform TTL remains its backstop.
-                yield* observeAgentEnd(
-                  observed,
-                  { how: "exited", exitCode: null, outcome: "completed", summary: null },
-                  finishIfRecorded(observed, "turn-boundary", false),
-                  { whenContinued: "skip" },
-                );
-              } else if (
-                transcript.providerSessionId !== null &&
-                observed.providerSessionId !== transcript.providerSessionId
-              ) {
-                yield* processes.setProviderSessionId(observed.id, transcript.providerSessionId);
-              }
-              continue;
-            }
-            if (engineAgentLive) continue;
-            if (transcript === null) {
-              if (sight.home !== null) {
-                yield* warnIfHarnessHomeUnreadable(sight.home, harness, sessionId);
-              }
-              continue;
-            }
-            if (transcript.mtimeMs <= lastEngineExitMs + EXTERNAL_AGENT_EXIT_SKEW_MS) continue;
-            // Within the skew, a write as the session began is not taken for history: the mtime is
-            // the executor's coarse clock, the session's start Mend's.
-            if (transcript.mtimeMs < sight.sinceMs - EXTERNAL_AGENT_EXIT_SKEW_MS) continue;
-            // A settled session revives only on writes that POSTDATE the settle: its last
-            // agent's tail writes stay fresh for a while, and a workspace stopped at settle
-            // can never write again — only a genuinely live agent produces newer ones.
-            if (
-              session.settledAt !== null &&
-              transcript.mtimeMs <= session.settledAt.getTime() + EXTERNAL_AGENT_EXIT_SKEW_MS
-            ) {
-              continue;
-            }
-            const { providerSessionId } = transcript;
-            // A conversation some past row already carries needs no new row while quiet —
-            // late observation is for work mend never saw, not a re-run of history.
-            const alreadyObserved =
-              providerSessionId !== null &&
-              rows.some((row) => row.providerSessionId === providerSessionId);
-            if (!fresh && alreadyObserved) continue;
-            const created = yield* processes.create({
-              sessionId,
-              sealantWorkspaceId: workspaceId,
-              sealantSessionId: null,
-              sealantRunId: null,
-              kind: "agent-external",
-              harness,
-              providerSessionId,
-              label: `${harness} (observed)`,
-              argv: [],
-              status: "running",
-              runsAs: sight.person,
-            });
-            yield* reconcileSession(sessionId, { sweep: false });
+          // No answer this pass (a read that failed, a head still saving): an observed row stays
+          // as it is, and nothing new is observed, until a pass can read the home again.
+          if (transcript === HOME_UNREAD) continue;
+          const fresh = transcript !== null && now - transcript.mtimeMs < EXTERNAL_AGENT_QUIET_MS;
+          if (observed !== undefined) {
             if (!fresh) {
-              // LATE observation: the conversation happened and went quiet before mend could
-              // see it (an unreadable window, a mend restart). It still becomes part of the
-              // record — the row is observed and immediately ends, and the end-path harvest
-              // captures the conversation.
+              // The writes went quiet: record the observed end, harvest the conversation,
+              // checkpoint the turn boundary — but never sweep the workspace. Quiet is an
+              // inference, not an exit: the agent may sit between turns, and its next write
+              // revives it as a fresh observed row. The workspace outlives the inference;
+              // the platform TTL remains its backstop.
               yield* observeAgentEnd(
-                created,
+                observed,
                 { how: "exited", exitCode: null, outcome: "completed", summary: null },
-                finishIfRecorded(created, "turn-boundary", false),
+                finishIfRecorded(observed, "turn-boundary", false),
                 { whenContinued: "skip" },
               );
+            } else if (
+              transcript.providerSessionId !== null &&
+              observed.providerSessionId !== transcript.providerSessionId
+            ) {
+              yield* processes.setProviderSessionId(observed.id, transcript.providerSessionId);
             }
+            continue;
           }
-        },
-      );
+          if (engineAgentLive) continue;
+          if (transcript === null) {
+            if (sight.home !== null) {
+              yield* warnIfHarnessHomeUnreadable(sight.home, harness, sessionId);
+            }
+            continue;
+          }
+          if (transcript.mtimeMs <= lastEngineExitMs + EXTERNAL_AGENT_EXIT_SKEW_MS) continue;
+          // Within the skew, a write as the session began is not taken for history: the mtime is
+          // the executor's coarse clock, the session's start Mend's.
+          if (transcript.mtimeMs < sight.sinceMs - EXTERNAL_AGENT_EXIT_SKEW_MS) continue;
+          // A settled session revives only on writes that POSTDATE the settle: its last
+          // agent's tail writes stay fresh for a while, and a workspace stopped at settle
+          // can never write again — only a genuinely live agent produces newer ones.
+          if (
+            session.settledAt !== null &&
+            transcript.mtimeMs <= session.settledAt.getTime() + EXTERNAL_AGENT_EXIT_SKEW_MS
+          ) {
+            continue;
+          }
+          const { providerSessionId } = transcript;
+          // A conversation some past row already carries needs no new row while quiet —
+          // late observation is for work mend never saw, not a re-run of history.
+          const alreadyObserved =
+            providerSessionId !== null &&
+            rows.some((row) => row.providerSessionId === providerSessionId);
+          if (!fresh && alreadyObserved) continue;
+          const created = yield* processes.create({
+            sessionId,
+            sealantWorkspaceId: workspaceId,
+            sealantSessionId: null,
+            sealantRunId: null,
+            kind: "agent-external",
+            harness,
+            providerSessionId,
+            label: `${harness} (observed)`,
+            argv: [],
+            status: "running",
+            runsAs: sight.person,
+          });
+          yield* reconcileSession(sessionId, { sweep: false });
+          if (!fresh) {
+            // LATE observation: the conversation happened and went quiet before mend could
+            // see it (an unreadable window, a mend restart). It still becomes part of the
+            // record — the row is observed and immediately ends, and the end-path harvest
+            // captures the conversation.
+            yield* observeAgentEnd(
+              created,
+              { how: "exited", exitCode: null, outcome: "completed", summary: null },
+              finishIfRecorded(created, "turn-boundary", false),
+              { whenContinued: "skip" },
+            );
+          }
+        }
+      });
 
       /**
        * One observation pass over every session that could host an external agent: any session
@@ -13994,7 +13942,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * environment. A source that cannot be resolved never costs the launch: it is left out, the
        * other source still applies, and what was left out is said.
        */
-      const resolveDotfiles = Effect.fn("SessionEngine.resolveDotfiles")(function* (
+      const resolveDotfiles = Effect.fnUntraced(function* (
         sessionId: SessionId,
         project: Project,
         workspaceImage: WorkspaceImage,
@@ -14106,7 +14054,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * all: nothing is resolved or applied, and every source the person keeps is named as not
        * applied, with the reason. Two reads, no clone.
        */
-      const dotfilesNotPerPerson = Effect.fn("SessionEngine.dotfilesNotPerPerson")(function* (
+      const dotfilesNotPerPerson = Effect.fnUntraced(function* (
         project: Project,
         workspaceImage: WorkspaceImage,
         accountId: string | null,
@@ -14936,9 +14884,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * folders the project selected (docs/adr/0003-organizations-and-tenancy.md). Both share one
        * shape; a folder's host path is its directory in the store.
        */
-      const declaredMountsOf = Effect.fn("SessionEngine.declaredMountsOf")(function* (
-        project: Project,
-      ) {
+      const declaredMountsOf = Effect.fnUntraced(function* (project: Project) {
         const hostMounts = yield* projectMounts
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
@@ -14969,58 +14915,59 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * standby at provision, and the adoption of a claimed standby at launch (review 6 of
        * mend#640). Capture mode mounts none of them: it passes.
        */
-      const refuseWorkspaceRepositories = Effect.fn("SessionEngine.refuseWorkspaceRepositories")(
-        function* (project: Project, ownerUserId: string | null) {
-          if (captureStoreOn) return;
-          // A read that fails refuses, the way a finding does: a reference or a linked project
-          // this could not list would be mounted unchecked (fail closed). Both reads are typed
-          // infallible, so a database failure arrives as a defect.
-          const readOrRefuse = <A>(what: string, read: Effect.Effect<A>) =>
-            read.pipe(
-              Effect.catchDefect((defect) =>
-                Effect.logWarning(
-                  `session engine: could not read the ${what} of project ${project.name}; no workspace is opened`,
-                ).pipe(
-                  Effect.annotateLogs({ projectId: project.id, cause: String(defect) }),
-                  Effect.andThen(
-                    Effect.fail(
-                      new DotfilesResolveError({
-                        message: `Mend could not read this project's ${what}, so it does not open a workspace that would mount them. Try again; if it persists, the server log has the reason.`,
-                      }),
-                    ),
+      const refuseWorkspaceRepositories = Effect.fnUntraced(function* (
+        project: Project,
+        ownerUserId: string | null,
+      ) {
+        if (captureStoreOn) return;
+        // A read that fails refuses, the way a finding does: a reference or a linked project
+        // this could not list would be mounted unchecked (fail closed). Both reads are typed
+        // infallible, so a database failure arrives as a defect.
+        const readOrRefuse = <A>(what: string, read: Effect.Effect<A>) =>
+          read.pipe(
+            Effect.catchDefect((defect) =>
+              Effect.logWarning(
+                `session engine: could not read the ${what} of project ${project.name}; no workspace is opened`,
+              ).pipe(
+                Effect.annotateLogs({ projectId: project.id, cause: String(defect) }),
+                Effect.andThen(
+                  Effect.fail(
+                    new DotfilesResolveError({
+                      message: `Mend could not read this project's ${what}, so it does not open a workspace that would mount them. Try again; if it persists, the server log has the reason.`,
+                    }),
                   ),
                 ),
               ),
-            );
-          const selectedReferences = yield* readOrRefuse(
-            "selected references",
-            references.listForProject(project.id),
+            ),
           );
-          yield* readOrRefuse("linked projects", projectLinks.listForProject(project.id));
-          const linkedProjects = yield* readOrRefuse(
-            "linked projects",
-            resolveLinkedProjects(project, ownerUserId),
-          );
-          yield* Effect.forEach(
-            [
-              { repository: `project ${project.name}`, gitDir: project.storePath },
-              ...selectedReferences.map((reference) => ({
-                repository: `reference ${reference.name}`,
-                gitDir: reference.path,
-              })),
-              ...linkedProjects.map(({ linked }) => ({
-                repository: `project ${linked.name}`,
-                gitDir: linked.storePath,
-              })),
-            ].filter(({ gitDir }) => existsSync(gitDir)),
-            ({ repository, gitDir }) => refuseRemoteCredentials(gitDir, repository),
-            { discard: true },
-          ).pipe(
-            // The launch-input refusal every caller already answers with its message.
-            Effect.mapError((error) => new DotfilesResolveError({ message: error.stderr })),
-          );
-        },
-      );
+        const selectedReferences = yield* readOrRefuse(
+          "selected references",
+          references.listForProject(project.id),
+        );
+        yield* readOrRefuse("linked projects", projectLinks.listForProject(project.id));
+        const linkedProjects = yield* readOrRefuse(
+          "linked projects",
+          resolveLinkedProjects(project, ownerUserId),
+        );
+        yield* Effect.forEach(
+          [
+            { repository: `project ${project.name}`, gitDir: project.storePath },
+            ...selectedReferences.map((reference) => ({
+              repository: `reference ${reference.name}`,
+              gitDir: reference.path,
+            })),
+            ...linkedProjects.map(({ linked }) => ({
+              repository: `project ${linked.name}`,
+              gitDir: linked.storePath,
+            })),
+          ].filter(({ gitDir }) => existsSync(gitDir)),
+          ({ repository, gitDir }) => refuseRemoteCredentials(gitDir, repository),
+          { discard: true },
+        ).pipe(
+          // The launch-input refusal every caller already answers with its message.
+          Effect.mapError((error) => new DotfilesResolveError({ message: error.stderr })),
+        );
+      });
 
       /**
        * The project's links with their projects, as the session owner may use them
@@ -15029,7 +14976,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the session runs without that mount. Checked at every provision, claim and restore, so
        * access that changed after the link was made is honored.
        */
-      const resolveLinkedProjects = Effect.fn("SessionEngine.resolveLinkedProjects")(function* (
+      const resolveLinkedProjects = Effect.fnUntraced(function* (
         project: Project,
         ownerUserId: string | null,
       ) {
@@ -15073,7 +15020,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * link: a worktree that no longer exists leaves that path unbound and a warning, never a
        * failed launch — the session's own repository is unaffected.
        */
-      const bindLinkedProjects = Effect.fn("SessionEngine.bindLinkedProjects")(function* (
+      const bindLinkedProjects = Effect.fnUntraced(function* (
         workspace: Workspace,
         project: Project,
         ownerUserId: string | null,
@@ -15363,7 +15310,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * again behind itself either: the budget is spent. When no ask answered, the executor's own
        * status says whether the re-plan took (`readClaimedStandby`): one that took is adopted.
        */
-      const replanClaimedStandby = Effect.fn("SessionEngine.replanClaimedStandby")(function* (
+      const replanClaimedStandby = Effect.fnUntraced(function* (
         session: Session,
         workspace: Workspace,
         /** The owner map the standby booted with (`standbyOwnerMapOf`); null for a shared one. */
@@ -15855,7 +15802,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * store, through exec in capture mode. Not best-effort: any failure stops the launch, since
        * pi would otherwise run on another person's profile, or on the owner's half delivered.
        */
-      const deliverPiProfile = Effect.fn("SessionEngine.deliverPiProfile")(function* (
+      const deliverPiProfile = Effect.fnUntraced(function* (
         session: Session,
         project: Project,
         workspace: Workspace,
@@ -16094,7 +16041,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * before the record): its latest executor that ran a process, else its other sessions, all
        * the launcher's or all one other person's.
        */
-      const handOverAgentMemory = Effect.fn("SessionEngine.handOverAgentMemory")(
+      const handOverAgentMemory = Effect.fnUntraced(
         function* (session: Session, workspace: Workspace) {
           if (capture === null) return;
           const owner = session.ownerUserId;
@@ -16219,7 +16166,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * database another Codex held past the wait), this launch's Codex starts with its memory
        * off. Answers whether it may keep it on. A join never comes here.
        */
-      const withholdCodexThreads = Effect.fn("SessionEngine.withholdCodexThreads")(function* (
+      const withholdCodexThreads = Effect.fnUntraced(function* (
         session: Session,
         workspace: Workspace,
         argv: ReadonlyArray<string>,
@@ -16544,9 +16491,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * A person's MCP servers that are on, their secrets unsealed (docs/adr/0024), each with its
        * kept sign-in still sealed.
        */
-      const unsealedMcpServersOf = Effect.fn("SessionEngine.unsealedMcpServersOf")(function* (
-        accountId: string,
-      ) {
+      const unsealedMcpServersOf = Effect.fnUntraced(function* (accountId: string) {
         const sealed = yield* mcpServers.forLaunch(accountId);
         return yield* Effect.forEach(
           sealed,
@@ -16795,7 +16740,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Never a conversation already in the home that Mend did not carry, and never one from this
        * worktree in capture mode, whose sessions share the home.
        */
-      const carryCodexConversations = Effect.fn("SessionEngine.carryCodexConversations")(function* (
+      const carryCodexConversations = Effect.fnUntraced(function* (
         session: Session,
         project: Project,
         workspace: Workspace,
@@ -16922,7 +16867,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * more, a second apart, then answers `failed`: the caller refuses the opencode it was about
        * to start, or says so on that session's own line. Never anyone else's line.
        */
-      const scrubOpencodeAs = Effect.fn("SessionEngine.scrubOpencodeAs")(function* (
+      const scrubOpencodeAs = Effect.fnUntraced(function* (
         sessionId: SessionId,
         workspace: Workspace,
         as: PersonExec,
@@ -17237,7 +17182,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * where nothing is. Nothing is moved or deleted: the old captures keep it. Never fails the
        * start; a copy that cannot be made is said in the log.
        */
-      const copyPreReleaseConversation = Effect.fn("SessionEngine.copyPreReleaseConversation")(
+      const copyPreReleaseConversation = Effect.fnUntraced(
         function* (
           session: Session,
           workspace: Workspace,
@@ -17406,7 +17351,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       );
 
       /** Whether `accountId` has an agent of `harness` live in the executor already. */
-      const harnessLiveFor = Effect.fn("SessionEngine.harnessLiveFor")(function* (
+      const harnessLiveFor = Effect.fnUntraced(function* (
         workspaceId: SealantWorkspaceId,
         accountId: string,
         harness: string,
@@ -17469,7 +17414,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * every start of theirs, and each session whose start stopped waiting told what happened.
        * Run under the person's delivery lock, once per apply.
        */
-      const seeDotfilesThrough = Effect.fn("SessionEngine.seeDotfilesThrough")(function* (
+      const seeDotfilesThrough = Effect.fnUntraced(function* (
         key: string,
         entry: DotfilesInFlight,
         exit: Exit.Exit<DotfilesApplied, SealantPlatformError>,
@@ -17597,7 +17542,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * fails the start. `pending`: the apply still runs, so the caller writes no first-process
        * marker.
        */
-      const applyPersonDotfiles = Effect.fn("SessionEngine.applyPersonDotfiles")(function* (
+      const applyPersonDotfiles = Effect.fnUntraced(function* (
         session: Session,
         project: Project,
         workspace: Workspace,
@@ -17707,7 +17652,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * agents after install.sh"), bounded; else the agent starts beside it. Answers the words to
        * say once the process has started, and what to watch afterwards.
        */
-      const awaitBootstrap = Effect.fn("SessionEngine.awaitBootstrap")(function* (
+      const awaitBootstrap = Effect.fnUntraced(function* (
         bootstrap: DotfilesBootstrap | null,
         waits: Effect.Effect<boolean>,
       ) {
@@ -17927,7 +17872,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * from the move on, until the session ends, also once control is turned off). Null
        * otherwise; with the flag off and nothing recorded, nothing is read.
        */
-      const conversationOf = Effect.fn("SessionEngine.conversationOf")(function* (
+      const conversationOf = Effect.fnUntraced(function* (
         session: Session,
         launchId: string | null,
         /**
@@ -18141,7 +18086,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
 
       /** Consume a retained seed only in the child's ordinary, isolated launch home. */
-      const prepareNativeFork = Effect.fn("SessionEngine.prepareNativeFork")(function* (
+      const prepareNativeFork = Effect.fnUntraced(function* (
         session: Session,
         workspace: Workspace,
         protocol: boolean,
@@ -18296,109 +18241,105 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * holds none, or its first agent already started over it; a later launch resumes through
        * the ordinary saved state.
        */
-      const prepareImportedConversation = Effect.fn("SessionEngine.prepareImportedConversation")(
-        function* (
-          session: Session,
-          workspace: Workspace,
-          protocol: boolean,
-          conversationOwner: string | null,
-        ) {
-          const imported = yield* undeliveredImportOf(session);
-          if (imported === null) return undefined;
-          if (!protocol)
-            return yield* nativeBootstrapRefused(
-              "Send a message to this imported conversation before opening it in a terminal.",
-            );
-          const root =
-            conversationOwner === null
-              ? HARNESS_HOME_MOUNT_PATH
-              : conversationDirOf(HARNESS_HOME_MOUNT_PATH, conversationOwner, session.id);
-          const home =
-            conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id);
-          const person =
-            conversationOwner === null
-              ? null
-              : yield* harnessLayouts
-                  .ensureIdentity(conversationOwner)
-                  .pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
-          const as: PersonExec | undefined =
-            person === null
-              ? undefined
-              : {
-                  person,
-                  user: processUserOf(person),
-                  sessionId: session.id,
-                  places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
-                };
-          const stored = yield* importedConversations.files(session.id);
-          const utf8 = new TextDecoder("utf-8", { fatal: true });
-          // Text the rewrite reads as UTF-8 (checked on the way in); a screenshot as its bytes.
-          const asText = (file: (typeof stored)[number]) =>
-            isTextConversationFile(file.relativePath)
-              ? utf8.decode(file.bytes)
-              : Buffer.from(file.bytes).toString("latin1");
-          const rewritten = yield* Effect.try({
-            try: () =>
-              stored.map((file) => ({ relativePath: file.relativePath, content: asText(file) })),
-            catch: () => nativeBootstrapRefused("The imported conversation is no longer readable."),
-          }).pipe(
-            Effect.flatMap((files) =>
-              rewriteNativeConversation({
-                provider: imported.harness,
-                files,
-                source: imported.source,
-                target: { checkout: "/workspace/repo", home },
-              }).pipe(
-                Effect.mapError((error) =>
-                  nativeBootstrapRefused(
-                    `The imported conversation could not be prepared for this workspace: ${error.message}`,
-                  ),
+      const prepareImportedConversation = Effect.fnUntraced(function* (
+        session: Session,
+        workspace: Workspace,
+        protocol: boolean,
+        conversationOwner: string | null,
+      ) {
+        const imported = yield* undeliveredImportOf(session);
+        if (imported === null) return undefined;
+        if (!protocol)
+          return yield* nativeBootstrapRefused(
+            "Send a message to this imported conversation before opening it in a terminal.",
+          );
+        const root =
+          conversationOwner === null
+            ? HARNESS_HOME_MOUNT_PATH
+            : conversationDirOf(HARNESS_HOME_MOUNT_PATH, conversationOwner, session.id);
+        const home =
+          conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id);
+        const person =
+          conversationOwner === null
+            ? null
+            : yield* harnessLayouts
+                .ensureIdentity(conversationOwner)
+                .pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
+        const as: PersonExec | undefined =
+          person === null
+            ? undefined
+            : {
+                person,
+                user: processUserOf(person),
+                sessionId: session.id,
+                places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
+              };
+        const stored = yield* importedConversations.files(session.id);
+        const utf8 = new TextDecoder("utf-8", { fatal: true });
+        // Text the rewrite reads as UTF-8 (checked on the way in); a screenshot as its bytes.
+        const asText = (file: (typeof stored)[number]) =>
+          isTextConversationFile(file.relativePath)
+            ? utf8.decode(file.bytes)
+            : Buffer.from(file.bytes).toString("latin1");
+        const rewritten = yield* Effect.try({
+          try: () =>
+            stored.map((file) => ({ relativePath: file.relativePath, content: asText(file) })),
+          catch: () => nativeBootstrapRefused("The imported conversation is no longer readable."),
+        }).pipe(
+          Effect.flatMap((files) =>
+            rewriteNativeConversation({
+              provider: imported.harness,
+              files,
+              source: imported.source,
+              target: { checkout: "/workspace/repo", home },
+            }).pipe(
+              Effect.mapError((error) =>
+                nativeBootstrapRefused(
+                  `The imported conversation could not be prepared for this workspace: ${error.message}`,
                 ),
               ),
             ),
-          );
-          yield* writeWorkspaceFiles(
-            session,
-            workspace,
-            rewritten.files.map((file) => ({
-              path: `${root}/${file.relativePath}`,
-              bytes: isTextConversationFile(file.relativePath)
-                ? new TextEncoder().encode(file.content)
-                : new Uint8Array(Buffer.from(file.content, "latin1")),
-              within: { root, directoryMode: 0o700, fileMode: 0o600 },
-            })),
-            "workspace-files",
-            as,
-          ).pipe(
-            Effect.mapError(() =>
-              nativeBootstrapRefused(
-                "The imported conversation could not be written into this workspace.",
-              ),
+          ),
+        );
+        yield* writeWorkspaceFiles(
+          session,
+          workspace,
+          rewritten.files.map((file) => ({
+            path: `${root}/${file.relativePath}`,
+            bytes: isTextConversationFile(file.relativePath)
+              ? new TextEncoder().encode(file.content)
+              : new Uint8Array(Buffer.from(file.content, "latin1")),
+            within: { root, directoryMode: 0o700, fileMode: 0o600 },
+          })),
+          "workspace-files",
+          as,
+        ).pipe(
+          Effect.mapError(() =>
+            nativeBootstrapRefused(
+              "The imported conversation could not be written into this workspace.",
             ),
-          );
-          // Counts only: the conversation's paths are the person's, and never logged.
-          yield* Effect.logInfo("session engine: imported conversation delivered").pipe(
-            Effect.annotateLogs({
-              sessionId: session.id,
-              files: rewritten.files.length,
-              rewritten: rewritten.report.rewritten,
-              leftovers: rewritten.report.leftovers.length,
-            }),
-          );
-          const transcript = rewritten.files.find((file) =>
-            isConversationTranscript(imported.harness, imported.nativeId, file.relativePath),
-          );
-          return {
-            providerSessionId: imported.nativeId,
-            resumePath: transcript === undefined ? null : `${home}/${transcript.relativePath}`,
-          };
-        },
-      );
+          ),
+        );
+        // Counts only: the conversation's paths are the person's, and never logged.
+        yield* Effect.logInfo("session engine: imported conversation delivered").pipe(
+          Effect.annotateLogs({
+            sessionId: session.id,
+            files: rewritten.files.length,
+            rewritten: rewritten.report.rewritten,
+            leftovers: rewritten.report.leftovers.length,
+          }),
+        );
+        const transcript = rewritten.files.find((file) =>
+          isConversationTranscript(imported.harness, imported.nativeId, file.relativePath),
+        );
+        return {
+          providerSessionId: imported.nativeId,
+          resumePath: transcript === undefined ? null : `${home}/${transcript.relativePath}`,
+        };
+      });
 
       /** The same native plan scope on launch, resume and surviving-pipe reattachment. */
-      const claudePlanFileFor = Effect.fn("SessionEngine.claudePlanFileFor")(function* (
-        process: SessionProcess,
-      ) {
+      const claudePlanFileFor = Effect.fnUntraced(function* (process: SessionProcess) {
         if (process.harness !== "claude" || process.providerSessionId === null) return undefined;
         const binding = yield* history.nativeBinding?.(process.sessionId) ?? Effect.succeed(null);
         const holder = binding?.location === "holderHome";
@@ -18448,7 +18389,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * person-layout executor: refused while a process the platform has not reported exited
        * holds it, an unreachable executor's included, so nobody starts a second.
        */
-      const takeConversation = Effect.fn("SessionEngine.takeConversation")(function* (
+      const takeConversation = Effect.fnUntraced(function* (
         sessionId: SessionId,
         launchId: string,
         /** The process this start replaces, taken from while it still runs (a hand-over's). */
@@ -18563,7 +18504,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * A conversation's process started on a take: bound to its fence, or, fenced out by a newer
        * take, refused (the caller closes what it opened).
        */
-      const bindConversationProcess = Effect.fn("SessionEngine.bindConversationProcess")(function* (
+      const bindConversationProcess = Effect.fnUntraced(function* (
         agentProcess: SessionProcess,
         fence: number,
       ) {
@@ -18589,7 +18530,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** The memory in a session's head capture, and what was delivered there; null without one. */
-      const agentMemoryFromCapture = Effect.fn("SessionEngine.agentMemoryFromCapture")(function* (
+      const agentMemoryFromCapture = Effect.fnUntraced(function* (
         session: Session,
         /**
          * Whose memory: the shared home's, or a person's own saved directory, where Codex's summary
@@ -18612,7 +18553,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * reads from the head, and what the migration of an old shared home reads from the
        * worktree's last `shared`-layout capture (docs/adr/0016, decision 14).
        */
-      const agentMemoryFromManifest = Effect.fn("SessionEngine.agentMemoryFromManifest")(function* (
+      const agentMemoryFromManifest = Effect.fnUntraced(function* (
         manifest: Parameters<typeof listCaptureFiles>[0],
         place: ConversationPlace,
       ) {
@@ -18685,7 +18626,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * session whose row still names the workspace under a launch of its own. Null when neither
        * does: then nobody's read-back takes what it holds.
        */
-      const memoryOwnerOfExecutor = Effect.fn("SessionEngine.memoryOwnerOfExecutor")(function* (
+      const memoryOwnerOfExecutor = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -18713,7 +18654,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * memory and does not count. Null when no session names one (a new worktree, or executors
        * that are no longer on any row).
        */
-      const latestExecutorOf = Effect.fn("SessionEngine.latestExecutorOf")(function* (
+      const latestExecutorOf = Effect.fnUntraced(function* (
         worktreeId: WorktreeId,
         /** A hand-over's executor not saved yet: whatever it did is not in the head. */
         excludedWorkspace: string | null,
@@ -18742,7 +18683,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * hand-over, or a late read-back of the same home, would save the home's copy over a merge
        * the first one made (a session's later read replaces its own earlier save).
        */
-      const creditAgentMemory = Effect.fn("SessionEngine.creditAgentMemory")(function* (
+      const creditAgentMemory = Effect.fnUntraced(function* (
         userId: string,
         sessionId: string,
         projectId: ProjectId,
@@ -18797,9 +18738,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * on the worktree's chain, and is settled then. Null: no launch recorded one (executors
        * launched before the record).
        */
-      const recordedHomeOf = Effect.fn("SessionEngine.recordedHomeOf")(function* (
-        worktreeId: WorktreeId,
-      ) {
+      const recordedHomeOf = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
         const homes = yield* agentMemory.homeOf(worktreeId);
         if (homes === null) return null;
         const pending = homes.pending;
@@ -18825,7 +18764,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * with no record: the owner of the session whose launch made `workspaceId`, if one still
        * names it.
        */
-      const homeOwnerOf = Effect.fn("SessionEngine.homeOwnerOf")(function* (
+      const homeOwnerOf = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -18845,7 +18784,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * after the move, or after finding the home already the launcher's). Read-backs keep the
        * saved view (`homeOwnerOf`): they read the head, which a lost executor never wrote.
        */
-      const liveHomeOwnerOf = Effect.fn("SessionEngine.liveHomeOwnerOf")(function* (
+      const liveHomeOwnerOf = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -18934,7 +18873,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * home, so a capture that left the section out is skipped. Null with nothing past
        * capture 0.
        */
-      const sharedHomeCaptureOf = Effect.fn("SessionEngine.sharedHomeCaptureOf")(function* (
+      const sharedHomeCaptureOf = Effect.fnUntraced(function* (
         worktreeId: WorktreeId,
         final: boolean,
       ) {
@@ -19149,9 +19088,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * whose launch was not person and that started a process. Null when no session names one any
        * more (its sessions were deleted, or relaunched since): then no home record is trusted.
        */
-      const lastSharedExecutorOf = Effect.fn("SessionEngine.lastSharedExecutorOf")(function* (
-        worktreeId: WorktreeId,
-      ) {
+      const lastSharedExecutorOf = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
         let latest: { readonly workspaceId: string; readonly at: number } | null = null;
         for (const member of yield* sessions.listForWorktree(worktreeId)) {
           const launch = yield* sessions.executorLaunchOf(member.id);
@@ -19205,9 +19142,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * (`processStarted` in each one's record): what the retire check counts as Mend's. A process
        * whose start cannot be read is something Mend cannot check.
        */
-      const recordedPidsOf = Effect.fn("SessionEngine.recordedPidsOf")(function* (
-        live: ReadonlyArray<SessionProcess>,
-      ) {
+      const recordedPidsOf = Effect.fnUntraced(function* (live: ReadonlyArray<SessionProcess>) {
         // An adopted Service and an observed agent run no process of Mend's.
         const read = yield* Effect.forEach(
           live.filter((row) => row.sealantRunId !== null),
@@ -19260,7 +19195,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * in it that Mend did not start and the sidecar's containers, checked by one root exec. A
        * check that cannot be made is an `unchecked` stop, never "nothing found".
        */
-      const retirementStopsFor = Effect.fn("SessionEngine.retirementStopsFor")(function* (
+      const retirementStopsFor = Effect.fnUntraced(function* (
         holder: Session,
         workspaceId: SealantWorkspaceId,
         inside: boolean,
@@ -19363,7 +19298,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * is saved (`drainThenTerminate`); then its retirement is over and the holder's protocol agent
        * starts again, per person, with its `mend.toml` Services. Fails with why when it did not go.
        */
-      const finishReplacement = Effect.fn("SessionEngine.finishReplacement")(function* (
+      const finishReplacement = Effect.fnUntraced(function* (
         holder: Session,
         workspaceId: SealantWorkspaceId,
         plan: {
@@ -19540,7 +19475,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * time, what would stop is checked (what runs in it included, so the owner sees it all),
        * and it is replaced on its own once nothing would stop.
        */
-      const considerRetirement = Effect.fn("SessionEngine.considerRetirement")(function* (
+      const considerRetirement = Effect.fnUntraced(function* (
         holder: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -19692,9 +19627,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * spends the owner's logins. Unknown reads as the owner's logins. With the flag off and
        * nothing recorded, false with no read.
        */
-      const steersPerPerson = Effect.fn("SessionEngine.steersPerPerson")(function* (
-        session: Session,
-      ) {
+      const steersPerPerson = Effect.fnUntraced(function* (session: Session) {
         if (capture === null || !layoutSteps.personPossible()) return false;
         // The worktree's live executor is the lease holder's, whatever this session's row names.
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
@@ -19714,9 +19647,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return (yield* harnessLayouts.worktreeLayout(session.worktreeId)).layout === "person";
       });
 
-      const preReleaseMemory = Effect.fn("SessionEngine.preReleaseMemory")(function* (
-        worktreeId: WorktreeId,
-      ) {
+      const preReleaseMemory = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
         // With the flag off and nothing recorded, there is no migration and nothing is read.
         if (capture === null || !layoutSteps.personPossible()) return null;
         const record = yield* harnessLayouts.preReleaseMigrationOf(worktreeId);
@@ -19731,7 +19662,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             });
       });
 
-      const workspaceRetirement = Effect.fn("SessionEngine.workspaceRetirement")(function* (
+      const workspaceRetirement = Effect.fnUntraced(function* (
         sessionId: SessionId,
         viewer: string,
       ) {
@@ -19825,7 +19756,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
-      const writeWorktreeFile = Effect.fn("SessionEngine.writeWorktreeFile")(function* (
+      const writeWorktreeFile = Effect.fnUntraced(function* (
         sessionId: SessionId,
         relative: string,
         contents: string,
@@ -19894,7 +19825,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
       });
 
-      const storePastedImage = Effect.fn("SessionEngine.storePastedImage")(function* (
+      const storePastedImage = Effect.fnUntraced(function* (
         sessionId: SessionId,
         bytes: Uint8Array,
         sender: string,
@@ -19958,7 +19889,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       // ─── Repositories in a session (docs/adr/0011) ─────────────────────────────────────────
 
-      const viewerOf = Effect.fn("SessionEngine.viewerOf")(function* (
+      const viewerOf = Effect.fnUntraced(function* (
         ownerUserId: string | null,
         organizationId: OrganizationId,
       ) {
@@ -19972,30 +19903,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
       });
 
-      const listRepositories = Effect.fn("SessionEngine.listRepositories")(function* (
-        sessionId: SessionId,
-      ) {
+      const listRepositories = Effect.fnUntraced(function* (sessionId: SessionId) {
         yield* sessions.byId(sessionId);
         return yield* sessionRepositories.listForSession(sessionId);
       });
 
       /** The origins of the repositories a session holds beside its own (ADR 0011). */
-      const sessionRepositoryOrigins = Effect.fn("SessionEngine.sessionRepositoryOrigins")(
-        function* (sessionId: SessionId) {
-          const rows = yield* sessionRepositories.listForSession(sessionId);
-          const origins = yield* Effect.forEach(rows, (row) =>
-            projects.byId(row.projectId).pipe(
-              Effect.map((held) => held.originUrl),
-              Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)),
-            ),
-          );
-          return origins.filter((origin) => origin !== null);
-        },
-      );
+      const sessionRepositoryOrigins = Effect.fnUntraced(function* (sessionId: SessionId) {
+        const rows = yield* sessionRepositories.listForSession(sessionId);
+        const origins = yield* Effect.forEach(rows, (row) =>
+          projects.byId(row.projectId).pipe(
+            Effect.map((held) => held.originUrl),
+            Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)),
+          ),
+        );
+        return origins.filter((origin) => origin !== null);
+      });
 
-      const addableProjects = Effect.fn("SessionEngine.addableProjects")(function* (
-        sessionId: SessionId,
-      ) {
+      const addableProjects = Effect.fnUntraced(function* (sessionId: SessionId) {
         const session = yield* sessions.byId(sessionId);
         const project = yield* projects.byId(session.projectId);
         const viewer = yield* viewerOf(session.ownerUserId, project.organizationId);
@@ -20032,7 +19957,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * main worktree so the main worktree's captures carry it, and linked at its path. The row
        * records what happened; a failure is its reason, never a thrown error.
        */
-      const bringRepositoryIn = Effect.fn("SessionEngine.bringRepositoryIn")(function* (
+      const bringRepositoryIn = Effect.fnUntraced(function* (
         session: Session,
         workspace: Workspace,
         row: SessionRepositoryRow,
@@ -20080,7 +20005,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
-      const addRepository = Effect.fn("SessionEngine.addRepository")(function* (
+      const addRepository = Effect.fnUntraced(function* (
         sessionId: SessionId,
         input: {
           readonly project: string;
@@ -20242,7 +20167,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * outside the captured root): relink every repository that is there and mark the ones
        * that are not `missing`, so the record says what the workspace holds.
        */
-      const relinkRepositories = Effect.fn("SessionEngine.relinkRepositories")(function* (
+      const relinkRepositories = Effect.fnUntraced(function* (
         session: Session,
         workspace: Workspace,
       ) {
@@ -20445,7 +20370,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           });
 
-      const launchInternalBody = Effect.fn("SessionEngine.launchInternal")(function* (
+      const launchInternalBody = Effect.fnUntraced(function* (
         sessionId: SessionId,
         requested: LaunchPlan,
       ) {
@@ -22316,7 +22241,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * person who can continue, from the turns' payers. Only where the process ran as a person
        * and an earlier turn of the conversation ran on someone else's account.
        */
-      const sayForeignReasoning = Effect.fn("SessionEngine.sayForeignReasoning")(function* (
+      const sayForeignReasoning = Effect.fnUntraced(function* (
         turn: AgentTurn,
         agentProcess: SessionProcess,
       ) {
@@ -22355,7 +22280,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const conversationWaits = new Map<SessionId, ConversationWait>();
 
       /** People's names in a session's organization, for the lines both of them read. */
-      const namesFor = Effect.fn("SessionEngine.namesFor")(function* (sessionId: SessionId) {
+      const namesFor = Effect.fnUntraced(function* (sessionId: SessionId) {
         const session = yield* sessions.byId(sessionId);
         const project = yield* projects.byId(session.projectId);
         const members = yield* organizations.members(project.organizationId);
@@ -22798,7 +22723,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
 
-      const sealTurnBoundary = Effect.fn("SessionEngine.sealTurnBoundary")(function* (
+      const sealTurnBoundary = Effect.fnUntraced(function* (
         session: Session,
         agent: SessionProcess,
         turn: AgentTurn,
@@ -22960,7 +22885,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** A session's own pre-prompt file boundary, including a fork's inherited native prefix. */
-      const sealSessionOrigin = Effect.fn("SessionEngine.sealSessionOrigin")(function* (
+      const sealSessionOrigin = Effect.fnUntraced(function* (
         agent: SessionProcess,
         fresh: boolean,
       ) {
@@ -23306,7 +23231,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * refused before anything is queued; Mend never falls back to the owner's. The owner's own
        * turns ask nothing more, and with the flag off and nothing recorded nothing is read.
        */
-      const steeringRefusalOf = Effect.fn("SessionEngine.steeringRefusalOf")(function* (
+      const steeringRefusalOf = Effect.fnUntraced(function* (
         session: Session,
         sender: string,
       ): Effect.fn.Return<{ readonly words: string; readonly login?: SteererLogin } | null> {
@@ -23388,7 +23313,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             );
 
-      const forkSelectionFor = Effect.fn("SessionEngine.forkSelectionFor")(function* (
+      const forkSelectionFor = Effect.fnUntraced(function* (
         sessionId: SessionId,
         selected: TurnSelection | undefined,
       ) {
@@ -23489,7 +23414,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the person the conversation's process runs as, or the session's owner. Anything else is
        * theirs to end, or ends on its own.
        */
-      const endBackgroundWork = Effect.fn("SessionEngine.endBackgroundWork")(function* (
+      const endBackgroundWork = Effect.fnUntraced(function* (
         sessionId: SessionId,
         actor: string,
         work: { readonly kind: ConversationWaitWork["kind"]; readonly id: string },
@@ -23820,7 +23745,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       const ACTIVE_STATUSES = new Set(["starting", "running", "waiting", "idle"]);
 
-      const transcript = Effect.fn("SessionEngine.transcript")(function* (sessionId: SessionId) {
+      const transcript = Effect.fnUntraced(function* (sessionId: SessionId) {
         const session = yield* sessions.byId(sessionId);
         const rows = yield* processes.listForSession(sessionId);
         const agents = agentProcessesOf(rows);
@@ -23881,9 +23806,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * after a resume into the retained workspace whose executor answered it. `executor lost · …`
        * stays (`STALE_ON_START_PREFIXES`).
        */
-      const clearStaleStartSummary = Effect.fn("SessionEngine.clearStaleStartSummary")(function* (
-        sessionId: SessionId,
-      ) {
+      const clearStaleStartSummary = Effect.fnUntraced(function* (sessionId: SessionId) {
         const reopened = yield* sessions.byId(sessionId);
         // What the launch said while it was under way (`sayLaunchPhase`) ends with it, and so do
         // the starting words of an agent that ended before it drew (`agentStartingWords`).
@@ -23899,9 +23822,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** The agent drew, or ended: the session line stops saying it is starting. */
-      const clearAgentStartingWords = Effect.fn("SessionEngine.clearAgentStartingWords")(function* (
-        sessionId: SessionId,
-      ) {
+      const clearAgentStartingWords = Effect.fnUntraced(function* (sessionId: SessionId) {
         const current = yield* sessions.byId(sessionId);
         const next = withoutAgentStarting(current.summary);
         if (next !== current.summary) yield* sessions.setSummary(sessionId, next);
@@ -23914,10 +23835,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * reads anything but `starting` (a resume of a settled one, a stop that landed meanwhile)
        * keeps its own words.
        */
-      const sayLaunchPhase = Effect.fn("SessionEngine.sayLaunchPhase")(function* (
-        sessionId: SessionId,
-        words: string,
-      ) {
+      const sayLaunchPhase = Effect.fnUntraced(function* (sessionId: SessionId, words: string) {
         const current = yield* sessions
           .byId(sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
@@ -23980,10 +23898,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * unavailable ((16) #1). Beside what the summary already says (`executor lost · …` stays);
        * the next start clears it (`STALE_ON_START_PREFIXES`).
        */
-      const noteLaunchWords = Effect.fn("SessionEngine.noteLaunchWords")(function* (
-        sessionId: SessionId,
-        words: string,
-      ) {
+      const noteLaunchWords = Effect.fnUntraced(function* (sessionId: SessionId, words: string) {
         const current = yield* sessions.byId(sessionId);
         yield* sessions.setSummary(
           sessionId,
@@ -23997,7 +23912,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * made, bounded, before the process opens. What the process starts without is logged, and
        * said on the session's line for an agent's launch (`say`).
        */
-      const resourceEnvOf = Effect.fn("SessionEngine.resourceEnvOf")(function* (
+      const resourceEnvOf = Effect.fnUntraced(function* (
         session: Session,
         workspace: Workspace,
         launcher: string | null,
@@ -24055,7 +23970,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }).pipe(Effect.ignore);
 
       /** `from` on the session line becomes `to`; said at the end when `from` is gone. */
-      const replaceLaunchWords = Effect.fn("SessionEngine.replaceLaunchWords")(function* (
+      const replaceLaunchWords = Effect.fnUntraced(function* (
         sessionId: SessionId,
         from: string,
         to: string,
@@ -24077,7 +23992,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * holder's, a join, or a later run of a joined session. Null when the lease names no
        * session, or one whose workspace is not this one: Mend cannot say whose login it holds.
        */
-      const launchLoginOfWorkspace = Effect.fn("SessionEngine.launchLoginOfWorkspace")(function* (
+      const launchLoginOfWorkspace = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -24891,31 +24806,32 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * agent that held it and is starting its successor there. Either way the workspace must be
        * live and not final-flushed.
        */
-      const retainedWorkspaceAvailable = Effect.fn("SessionEngine.retainedWorkspaceAvailable")(
-        function* (session: Session, handedOver = false) {
-          if (session.sealantWorkspaceId === null) return false;
-          const supportingLeases = (yield* processes.listLiveForWorkspace(
-            session.sealantWorkspaceId,
-          )).filter((process) => holdsWorkspace(process.kind) && !isAgentProcessKind(process.kind));
-          const forwardLeases = (yield* serviceForwards.listOpen()).filter(
-            (forward) => forward.sealantWorkspaceId === session.sealantWorkspaceId,
-          );
-          if (!handedOver && supportingLeases.length === 0 && forwardLeases.length === 0) {
-            return false;
-          }
-          if (yield* workspaceFinalFlushed(session.worktreeId, session.sealantWorkspaceId)) {
-            return false;
-          }
-          return yield* Effect.gen(function* () {
-            const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId ?? "");
-            const status = yield* Effect.promise(() => workspace.status());
-            return workspaceIsLive(status);
-          }).pipe(
-            Effect.catch(() => Effect.succeed(false)),
-            Effect.catchDefect(() => Effect.succeed(false)),
-          );
-        },
-      );
+      const retainedWorkspaceAvailable = Effect.fnUntraced(function* (
+        session: Session,
+        handedOver = false,
+      ) {
+        if (session.sealantWorkspaceId === null) return false;
+        const supportingLeases = (yield* processes.listLiveForWorkspace(
+          session.sealantWorkspaceId,
+        )).filter((process) => holdsWorkspace(process.kind) && !isAgentProcessKind(process.kind));
+        const forwardLeases = (yield* serviceForwards.listOpen()).filter(
+          (forward) => forward.sealantWorkspaceId === session.sealantWorkspaceId,
+        );
+        if (!handedOver && supportingLeases.length === 0 && forwardLeases.length === 0) {
+          return false;
+        }
+        if (yield* workspaceFinalFlushed(session.worktreeId, session.sealantWorkspaceId)) {
+          return false;
+        }
+        return yield* Effect.gen(function* () {
+          const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId ?? "");
+          const status = yield* Effect.promise(() => workspace.status());
+          return workspaceIsLive(status);
+        }).pipe(
+          Effect.catch(() => Effect.succeed(false)),
+          Effect.catchDefect(() => Effect.succeed(false)),
+        );
+      });
 
       /**
        * Whether the session's AGENT is live — the fold, not the row: a live agent process; a
@@ -24924,7 +24840,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * them. `workbench` says whether the open workbench shell counts: a launch may replace it
        * (SLNT-167), a resume may not.
        */
-      const agentIsLive = Effect.fn("SessionEngine.agentIsLive")(function* (
+      const agentIsLive = Effect.fnUntraced(function* (
         session: Session,
         workbench: "counts" | "replaceable" = "counts",
       ) {
@@ -25649,9 +25565,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * conversation's next message relaunches it there). A launch waiting for the worktree's
        * executor to end is not: keeping the workspace up for it would keep it waiting.
        */
-      const stopSessionReachOf = Effect.fn("SessionEngine.stopSessionReachOf")(function* (
-        session: Session,
-      ) {
+      const stopSessionReachOf = Effect.fnUntraced(function* (session: Session) {
         const workspaceId = session.sealantWorkspaceId;
         if (workspaceId === null) {
           return {
@@ -25772,7 +25686,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Whether nothing was ever launched for the session: it never settled, nothing opened a
        * workspace, a run or a PTY for it or asked for an executor, and it has no process.
        */
-      const neverLaunched = Effect.fn("SessionEngine.neverLaunched")(function* (session: Session) {
+      const neverLaunched = Effect.fnUntraced(function* (session: Session) {
         if (
           session.status !== "starting" ||
           session.settledAt !== null ||
@@ -25793,10 +25707,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * that fails, or is refused a slot, settles the session `failed`: the gate rules out
        * anything else launching it meanwhile.
        */
-      const holdWorkspace = Effect.fn("SessionEngine.holdWorkspace")(function* (
-        sessionId: SessionId,
-        slot: LaunchSlot,
-      ) {
+      const holdWorkspace = Effect.fnUntraced(function* (sessionId: SessionId, slot: LaunchSlot) {
         const session = yield* sessions.byId(sessionId);
         if (!(yield* neverLaunched(session))) return session;
         const held = yield* slot
@@ -25824,7 +25735,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * live turns still work with missing history, and the transcript view
        * keeps the full record either way.
        */
-      const backfillNativeHistory = Effect.fn("SessionEngine.backfillNativeHistory")(function* (
+      const backfillNativeHistory = Effect.fnUntraced(function* (
         session: Session,
         sourceAgent: SessionProcess | null,
       ) {
@@ -25952,7 +25863,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
-      const probeConversation = Effect.fn("SessionEngine.probeConversation")(function* (
+      const probeConversation = Effect.fnUntraced(function* (
         session: Session,
         conversation: SessionProcess,
       ) {
@@ -26030,7 +25941,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return { providerSessionId: saved.providerSessionId };
       });
 
-      const capturedTranscriptRead = Effect.fn("SessionEngine.capturedTranscriptRead")(function* (
+      const capturedTranscriptRead = Effect.fnUntraced(function* (
         session: Session,
         conversation: SessionProcess,
         pattern: RegExp,
@@ -26074,9 +25985,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
       });
 
-      const reattachConversation = Effect.fn("SessionEngine.reattachConversation")(function* (
-        conversation: SessionProcess,
-      ) {
+      const reattachConversation = Effect.fnUntraced(function* (conversation: SessionProcess) {
         if (conversation.sealantSessionId === null) return;
         const workspace = yield* sealant.getWorkspace(conversation.sealantWorkspaceId);
         const pipe = yield* sealant.getSession(workspace, conversation.sealantSessionId);
@@ -26101,7 +26010,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ? harnessLayouts.sharedConversationOf(sessionId).pipe(Effect.map((held) => held !== null))
           : Effect.succeed(false);
 
-      const letGoForSwitch = Effect.fn("SessionEngine.letGoForSwitch")(function* (
+      const letGoForSwitch = Effect.fnUntraced(function* (
         { session, ahead }: SwitchStep,
         agent: SessionProcess,
         to: "protocol" | "pty",
@@ -26148,7 +26057,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
-      const endForSwitch = Effect.fn("SessionEngine.endForSwitch")(function* (
+      const endForSwitch = Effect.fnUntraced(function* (
         step: SwitchStep,
         agent: SessionProcess,
         to: "protocol" | "pty",
@@ -26237,7 +26146,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         },
       );
 
-      const conversationNotClosed = Effect.fn("SessionEngine.conversationNotClosed")(function* (
+      const conversationNotClosed = Effect.fnUntraced(function* (
         { session, ahead }: SwitchStep,
         conversation: SessionProcess,
       ) {
@@ -26266,7 +26175,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
       });
 
-      const terminalFromSaved = Effect.fn("SessionEngine.terminalFromSaved")(function* (
+      const terminalFromSaved = Effect.fnUntraced(function* (
         session: Session,
         conversation: SessionProcess,
         providerSessionId: string,
@@ -26432,9 +26341,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * terminal's prompt, so it would read idle while it works, and it stays a terminal until
        * the person switches it back.
        */
-      const awaitTerminalAt = Effect.fn("SessionEngine.awaitTerminalAt")(function* (
-        sessionId: SessionId,
-      ) {
+      const awaitTerminalAt = Effect.fnUntraced(function* (sessionId: SessionId) {
         const agent = currentAgentProcess(yield* processes.listForSession(sessionId));
         if (
           agent === null ||
@@ -26453,9 +26360,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* returnLater(agent.id);
       });
 
-      const workspaceForSupportingProcess = Effect.fn(
-        "SessionEngine.workspaceForSupportingProcess",
-      )(function* (session: Session) {
+      const workspaceForSupportingProcess = Effect.fnUntraced(function* (session: Session) {
         const workspaceId = session.sealantWorkspaceId;
         if (workspaceId === null) return yield* new SessionNotLiveError({ sessionId: session.id });
         // A final flush ended it: it admits nothing more.
@@ -26812,9 +26717,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * co-locates it, else the session's live workspace, the only copy capture mode has that
        * includes the agent's latest edit. No live workspace there is a `SessionNotLiveError`.
        */
-      const worktreeCopyOf = Effect.fn("SessionEngine.worktreeCopyOf")(function* (
-        session: Session,
-      ) {
+      const worktreeCopyOf = Effect.fnUntraced(function* (session: Session) {
         const mount = yield* sessionRepo.worktreeMount(session.projectId, session.worktree);
         if (mount !== undefined) return { _tag: "Host", path: mount } as const;
         return {
@@ -26823,16 +26726,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         } as const;
       });
 
-      const mendTomlOf = Effect.fn("SessionEngine.mendTomlOf")(function* (session: Session) {
+      const mendTomlOf = Effect.fnUntraced(function* (session: Session) {
         const copy = yield* worktreeCopyOf(session);
         return copy._tag === "Host"
           ? yield* readMendToml(copy.path)
           : yield* readWorkspaceMendToml(copy.workspace);
       });
 
-      const declarationsOf = Effect.fn("SessionEngine.declarationsOf")(function* (
-        session: Session,
-      ) {
+      const declarationsOf = Effect.fnUntraced(function* (session: Session) {
         const file = yield* mendTomlOf(session).pipe(
           Effect.catchTag("SessionNotLiveError", () => Effect.succeed(EMPTY_MEND_TOML)),
         );
@@ -26845,9 +26746,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           (declared) => declared.recipes,
         );
 
-      const serviceDeclarations = Effect.fn("SessionEngine.serviceDeclarations")(function* (
-        sessionId: SessionId,
-      ) {
+      const serviceDeclarations = Effect.fnUntraced(function* (sessionId: SessionId) {
         const session = yield* sessions.byId(sessionId);
         const declared = yield* declarationsOf(session);
         const digests = recipeDigestsOf(declared);
@@ -26960,7 +26859,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return (yield* processes.byId(processId)) ?? shell;
       });
 
-      const renameShell = Effect.fn("SessionEngine.renameShell")(function* (
+      const renameShell = Effect.fnUntraced(function* (
         processId: SessionProcessId,
         requestedLabel: string,
       ) {
@@ -26994,7 +26893,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return (yield* processes.byId(processId)) ?? shell;
       });
 
-      const getOrCreateService = Effect.fn("SessionEngine.getOrCreateService")(function* (
+      const getOrCreateService = Effect.fnUntraced(function* (
         sessionId: SessionId,
         name: string,
         workspacePort: number,
@@ -27053,7 +26952,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
       });
 
-      const bindServiceForward = Effect.fn("SessionEngine.bindServiceForward")(function* (
+      const bindServiceForward = Effect.fnUntraced(function* (
         serviceId: ServiceId,
         workspaceId: SealantWorkspaceId,
         workspacePort: number,
@@ -27114,7 +27013,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return forward.id;
       });
 
-      const recordObservation = Effect.fn("SessionEngine.recordObservation")(function* (
+      const recordObservation = Effect.fnUntraced(function* (
         serviceId: ServiceId,
         forwardId: ServiceForwardId,
         verdict: ReadyVerdict,
@@ -27130,7 +27029,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** An attempt's check, as written: `reachedAt` when it answered, and the forward's view. */
-      const recordReadiness = Effect.fn("SessionEngine.recordReadiness")(function* (
+      const recordReadiness = Effect.fnUntraced(function* (
         serviceId: ServiceId,
         attemptId: SessionProcessId,
         forwardId: ServiceForwardId | null,
@@ -27144,7 +27043,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * How `attemptId` of `service` counts as up, from what its row recorded at launch: an
        * attempt from before 0143, or none, is a TCP accept within the default timeout.
        */
-      const attemptReadyOf = Effect.fn("SessionEngine.attemptReadyOf")(function* (
+      const attemptReadyOf = Effect.fnUntraced(function* (
         service: Service,
         attemptId: SessionProcessId | null,
       ) {
@@ -27162,7 +27061,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** An adoption's first half, under the permit: the Service row and its forward. */
-      const beginAdoption = Effect.fn("SessionEngine.beginAdoption")(function* (
+      const beginAdoption = Effect.fnUntraced(function* (
         sessionId: SessionId,
         workspacePort: number,
         name: string | null,
@@ -27324,7 +27223,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * A process a stop could not end stays live, and the session line says so. While it is in
        * here, no settle-path cleanup records it ended either (`stopWorkspaceQuietly`).
        */
-      const notStopped = Effect.fn("SessionEngine.notStopped")(function* (process: SessionProcess) {
+      const notStopped = Effect.fnUntraced(function* (process: SessionProcess) {
         const words = closeFailed.get(process.id) ?? notStoppedWords(process);
         closeFailed.set(process.id, words);
         const session = yield* sessions
@@ -27341,9 +27240,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * A process whose close failed earlier was closed after all: its words come off the line once
        * no other process of its kind in the session is still waiting (review 2 of mend#558, P3-1).
        */
-      const stoppedAfterAll = Effect.fn("SessionEngine.stoppedAfterAll")(function* (
-        process: SessionProcess,
-      ) {
+      const stoppedAfterAll = Effect.fnUntraced(function* (process: SessionProcess) {
         // Nothing was refused (the set is restored from the session line at boot): no read at all
         // on an ordinary end (review 4 of mend#558, P3-2).
         if (!closeFailed.delete(process.id)) return;
@@ -27365,7 +27262,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * make, and the change's owner (the owner of the worktree's first session) for the
        * worktree. Built only where the platform can hand it over.
        */
-      const captureOwnerMapOf = Effect.fn("SessionEngine.captureOwnerMapOf")(function* (
+      const captureOwnerMapOf = Effect.fnUntraced(function* (
         layout: Extract<LaunchLayout, { readonly layout: "person" }>,
         worktreeId: WorktreeId,
       ) {
@@ -27546,7 +27443,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
 
       /** Record an observed end and clear any earlier refusal, including after a restart. */
-      const markProcessExited = Effect.fn("SessionEngine.markProcessExited")(function* (
+      const markProcessExited = Effect.fnUntraced(function* (
         processId: SessionProcessId,
         how: "exited" | "stopped",
         exitCode: number | null,
@@ -28404,9 +28301,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** A whole executor ended: clear refusals for the rows its bulk reap ends too. */
-      const reapWorkspaceProcesses = Effect.fn("SessionEngine.reapWorkspaceProcesses")(function* (
-        workspaceId: SealantWorkspaceId,
-      ) {
+      const reapWorkspaceProcesses = Effect.fnUntraced(function* (workspaceId: SealantWorkspaceId) {
         // Its homes went with it: nothing of its people is kept (docs/adr/0016).
         layoutSteps.forgetExecutor(workspaceId);
         conversationSteps.forgetExecutor(workspaceId);
@@ -28488,7 +28383,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         });
 
-      const previewUrlFor = Effect.fn("SessionEngine.previewUrlFor")(function* (
+      const previewUrlFor = Effect.fnUntraced(function* (
         session: Session,
         service: Service,
         filePreview: string | null,
@@ -28618,7 +28513,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the process. The readiness wait runs outside the permit (`awaitAttemptReady`), so a slow
        * starter never holds up another Service's stop; the second half takes the permit again.
        */
-      const beginServiceStartBody = Effect.fn("SessionEngine.beginServiceStart")(function* (
+      const beginServiceStartBody = Effect.fnUntraced(function* (
         sessionId: SessionId,
         start: ServiceStart,
         cause: AcceptedStart,
@@ -28725,7 +28620,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * waited is left as whatever ended it left it: nothing is bound for it. UDP, which has no
        * check, counts as up once its process outlived the first moments (`verdict` null).
        */
-      const finishServiceStart = Effect.fn("SessionEngine.finishServiceStart")(function* (
+      const finishServiceStart = Effect.fnUntraced(function* (
         started: Effect.Success<ReturnType<typeof beginServiceStart>>,
         verdict: ReadyVerdict | null,
         forward: "rebind" | "keep-bound",
@@ -28809,10 +28704,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ).pipe(Effect.map(({ view }) => view));
 
       /** The live Service `name` names in this session, with its live attempt when it runs one. */
-      const liveServiceNamed = Effect.fn("SessionEngine.liveServiceNamed")(function* (
-        sessionId: SessionId,
-        name: string,
-      ) {
+      const liveServiceNamed = Effect.fnUntraced(function* (sessionId: SessionId, name: string) {
         const service = yield* services.byName(sessionId, name);
         if (service === null || !(yield* serviceIsLive(service))) return null;
         const attempt =
@@ -28828,7 +28720,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the permit; an adopted one has its port looked at again. Nothing read back from an earlier
        * run's observation counts.
        */
-      const awaitLiveService = Effect.fn("SessionEngine.awaitLiveService")(function* (
+      const awaitLiveService = Effect.fnUntraced(function* (
         live: NonNullable<Effect.Success<ReturnType<typeof liveServiceNamed>>>,
         recipe: ServiceRecipe,
       ) {
@@ -28900,7 +28792,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * env gives it. A docker one is reached on loopback when Docker publishes there, else on the
        * sidecar; one not running, or not answering, is left out.
        */
-      const dependencyAddressesOf = Effect.fn("SessionEngine.dependencyAddressesOf")(function* (
+      const dependencyAddressesOf = Effect.fnUntraced(function* (
         sessionId: SessionId,
         names: ReadonlyArray<ServiceDependency>,
       ) {
@@ -28948,7 +28840,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
 
-      const runsLaunch = Effect.fn("SessionEngine.runsLaunch")(function* (
+      const runsLaunch = Effect.fnUntraced(function* (
         live: NonNullable<Effect.Success<ReturnType<typeof liveServiceNamed>>>,
         launch: Parameters<typeof sameLaunch>[1],
       ) {
@@ -28963,7 +28855,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * starts. The Service asked for is always started: one live by now is refused as a name
        * taken, as any start of it is.
        */
-      const startPlanStep = Effect.fn("SessionEngine.startPlanStep")(function* (
+      const startPlanStep = Effect.fnUntraced(function* (
         sessionId: SessionId,
         step: PlannedRecipe,
         role: "dependency" | "target",
@@ -29050,7 +28942,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const dependencyLaunches = new Map<string, Deferred.Deferred<ServiceId, PlanFailure>>();
 
       /** A dependency another plan is launching: met once that launch is through, by its `ready`. */
-      const joinDependency = Effect.fn("SessionEngine.joinDependency")(function* (
+      const joinDependency = Effect.fnUntraced(function* (
         sessionId: SessionId,
         step: PlannedRecipe,
         launching: Deferred.Deferred<ServiceId, PlanFailure>,
@@ -29317,10 +29209,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return { view: started.view, outcome } satisfies PlanEnd;
       });
 
-      const recipePlanOf = Effect.fn("SessionEngine.recipePlanOf")(function* (
-        session: Session,
-        name: string,
-      ) {
+      const recipePlanOf = Effect.fnUntraced(function* (session: Session, name: string) {
         const file = yield* mendTomlOf(session).pipe(
           Effect.catchTags({
             ProjectNotFoundError: () =>
@@ -29341,7 +29230,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* recipePlanFrom(session, file, name);
       });
 
-      const recipePlanFrom = Effect.fn("SessionEngine.recipePlanFrom")(function* (
+      const recipePlanFrom = Effect.fnUntraced(function* (
         session: Session,
         file: MendTomlFile,
         name: string,
@@ -29374,7 +29263,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * caller with the same start id follows that plan to its end. A plan whose follower lost its
        * claim never started its Service, and a new one takes its place.
        */
-      const beginRecipePlan = Effect.fn("SessionEngine.beginRecipePlan")(function* (
+      const beginRecipePlan = Effect.fnUntraced(function* (
         session: Session,
         name: string,
         cause: AcceptedStart,
@@ -29500,7 +29389,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
       });
 
-      const restartReplacedServices = Effect.fn("SessionEngine.restartReplacedServices")(function* (
+      const restartReplacedServices = Effect.fnUntraced(function* (
         holder: Session,
         names: ReadonlyArray<string>,
       ) {
@@ -29520,7 +29409,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
-      const previewNow = Effect.fn("SessionEngine.previewNow")(function* (
+      const previewNow = Effect.fnUntraced(function* (
         session: Session,
         name: string,
         previewId: PreviewId | null,
@@ -29543,7 +29432,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         } as const;
       });
 
-      const staleRecipeService = Effect.fn("SessionEngine.staleRecipeService")(function* (
+      const staleRecipeService = Effect.fnUntraced(function* (
         previewId: PreviewId | null,
         recipePlan: Extract<RecipePlan, { readonly _tag: "Planned" }>,
       ) {
@@ -29570,7 +29459,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.catchTag("SessionNotLiveError", () => Effect.succeed(false)),
         );
 
-      const startedUnder = Effect.fn("SessionEngine.startedUnder")(function* (
+      const startedUnder = Effect.fnUntraced(function* (
         session: Session,
         name: string,
         startId: string,
@@ -29583,7 +29472,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return earlier !== null;
       });
 
-      const previewStartOutcome = Effect.fn("SessionEngine.previewStartOutcome")(function* (
+      const previewStartOutcome = Effect.fnUntraced(function* (
         session: Session,
         name: string,
         previewId: PreviewId | null,
@@ -29629,7 +29518,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         } as const;
       });
 
-      const preparePreview = Effect.fn("SessionEngine.preparePreview")(function* (
+      const preparePreview = Effect.fnUntraced(function* (
         sessionId: SessionId,
         turnId: AgentTurnId,
         hold: PreviewPreparationHold,
@@ -29765,7 +29654,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* previewStartOutcome(session, name, previewId, plan, ended);
       });
 
-      const runningSetupInputsChanged = Effect.fn("SessionEngine.runningSetupInputsChanged")(
+      const runningSetupInputsChanged = Effect.fnUntraced(
         function* (session: Session, setup: SetupDeclaration) {
           const copy = yield* worktreeCopyOf(session);
           const workspace =
@@ -29783,7 +29672,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.catch(() => Effect.succeed(false)),
       );
 
-      const restartServiceUnlocked = Effect.fn("SessionEngine.restartService")(function* (
+      const restartServiceUnlocked = Effect.fnUntraced(function* (
         serviceId: ServiceId,
         cause: AcceptedStart,
         filePreview: string | null,
@@ -29897,9 +29786,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * before per-person homes keeps it under root's home, which is read when the person's holds
        * none. Null when there is no transcript, or it could not be read.
        */
-      const liveTranscriptOf = Effect.fn("SessionEngine.liveTranscriptOf")(function* (
-        agent: SessionProcess,
-      ) {
+      const liveTranscriptOf = Effect.fnUntraced(function* (agent: SessionProcess) {
         const harness = agent.harness;
         const shape = harness === null ? undefined : HARNESS_STATE[harness];
         if (harness === null || shape === undefined) return null;
@@ -29950,9 +29837,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * time per session; the turn ids make a repeat land nothing.
        */
       const terminalIngestLocks = new Map<string, Semaphore.Semaphore>();
-      const ingestTerminalTurns = Effect.fn("SessionEngine.ingestTerminalTurns")(function* (
-        processId: SessionProcessId,
-      ) {
+      const ingestTerminalTurns = Effect.fnUntraced(function* (processId: SessionProcessId) {
         const agent = yield* processes.byId(processId);
         if (agent === null || agent.kind !== "agent-pty" || agent.providerSessionId === null) {
           return 0;
@@ -30053,9 +29938,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * before the takeover. A turn still running is waited for (`returnsPending`), never ended.
        * Words typed there and not sent are lost with the TUI; the conversation says so.
        */
-      const returnToConversation = Effect.fn("SessionEngine.returnToConversation")(function* (
-        processId: SessionProcessId,
-      ) {
+      const returnToConversation = Effect.fnUntraced(function* (processId: SessionProcessId) {
         if ((terminalClients.get(processId) ?? 0) > 0) {
           returnsPending.delete(processId);
           return;
@@ -30245,7 +30128,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         return retryAfterSeconds === null ? outcome : { _tag: "too-many", retryAfterSeconds };
       };
-      const agentHook = Effect.fn("SessionEngine.agentHook")(function* (
+      const agentHook = Effect.fnUntraced(function* (
         sessionId: SessionId,
         report: AgentHookReport,
       ): Effect.fn.Return<AgentHookOutcome> {
@@ -30313,10 +30196,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return "unchanged";
       });
 
-      const personTyped = Effect.fn("SessionEngine.personTyped")(function* (
-        processId: SessionProcessId,
-        typedAt: Date,
-      ) {
+      const personTyped = Effect.fnUntraced(function* (processId: SessionProcessId, typedAt: Date) {
         // A line typed and not sent holds a message from the composer (SLNT-1235).
         const before = terminalTypedAt.get(processId);
         if (before === undefined || before.getTime() < typedAt.getTime())
@@ -30772,7 +30652,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * - a person's token: this session's routes as that person, if the session is live in that
        *   launch's executor and they may act on it; never the capture routes.
        */
-      const channelGrant = Effect.fn("SessionEngine.channelGrant")(function* (
+      const channelGrant = Effect.fnUntraced(function* (
         sessionId: SessionId,
         base: SessionSocketApi,
         grant: {
@@ -31011,7 +30891,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
       /** A Service holds its workspace while its attempt runs or its forward is open. */
-      const serviceIsLive = Effect.fn("SessionEngine.serviceIsLive")(function* (service: Service) {
+      const serviceIsLive = Effect.fnUntraced(function* (service: Service) {
         const attempt =
           service.currentAttemptId === null
             ? null
@@ -31049,7 +30929,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const previewRemainingMs = (deadline: number) =>
         Math.max(0, deadline - clock.currentTimeMillisUnsafe());
 
-      const joinPreviewAttempt = Effect.fn("SessionEngine.joinPreviewAttempt")(function* (
+      const joinPreviewAttempt = Effect.fnUntraced(function* (
         attemptId: SessionProcessId,
         deadline: number,
       ) {
@@ -31065,9 +30945,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
-      const previewStartStep = Effect.fn("SessionEngine.previewStartStep")(function* (
-        request: PreviewStartRequest,
-      ) {
+      const previewStartStep = Effect.fnUntraced(function* (request: PreviewStartRequest) {
         const snapshot = yield* previews.gatewaySnapshot(request.previewId);
         if (snapshot === null || snapshot.preview.state !== "kept") {
           return yield* previewRefused("preview-gone");
@@ -31178,7 +31056,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
 
-      const acceptPreviewStart = Effect.fn("SessionEngine.acceptPreviewStart")(function* (
+      const acceptPreviewStart = Effect.fnUntraced(function* (
         step: Extract<PreviewStartStep, { readonly _tag: "Start" }>,
         lookedUp: AttemptDependencies | null,
       ) {
@@ -31227,7 +31105,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return { service, attempt, pty, workspaceId, ready };
       });
 
-      const endPreviewAttempt = Effect.fn("SessionEngine.endPreviewAttempt")(function* (
+      const endPreviewAttempt = Effect.fnUntraced(function* (
         service: Service,
         attempt: SessionProcess,
       ) {
@@ -31244,7 +31122,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
-      const finishPreviewStart = Effect.fn("SessionEngine.finishPreviewStart")(function* (
+      const finishPreviewStart = Effect.fnUntraced(function* (
         request: PreviewStartRequest,
         accepted: Effect.Success<ReturnType<typeof acceptPreviewStart>>,
       ) {
@@ -31325,9 +31203,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
-      const joinPreviewPreparation = Effect.fn("SessionEngine.joinPreviewPreparation")(function* (
-        request: PreviewStartRequest,
-      ) {
+      const joinPreviewPreparation = Effect.fnUntraced(function* (request: PreviewStartRequest) {
         for (;;) {
           const snapshot = yield* previews.gatewaySnapshot(request.previewId);
           if (snapshot === null) return yield* previewRefused("preview-gone");
@@ -31457,7 +31333,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* finishPreviewStart(request, accepted);
       });
 
-      const ensurePreviewRunning = Effect.fn("SessionEngine.ensurePreviewRunning")(function* (
+      const ensurePreviewRunning = Effect.fnUntraced(function* (
         request: PreviewStartRequest,
         claim: Effect.Effect<void, PreviewStartDeclined, Scope.Scope>,
       ) {
@@ -31494,7 +31370,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // -----------------------------------------------------------------------------------------
 
       /** The create-time-fixed inputs as the project resolves them RIGHT NOW for `ownerUserId`. */
-      const hotInputsFor = Effect.fn("SessionEngine.hotInputsFor")(function* (
+      const hotInputsFor = Effect.fnUntraced(function* (
         project: Project,
         ownerUserId: string | null,
         /**
@@ -31608,7 +31484,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Tear a pool entry down. `keepWorktree` is the claim/adopt path: the session now owns the
        * worktree and socket dir, so only the row (and a dead workspace) go.
        */
-      const drainHotWorkspace = Effect.fn("SessionEngine.drainHotWorkspace")(function* (
+      const drainHotWorkspace = Effect.fnUntraced(function* (
         entry: HotWorkspace,
         options?: { readonly keepWorktree?: boolean },
       ) {
@@ -31849,7 +31725,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * The accounts a project's pool warms for (docs/adr/0003): owners of its recent sessions,
        * most recent first, who may still run in it. Nobody else's credentials warm a workspace.
        */
-      const hotPoolOwners = Effect.fn("SessionEngine.hotPoolOwners")(function* (project: Project) {
+      const hotPoolOwners = Effect.fnUntraced(function* (project: Project) {
         const since = new Date(
           clock.currentTimeMillisUnsafe() - Duration.toMillis(HOT_POOL_RECENT_OWNER_WINDOW),
         );
@@ -32072,7 +31948,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly waiting: Array<Deferred.Deferred<void>>;
       }
       const hotReconcileStates = new Map<ProjectId, HotReconcileState>();
-      const scheduleHotReconcile = Effect.fn("SessionEngine.scheduleHotReconcile")(function* (
+      const scheduleHotReconcile = Effect.fnUntraced(function* (
         projectId: ProjectId,
         settled: Deferred.Deferred<void> | null,
       ) {
@@ -32121,9 +31997,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
       const requestHotReconcile = (projectId: ProjectId) => scheduleHotReconcile(projectId, null);
       /** Waits for a reconcile of the project that starts after this call. */
-      const settledHotReconcile = Effect.fn("SessionEngine.settledHotReconcile")(function* (
-        projectId: ProjectId,
-      ) {
+      const settledHotReconcile = Effect.fnUntraced(function* (projectId: ProjectId) {
         const settled = yield* Deferred.make<void>();
         yield* scheduleHotReconcile(projectId, settled);
         yield* Deferred.await(settled);
@@ -32133,7 +32007,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * The standbys still in the pool whose VMs run in `boatAccountId`: every unclaimed row with
        * a workspace whose owner's launches name that account. A claimed one is a session's.
        */
-      const standbysIn = Effect.fn("SessionEngine.standbysIn")(function* (
+      const standbysIn = Effect.fnUntraced(function* (
         organizationId: OrganizationId,
         boatAccountId: string,
         found: ReadonlyArray<Project>,
@@ -32217,7 +32091,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * pooled id (its harness home and socket dir are already mounted), and the launch binds
        * the worktree. Null means nothing matched the project's current fingerprint.
        */
-      const claimHotSession = Effect.fn("SessionEngine.claimHotSession")(function* (
+      const claimHotSession = Effect.fnUntraced(function* (
         project: Project,
         worktree: Worktree,
         input: {
@@ -32433,9 +32307,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** Whose login a surviving protocol process's workspace launched with (docs/adr/0013). */
-      const launchLoginOfProcess = Effect.fn("SessionEngine.launchLoginOfProcess")(function* (
-        protocolProcess: SessionProcess,
-      ) {
+      const launchLoginOfProcess = Effect.fnUntraced(function* (protocolProcess: SessionProcess) {
         const session = yield* sessions
           .byId(protocolProcess.sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
@@ -32443,7 +32315,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* launchLoginOfWorkspace(session, protocolProcess.sealantWorkspaceId);
       });
 
-      const rehydrateInputOf = Effect.fn("SessionEngine.rehydrateInputOf")(function* (
+      const rehydrateInputOf = Effect.fnUntraced(function* (
         protocolProcess: SessionProcess,
         pipe: RehydrateProtocolProcessInput["pipe"],
         highWater: RehydrateProtocolProcessInput["highWater"],
@@ -32680,7 +32552,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           yield* sessions.setHasTranscript(session.id, live);
         }
-      });
+      }).pipe(Effect.withSpan("SessionEngine.classifyUnclassifiedSessions"));
       /**
        * One launch at a time (`launch-gate.ts`), and the second half of a stop during a launch: a
        * stop that came after the launch's last look found no agent to end, and the launch started

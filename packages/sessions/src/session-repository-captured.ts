@@ -201,7 +201,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
     const blobFailure = (cwd: string, what: string) => (error: { readonly _tag: string }) =>
       gitFailure(cwd, what, `bucket: ${error._tag}`);
 
-    const putPack = Effect.fn("SessionRepositoryCaptured.putPack")(function* (
+    const putPack = Effect.fnUntraced(function* (
       storePath: string,
       key: string,
       pack: Uint8Array,
@@ -226,7 +226,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
       return { key, bytes: pack.byteLength };
     });
 
-    const uploadBasePack = Effect.fn("SessionRepositoryCaptured.uploadBasePack")(function* (
+    const uploadBasePack = Effect.fnUntraced(function* (
       projectId: ProjectId,
       storePath: string,
       sha: Sha,
@@ -495,7 +495,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
      * the claim waits for that caller's capture 0, for up to one Mend claim's lease, and answers
      * `registered` once it is there. A claim taken after it registered is given back at once.
      */
-    const claimCaptureZero = Effect.fn("SessionRepositoryCaptured.claimCaptureZero")(function* (
+    const claimCaptureZero = Effect.fnUntraced(function* (
       storePath: string,
       worktreeId: WorktreeId,
     ) {
@@ -663,14 +663,16 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
      * directory's HEAD — under its own ref namespace so it collides with no ordinal the engine
      * hands out. Its closure is what the base pack carries.
      */
-    const backfillFromDirectory = Effect.fn("SessionRepositoryCaptured.backfillFromDirectory")(
-      function* (storePath: string, dir: string, worktreeId: WorktreeId) {
-        const headSha = Sha.make(yield* git(["rev-parse", "--verify", "HEAD"], dir));
-        const snapshot = yield* store.checkpoint(dir, `backfill-${worktreeId}`, 0, headSha);
-        void storePath;
-        return { headSha, checkpointSha: snapshot.sha };
-      },
-    );
+    const backfillFromDirectory = Effect.fnUntraced(function* (
+      storePath: string,
+      dir: string,
+      worktreeId: WorktreeId,
+    ) {
+      const headSha = Sha.make(yield* git(["rev-parse", "--verify", "HEAD"], dir));
+      const snapshot = yield* store.checkpoint(dir, `backfill-${worktreeId}`, 0, headSha);
+      void storePath;
+      return { headSha, checkpointSha: snapshot.sha };
+    });
 
     const renameBranch: SessionRepository["Service"]["renameBranch"] = (
       projectId,

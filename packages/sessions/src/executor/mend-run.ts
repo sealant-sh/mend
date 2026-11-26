@@ -117,7 +117,7 @@ const make: Effect.Effect<MendRunExecutor["Service"], never, Dependencies> = Eff
           ),
         ),
       );
-    const target = Effect.fn("MendRunExecutor.target")(function* (organizationId: OrganizationId) {
+    const target = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const row = yield* instances.get(organizationId);
       if (row === null)
         return yield* failure("This organization's Mend-run Executor has not started.");
@@ -164,228 +164,224 @@ const make: Effect.Effect<MendRunExecutor["Service"], never, Dependencies> = Eff
             "Mend could not finish the stopped Executor backup. Executor stays stopped; upgrade did not replace it.",
           ),
       });
-    const act = Effect.fn("MendRunExecutor.act")(
-      (organizationId: OrganizationId, action: typeof ExecutorManagedAction.Type) =>
-        instances.withLock(
-          organizationId,
-          Effect.gen(function* () {
-            if (reason !== null) return yield* failure(reason);
-            const configured = yield* links.configuration(organizationId);
-            if (configured !== null && configured.mode !== "mend-run")
-              return yield* failure(
-                "Clear the organization's own Executor address before starting a Mend-run Executor.",
-              );
-            let row = yield* instances.get(organizationId);
-            if (row === null) {
-              if (action === "remove") return;
-              if (action !== "start")
-                return yield* failure("Start this organization's Executor first.");
-              const state = {
-                betterAuthSecret: secret(),
-                encryptionKey: Redacted.make(randomBytes(32).toString("hex")),
-                ownerPassword: secret(),
-                ssoClientSecret: secret(),
-              };
-              row = {
-                organizationId,
-                scopeKey: `mend:${randomUUID()}:organization:${organizationId}`,
-                appliedSpec: null,
-                image: null,
-                backupAt: null,
-                executorOrganizationId: null,
-                sealedState: yield* cipher
-                  .encrypt(Schema.encodeSync(Schema.fromJsonString(State))(state))
-                  .pipe(
-                    Effect.mapError(() =>
-                      failure("Mend could not seal Executor's first-start secrets."),
-                    ),
-                  ),
-              };
-              // This committed row precedes every external side effect, including first setup.
-              yield* instances.save(row);
-            }
-            const service = yield* scope(row);
-            const state = yield* unseal(row);
-            if (action === "remove") {
-              const observed = yield* service.get().pipe(Effect.mapError(platformFailure));
-              const expectedInstanceId = state.removingInstanceId ?? observed?.id;
-              if (expectedInstanceId !== undefined) {
-                if (observed !== null && observed.id !== expectedInstanceId)
-                  return yield* failure(
-                    "Executor's instance identity changed. Mend did not remove it. The operator must check this organization's retained instance.",
-                  );
-                // Keep the original identity across failed/ambiguous purges and API restarts.
-                row = {
-                  ...row,
-                  sealedState: yield* cipher
-                    .encrypt(
-                      Schema.encodeSync(Schema.fromJsonString(State))({
-                        ...state,
-                        removingInstanceId: expectedInstanceId,
-                      }),
-                    )
-                    .pipe(
-                      Effect.mapError(() =>
-                        failure("Mend could not save the Executor removal request."),
-                      ),
-                    ),
-                };
-                yield* instances.save(row);
-                if (observed !== null && observed.state.kind !== "archived")
-                  yield* service.stop().pipe(Effect.mapError(platformFailure));
-                yield* service.purge(expectedInstanceId).pipe(Effect.mapError(platformFailure));
-              }
-              const directory = path.join(
-                store.root,
-                "executor-backups",
-                createHash("sha256").update(row.scopeKey).digest("hex"),
-              );
-              yield* Effect.tryPromise({
-                try: async () => {
-                  try {
-                    await fs.readdir(directory);
-                    await fs.rm(directory, { recursive: true });
-                  } catch (error) {
-                    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
-                      throw error;
-                  }
-                },
-                catch: () =>
-                  failure(
-                    "Sealant purged Executor, but Mend could not delete its saved backups. Retry Remove to finish; the sealed removal record has been kept.",
-                  ),
-              });
-              // The configuration cascades to all person/member grants and incomplete flows.
-              yield* identity.remove(organizationId).pipe(Effect.mapError(identityFailure));
-              yield* links.deleteConfiguration(organizationId);
-              yield* instances.remove(organizationId);
-              return;
-            }
-            if (state.removingInstanceId !== undefined)
-              return yield* failure(
-                "This Executor's removal has started. Retry Remove to finish deleting its service logins and backups.",
-              );
-            if (action === "stop") {
-              yield* service.stop().pipe(Effect.mapError(platformFailure));
-              return;
-            }
-            const sso = yield* identity
-              .prepare(organizationId, state.ssoClientSecret)
-              .pipe(Effect.mapError(identityFailure));
-            const spec: ScopeInstanceSpec = {
-              alias: "executor",
-              worktreeKey: null,
-              image: EXECUTOR_IMAGE,
-              command: [
-                "sh",
-                "-c",
-                'umask 077; printf %s "$MEND_EXECUTOR_CA_PEM" > /app/data/mend-ca.pem; exec executor-host serve',
-              ],
-              env: {
-                NODE_EXTRA_CA_CERTS: "/app/data/mend-ca.pem",
-                MEND_EXECUTOR_CA_PEM: sso.ca,
-                SSO_DISCOVERY_URL: sso.discovery,
-                SSO_CLIENT_ID: sso.clientId,
-                SSO_ALLOWED_DOMAINS: sso.domain,
-                DO_NOT_TRACK: "1",
-                EXECUTOR_DISABLE_ANALYTICS: "1",
-                BETTER_AUTH_URL: origin,
-                EXECUTOR_OAUTH_CALLBACK_URL: `${network.appUrl}/executor/service-callback`,
-              },
-              volumes: [{ name: "data", mountPath: "/app/data", storageBytes }],
-              limits: { cpuMillicores: budget.cpuMillicores, memoryBytes: budget.memoryBytes },
-              ready: { kind: "tcp", port: 4400 },
-              idleStopAfterSeconds: null,
-              reach: { kind: "caller", caller, port: 4400, callbackPort: 4401 },
+    const act = (organizationId: OrganizationId, action: typeof ExecutorManagedAction.Type) =>
+      instances.withLock(
+        organizationId,
+        Effect.gen(function* () {
+          if (reason !== null) return yield* failure(reason);
+          const configured = yield* links.configuration(organizationId);
+          if (configured !== null && configured.mode !== "mend-run")
+            return yield* failure(
+              "Clear the organization's own Executor address before starting a Mend-run Executor.",
+            );
+          let row = yield* instances.get(organizationId);
+          if (row === null) {
+            if (action === "remove") return;
+            if (action !== "start")
+              return yield* failure("Start this organization's Executor first.");
+            const state = {
+              betterAuthSecret: secret(),
+              encryptionKey: Redacted.make(randomBytes(32).toString("hex")),
+              ownerPassword: secret(),
+              ssoClientSecret: secret(),
             };
-            const digest = createHash("sha256").update(JSON.stringify(spec)).digest("hex");
-            const before = yield* service.get().pipe(Effect.mapError(platformFailure));
-            if (before !== null && (action === "upgrade" || row.appliedSpec !== digest)) {
-              yield* service.stop().pipe(Effect.mapError(platformFailure));
-              const stream = yield* service.backup().pipe(Effect.mapError(platformFailure));
-              yield* backup(row, stream);
-              row = { ...row, backupAt: new Date() };
-              yield* instances.save(row);
-            }
-            const observation = yield* service
-              .up(
-                spec,
-                Redacted.make({
-                  BETTER_AUTH_SECRET: Redacted.value(state.betterAuthSecret),
-                  EXECUTOR_ENCRYPTION_KEY: Redacted.value(state.encryptionKey),
-                  SSO_CLIENT_SECRET: Redacted.value(state.ssoClientSecret),
-                }),
-              )
-              .pipe(Effect.mapError(platformFailure));
-            const endpoint = route(observation);
-            if (endpoint === null)
-              return yield* failure(
-                `Sealant observed Executor ${observation.state.kind}. Start again after checking the runtime.`,
-              );
-            let answered = false;
-            for (let attempt = 0; attempt < 60; attempt++) {
-              const health = yield* Effect.result(requestExecutor(endpoint, "/health", {}, 2000));
-              if (health._tag === "Success" && health.success.ok) {
-                answered = true;
-                break;
-              }
-              yield* Effect.sleep("1 second");
-            }
-            if (!answered)
-              return yield* failure(
-                "Executor did not answer its health request · observed. Start again after checking the runtime.",
-              );
-            row = { ...row, appliedSpec: digest, image: EXECUTOR_IMAGE };
-            yield* instances.save(row);
-            const current = yield* links.configuration(organizationId);
-            if (current !== null && current.mode !== "mend-run")
-              return yield* failure(
-                "Remove the organization's own Executor configuration before starting a Mend-run Executor.",
-              );
-            const configuration = current ?? {
+            row = {
               organizationId,
-              id: randomUUID(),
-              mode: "mend-run",
-              url: origin,
-            };
-            yield* links.saveConfiguration(configuration);
-            if ((yield* links.link(configuration.id, "member")) === null) {
-              const signedIn = yield* signInExecutorOwner(
-                endpoint,
-                {
-                  email: `mend@${organizationId}.people.mend.invalid`,
-                  password: state.ownerPassword,
-                  organizationName: "Mend organization",
-                },
-                `${network.appUrl}/executor/callback`,
-                transport,
-              );
-              const sealedCredentials = yield* cipher
-                .encrypt(
-                  Schema.encodeSync(Schema.fromJsonString(ExecutorCredentials))(
-                    signedIn.credentials,
-                  ),
-                )
+              scopeKey: `mend:${randomUUID()}:organization:${organizationId}`,
+              appliedSpec: null,
+              image: null,
+              backupAt: null,
+              executorOrganizationId: null,
+              sealedState: yield* cipher
+                .encrypt(Schema.encodeSync(Schema.fromJsonString(State))(state))
                 .pipe(
                   Effect.mapError(() =>
-                    failure("Mend could not seal the Executor grants. Start again."),
+                    failure("Mend could not seal Executor's first-start secrets."),
                   ),
+                ),
+            };
+            // This committed row precedes every external side effect, including first setup.
+            yield* instances.save(row);
+          }
+          const service = yield* scope(row);
+          const state = yield* unseal(row);
+          if (action === "remove") {
+            const observed = yield* service.get().pipe(Effect.mapError(platformFailure));
+            const expectedInstanceId = state.removingInstanceId ?? observed?.id;
+            if (expectedInstanceId !== undefined) {
+              if (observed !== null && observed.id !== expectedInstanceId)
+                return yield* failure(
+                  "Executor's instance identity changed. Mend did not remove it. The operator must check this organization's retained instance.",
                 );
-              yield* instances.save({ ...row, executorOrganizationId: signedIn.organizationId });
-              yield* links.saveLink({
-                id: randomUUID(),
-                configurationId: configuration.id,
-                subject: "member",
-                userId: null,
-                state: "active",
-                sealedCredentials,
-                observedAt: new Date(),
-              });
+              // Keep the original identity across failed/ambiguous purges and API restarts.
+              row = {
+                ...row,
+                sealedState: yield* cipher
+                  .encrypt(
+                    Schema.encodeSync(Schema.fromJsonString(State))({
+                      ...state,
+                      removingInstanceId: expectedInstanceId,
+                    }),
+                  )
+                  .pipe(
+                    Effect.mapError(() =>
+                      failure("Mend could not save the Executor removal request."),
+                    ),
+                  ),
+              };
+              yield* instances.save(row);
+              if (observed !== null && observed.state.kind !== "archived")
+                yield* service.stop().pipe(Effect.mapError(platformFailure));
+              yield* service.purge(expectedInstanceId).pipe(Effect.mapError(platformFailure));
             }
-          }),
-        ),
-    );
-    const status = Effect.fn("MendRunExecutor.status")(function* (organizationId: OrganizationId) {
+            const directory = path.join(
+              store.root,
+              "executor-backups",
+              createHash("sha256").update(row.scopeKey).digest("hex"),
+            );
+            yield* Effect.tryPromise({
+              try: async () => {
+                try {
+                  await fs.readdir(directory);
+                  await fs.rm(directory, { recursive: true });
+                } catch (error) {
+                  if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
+                    throw error;
+                }
+              },
+              catch: () =>
+                failure(
+                  "Sealant purged Executor, but Mend could not delete its saved backups. Retry Remove to finish; the sealed removal record has been kept.",
+                ),
+            });
+            // The configuration cascades to all person/member grants and incomplete flows.
+            yield* identity.remove(organizationId).pipe(Effect.mapError(identityFailure));
+            yield* links.deleteConfiguration(organizationId);
+            yield* instances.remove(organizationId);
+            return;
+          }
+          if (state.removingInstanceId !== undefined)
+            return yield* failure(
+              "This Executor's removal has started. Retry Remove to finish deleting its service logins and backups.",
+            );
+          if (action === "stop") {
+            yield* service.stop().pipe(Effect.mapError(platformFailure));
+            return;
+          }
+          const sso = yield* identity
+            .prepare(organizationId, state.ssoClientSecret)
+            .pipe(Effect.mapError(identityFailure));
+          const spec: ScopeInstanceSpec = {
+            alias: "executor",
+            worktreeKey: null,
+            image: EXECUTOR_IMAGE,
+            command: [
+              "sh",
+              "-c",
+              'umask 077; printf %s "$MEND_EXECUTOR_CA_PEM" > /app/data/mend-ca.pem; exec executor-host serve',
+            ],
+            env: {
+              NODE_EXTRA_CA_CERTS: "/app/data/mend-ca.pem",
+              MEND_EXECUTOR_CA_PEM: sso.ca,
+              SSO_DISCOVERY_URL: sso.discovery,
+              SSO_CLIENT_ID: sso.clientId,
+              SSO_ALLOWED_DOMAINS: sso.domain,
+              DO_NOT_TRACK: "1",
+              EXECUTOR_DISABLE_ANALYTICS: "1",
+              BETTER_AUTH_URL: origin,
+              EXECUTOR_OAUTH_CALLBACK_URL: `${network.appUrl}/executor/service-callback`,
+            },
+            volumes: [{ name: "data", mountPath: "/app/data", storageBytes }],
+            limits: { cpuMillicores: budget.cpuMillicores, memoryBytes: budget.memoryBytes },
+            ready: { kind: "tcp", port: 4400 },
+            idleStopAfterSeconds: null,
+            reach: { kind: "caller", caller, port: 4400, callbackPort: 4401 },
+          };
+          const digest = createHash("sha256").update(JSON.stringify(spec)).digest("hex");
+          const before = yield* service.get().pipe(Effect.mapError(platformFailure));
+          if (before !== null && (action === "upgrade" || row.appliedSpec !== digest)) {
+            yield* service.stop().pipe(Effect.mapError(platformFailure));
+            const stream = yield* service.backup().pipe(Effect.mapError(platformFailure));
+            yield* backup(row, stream);
+            row = { ...row, backupAt: new Date() };
+            yield* instances.save(row);
+          }
+          const observation = yield* service
+            .up(
+              spec,
+              Redacted.make({
+                BETTER_AUTH_SECRET: Redacted.value(state.betterAuthSecret),
+                EXECUTOR_ENCRYPTION_KEY: Redacted.value(state.encryptionKey),
+                SSO_CLIENT_SECRET: Redacted.value(state.ssoClientSecret),
+              }),
+            )
+            .pipe(Effect.mapError(platformFailure));
+          const endpoint = route(observation);
+          if (endpoint === null)
+            return yield* failure(
+              `Sealant observed Executor ${observation.state.kind}. Start again after checking the runtime.`,
+            );
+          let answered = false;
+          for (let attempt = 0; attempt < 60; attempt++) {
+            const health = yield* Effect.result(requestExecutor(endpoint, "/health", {}, 2000));
+            if (health._tag === "Success" && health.success.ok) {
+              answered = true;
+              break;
+            }
+            yield* Effect.sleep("1 second");
+          }
+          if (!answered)
+            return yield* failure(
+              "Executor did not answer its health request · observed. Start again after checking the runtime.",
+            );
+          row = { ...row, appliedSpec: digest, image: EXECUTOR_IMAGE };
+          yield* instances.save(row);
+          const current = yield* links.configuration(organizationId);
+          if (current !== null && current.mode !== "mend-run")
+            return yield* failure(
+              "Remove the organization's own Executor configuration before starting a Mend-run Executor.",
+            );
+          const configuration = current ?? {
+            organizationId,
+            id: randomUUID(),
+            mode: "mend-run",
+            url: origin,
+          };
+          yield* links.saveConfiguration(configuration);
+          if ((yield* links.link(configuration.id, "member")) === null) {
+            const signedIn = yield* signInExecutorOwner(
+              endpoint,
+              {
+                email: `mend@${organizationId}.people.mend.invalid`,
+                password: state.ownerPassword,
+                organizationName: "Mend organization",
+              },
+              `${network.appUrl}/executor/callback`,
+              transport,
+            );
+            const sealedCredentials = yield* cipher
+              .encrypt(
+                Schema.encodeSync(Schema.fromJsonString(ExecutorCredentials))(signedIn.credentials),
+              )
+              .pipe(
+                Effect.mapError(() =>
+                  failure("Mend could not seal the Executor grants. Start again."),
+                ),
+              );
+            yield* instances.save({ ...row, executorOrganizationId: signedIn.organizationId });
+            yield* links.saveLink({
+              id: randomUUID(),
+              configurationId: configuration.id,
+              subject: "member",
+              userId: null,
+              state: "active",
+              sealedCredentials,
+              observedAt: new Date(),
+            });
+          }
+        }),
+      );
+    const status = Effect.fnUntraced(function* (organizationId: OrganizationId) {
       const row = yield* instances.get(organizationId);
       const observation =
         row === null

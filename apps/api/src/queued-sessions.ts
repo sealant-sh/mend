@@ -104,7 +104,7 @@ const make: Effect.Effect<
   const scope = yield* Scope.Scope;
   const bootedAt = yield* DateTime.nowAsDate;
 
-  const viewOf = Effect.fn("QueuedSessions.viewOf")(function* (row: QueuedSessionRow) {
+  const viewOf = Effect.fnUntraced(function* (row: QueuedSessionRow) {
     const request = yield* decodeRequest(row.request).pipe(Effect.orDie);
     const clone =
       row.state === "waiting" ? yield* adoptions.read(row.ownerUserId, row.adoptionId) : null;
@@ -176,10 +176,7 @@ const make: Effect.Effect<
   );
 
   /** Settle a waiting row by its clone's end. */
-  const settle = Effect.fn("QueuedSessions.settle")(function* (
-    row: QueuedSessionRow,
-    end: AdoptionEnd,
-  ) {
+  const settle = Effect.fnUntraced(function* (row: QueuedSessionRow, end: AdoptionEnd) {
     if (end._tag === "Failed") {
       yield* fail(row, "waiting", { _tag: "Failed", step: "clone", failure: end.failure });
       return;
@@ -206,19 +203,13 @@ const make: Effect.Effect<
 
   const membershipOf = (caller: SignIn) => organizations.activeMembership(caller);
 
-  const ownRow = Effect.fn("QueuedSessions.ownRow")(function* (
-    caller: SignIn,
-    id: QueuedSessionId,
-  ) {
+  const ownRow = Effect.fnUntraced(function* (caller: SignIn, id: QueuedSessionId) {
     const row = yield* repo.byId(id);
     if (row === null || row.ownerUserId !== caller.userId) return yield* new NotFound({ id });
     return row;
   });
 
-  const queue = Effect.fn("QueuedSessions.queue")(function* (
-    caller: SignIn,
-    request: QueueSessionRequest,
-  ) {
+  const queue = Effect.fnUntraced(function* (caller: SignIn, request: QueueSessionRequest) {
     const notFound = new NotFound({ id: request.adoptionId });
     const watched = yield* adoptions.watch(caller.userId, request.adoptionId.toLowerCase());
     if (watched === null) return yield* notFound;
@@ -242,18 +233,18 @@ const make: Effect.Effect<
     return yield* viewOf(row);
   });
 
-  const list = Effect.fn("QueuedSessions.list")(function* (caller: SignIn) {
+  const list = Effect.fnUntraced(function* (caller: SignIn) {
     const membership = yield* membershipOf(caller);
     if (membership === null) return [];
     const rows = yield* repo.listUnstarted(caller.userId, membership.organization.id);
     return yield* Effect.forEach(rows, viewOf);
   });
 
-  const read = Effect.fn("QueuedSessions.read")(function* (caller: SignIn, id: QueuedSessionId) {
+  const read = Effect.fnUntraced(function* (caller: SignIn, id: QueuedSessionId) {
     return yield* viewOf(yield* ownRow(caller, id));
   });
 
-  const start = Effect.fn("QueuedSessions.start")(function* (
+  const start = Effect.fnUntraced(function* (
     caller: SignIn,
     id: QueuedSessionId,
     target: StartQueuedSessionRequest,
@@ -284,10 +275,7 @@ const make: Effect.Effect<
     return yield* viewOf(claimed);
   });
 
-  const cancel = Effect.fn("QueuedSessions.cancel")(function* (
-    caller: SignIn,
-    id: QueuedSessionId,
-  ) {
+  const cancel = Effect.fnUntraced(function* (caller: SignIn, id: QueuedSessionId) {
     yield* ownRow(caller, id);
     const removed = yield* repo.remove(id, ["waiting", "failed"]);
     if (removed === null) return yield* movedOn(yield* ownRow(caller, id));

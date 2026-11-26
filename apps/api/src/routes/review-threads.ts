@@ -62,7 +62,7 @@ const sideTarget = (comment: ReviewComment): SideTarget | null => {
  * where it sits on that slice. Replies are only ever listed under their comment, so a client that
  * predates them sees only comments, exactly as before.
  */
-export const reviewThreads = Effect.fn("SessionChanges.reviewThreads")(function* (
+export const reviewThreads = Effect.fnUntraced(function* (
   change: ThreadsChange,
   slice: ReviewSlice | null,
 ) {

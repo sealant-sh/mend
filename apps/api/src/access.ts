@@ -209,7 +209,7 @@ export const ProjectAccessLive: Layer.Layer<
       return yield* guarded(yield* caller, id, id, canManageProject);
     });
 
-    const changeVisibility = Effect.fn("ProjectAccess.changeVisibility")(function* (id: ProjectId) {
+    const changeVisibility = Effect.fnUntraced(function* (id: ProjectId) {
       return yield* guarded(yield* caller, id, id, canChangeVisibility);
     });
 

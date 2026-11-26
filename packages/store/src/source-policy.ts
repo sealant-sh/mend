@@ -179,7 +179,7 @@ const quoteGitConfigParameter = (value: string): string => `'${value.replaceAll(
 export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Service"] => {
   const refused = (message: string) => new SourceRefused({ message });
 
-  const check = Effect.fn("SourcePolicy.check")(function* (source: string, actor: SourceActor) {
+  const check = Effect.fnUntraced(function* (source: string, actor: SourceActor) {
     const issue = repositoryCloneUrlIssue(source);
     if (issue !== null) return yield* refused(issue);
     const location = gitRemoteLocation(source);
@@ -303,7 +303,7 @@ export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Se
    * Tenant operations with several distinct destinations refuse rather than share an ambiguous SSH
    * or DNS pin. Operators retain their configuration and every destination is checked.
    */
-  const prepare = Effect.fn("SourcePolicy.prepare")(function* (
+  const prepare = Effect.fnUntraced(function* (
     source: string | null,
     actor: SourceActor,
     operation: GitRemoteOperation,

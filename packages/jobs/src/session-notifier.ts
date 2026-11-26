@@ -307,7 +307,7 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
     /** Per session: what its captures read on the last event (`captureAlertsToRing`). */
     const lastCaptureAlerts = new Map<string, CaptureAlertState>();
 
-    const send = Effect.fn("SessionNotifier.send")(function* (
+    const send = Effect.fnUntraced(function* (
       session: Session,
       kind: NotificationKind,
       body: string,
@@ -420,10 +420,7 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
       if (phase === "attention") attentionRings.rang(session.id, now);
     });
 
-    const ringForTurn = Effect.fn("SessionNotifier.ringForTurn")(function* (
-      sessionId: string,
-      turn: AgentTurn,
-    ) {
+    const ringForTurn = Effect.fnUntraced(function* (sessionId: string, turn: AgentTurn) {
       // Interrupted/cancelled is the user's own hand (or the idle stop's); stale ends are history.
       const kind = turnKind(turn.status);
       if (kind === null) return;
@@ -440,7 +437,7 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
     // Diff the open-turn set: whatever left it since the last event ended, and
     // rings if its final status warrants. Ring only for turns this process
     // watched open — a turn first seen finished is replay, not news.
-    const observeTurn = Effect.fn("SessionNotifier.observeTurn")(function* (sessionId: string) {
+    const observeTurn = Effect.fnUntraced(function* (sessionId: string) {
       const open = yield* conversations.openTurns(SessionId.make(sessionId));
       const openIds = new Set<string>(open.map((turn) => turn.id));
       const previous = watchedTurns.get(sessionId);

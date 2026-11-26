@@ -137,7 +137,7 @@ export const makeSetupRunner = Effect.gen(function* () {
       Effect.orElseSucceed(() => false),
     );
 
-  const fingerprintOf = Effect.fn("SetupRunner.fingerprint")(function* (run: SetupRun) {
+  const fingerprintOf = Effect.fnUntraced(function* (run: SetupRun) {
     const { copy, setup, workspace } = run;
     const image = yield* sealant
       .bootedImage(workspace)
@@ -187,7 +187,7 @@ export const makeSetupRunner = Effect.gen(function* () {
    * The site's claim, or what decides this start without one. The fingerprint is read after any
    * wait, so a start that waited behind another's setup decides on the inputs as they are now.
    */
-  const claimSite = Effect.fn("SetupRunner.claim")(function* (run: SetupRun) {
+  const claimSite = Effect.fnUntraced(function* (run: SetupRun) {
     const { plan } = run;
     const workspaceId = run.workspace.id;
     const siteKey = siteKeyOf(run);
@@ -308,7 +308,7 @@ export const makeSetupRunner = Effect.gen(function* () {
    * Stamped done only when every step exited 0, no Stop came, and the claim was still held. A step
    * whose processes may still run is never stamped failed: its claim is all that fences them.
    */
-  const runSteps = Effect.fn("SetupRunner.steps")(function* (
+  const runSteps = Effect.fnUntraced(function* (
     run: SetupRun,
     claimId: string,
     ended: Ref.Ref<boolean>,
@@ -357,7 +357,7 @@ export const makeSetupRunner = Effect.gen(function* () {
     yield* report(plan, "ran");
   });
 
-  const inputsChanged = Effect.fn("SetupRunner.inputsChanged")(function* (
+  const inputsChanged = Effect.fnUntraced(function* (
     run: Pick<SetupRun, "setup" | "worktreeId" | "copy" | "workspace" | "person">,
   ) {
     const stamp = yield* setupRuns.stampAt(siteKeyOf(run));

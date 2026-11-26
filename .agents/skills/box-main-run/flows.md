@@ -3481,7 +3481,15 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   (`select .. from projects where …`, op `db.sql.query`); every `http.client` named for a route
   template (`GET /v1/sessions/:sessionId/output`, `POST /trpc/sessions.detail +2`), never a host,
   port, ID or query; Mend's own spans named `mend.<area>.<operation>`; no `drizzle.operation` span;
-  and no browser span for the five-second `executor.calls` read.
+  and no browser span for the five-second `executor.calls` read. In project 3 (SLNT-1385): each of
+  Mend's own spans described in plain words that never repeat its operation
+  (`mend.auth — authenticate request`, `mend.access — authorize session`,
+  `mend.session — launch session`, `rpc.server — sessions.inbox`), so no description starts with
+  `mend.`; web-write's `POST /api/sessions/:id/launch` showing one `launch session` with
+  `provision workspace` and `mend.sealant — open session` under it, and no `session`,
+  `require owner runs`, `launch as` or `launch internal` span; no `sealant.sdk.*` span (each sealant
+  call is one `mend.sealant` span over its `http.client`); and no root trace for `GET /api/health`
+  and no root trace that is a lone database query in the run's window.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/server/`, `apps/web/src/lib/telemetry.ts`,

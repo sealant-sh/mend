@@ -8,7 +8,7 @@ export const resourceWorkspace = Effect.gen(function* () {
   const sessions = yield* SessionsRepo;
   const sealant = yield* SealantClient;
   // A settled agent may still have a live shell.
-  const liveWorkspace = Effect.fn("Resources.liveWorkspace")(function* (worktreeId: WorktreeId) {
+  const liveWorkspace = Effect.fnUntraced(function* (worktreeId: WorktreeId) {
     const members = yield* sessions.listForWorktree(worktreeId);
     const flushed = new Set(
       yield* Effect.forEach(members, (member) => sessions.finalFlushedWorkspace(member.id)),

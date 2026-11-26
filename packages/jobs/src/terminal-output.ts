@@ -67,7 +67,7 @@ export const makeTerminalOutput = (sealant: SealantClient["Service"], label: str
       ),
     );
 
-  const outputOf = Effect.fn("TerminalOutput.outputOf")(function* (
+  const outputOf = Effect.fnUntraced(function* (
     session: Session,
     terminals: ReadonlyArray<SessionProcess>,
     now: Date,

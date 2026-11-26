@@ -29,7 +29,7 @@ export const slackProofJob = (sessionId: SessionId, turnId: AgentTurnId): JobSpe
   retryDelaySeconds: 5,
 });
 
-const enqueue = Effect.fn("enqueueSlackProof")(function* (artifact: ProofArtifact) {
+const enqueue = Effect.fnUntraced(function* (artifact: ProofArtifact) {
   if (artifact.sessionId === null || artifact.turnId === null) return;
   const threads = yield* SlackThreadsRepo;
   if ((yield* threads.forSession(artifact.sessionId)) === null) return;
@@ -84,7 +84,7 @@ export const reconcileSlackProof = Effect.fn("mend.slack.reconcile_proof")(funct
 });
 
 /** Reload one artifact and its audience, then stream stored bytes into the resumable uploader. */
-export const runSlackProof = Effect.fn("runSlackProof")(function* (payload: unknown) {
+export const runSlackProof = Effect.fnUntraced(function* (payload: unknown) {
   const { sessionId, turnId } = yield* Schema.decodeUnknownEffect(SlackDeliverProofJob)(payload);
   const context = yield* (yield* SlackProofDeliveriesRepo).withTurn(
     { sessionId, turnId },

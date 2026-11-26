@@ -1131,10 +1131,7 @@ export const SessionSocketHostLive: Layer.Layer<
       }),
     );
 
-    const start = Effect.fn("SessionSocketHost.start")(function* (
-      sessionId: SessionId,
-      api: SessionSocketApi,
-    ) {
+    const start = Effect.fnUntraced(function* (sessionId: SessionId, api: SessionSocketApi) {
       // Idempotent re-bind, IN PLACE: a live workspace bind-mounts this
       // directory, and a bind mount follows the inode — rm -rf + mkdir here
       // would leave every running container staring at a dangling, empty
@@ -1190,7 +1187,7 @@ export const SessionSocketHostLive: Layer.Layer<
       return dir;
     });
 
-    const stop = Effect.fn("SessionSocketHost.stop")(function* (sessionId: SessionId) {
+    const stop = Effect.fnUntraced(function* (sessionId: SessionId) {
       yield* Effect.sync(() => stopSync(sessionId));
       const mcp = registry.mcp();
       if (mcp !== undefined) yield* mcp.endSession(sessionId);

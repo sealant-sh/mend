@@ -35,7 +35,7 @@ export type WorktreeTablesRead =
   | ({ readonly kind: "read"; readonly observed: string } & ResourceTables);
 
 /** Reads the `[resource.*]` tables of a worktree's `mend.toml`. */
-const readTables = Effect.fn("Resources.readTables")(function* (
+const readTables = Effect.fnUntraced(function* (
   load: (
     name: string,
   ) => Effect.Effect<Stamped<FileRead | null>, WorktreeReadError | DefaultBranchUnavailableError>,
@@ -124,7 +124,7 @@ const make: Effect.Effect<
   const worktrees = yield* WorktreesRepo;
   const sealant = yield* SealantClient;
   const liveWorkspace = yield* resourceWorkspace;
-  const forWorktree = Effect.fn("ResourceTableReads.forWorktree")(
+  const forWorktree = Effect.fnUntraced(
     function* (projectId: ProjectId, worktreeId: WorktreeId) {
       const worktree = yield* worktrees.byId(worktreeId);
       if (worktree.projectId !== projectId)

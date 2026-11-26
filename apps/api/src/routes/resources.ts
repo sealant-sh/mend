@@ -23,7 +23,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { ProjectAccess } from "../access.ts";
 
 /** The project and the viewer it is visible to; `NotFound` for a project the caller cannot see. */
-const visible = Effect.fn("resources.visible")(function* (id: ProjectId) {
+const visible = Effect.fnUntraced(function* (id: ProjectId) {
   const access = yield* ProjectAccess;
   const project = yield* access.project(id);
   const viewer = yield* access.viewer();
@@ -42,10 +42,7 @@ const rejected = (name: string, refusals: ReadonlyArray<{ key: string; message: 
   });
 
 /** `NotFound` for a worktree that is not one of the project's. */
-const projectWorktree = Effect.fn("resources.projectWorktree")(function* (
-  projectId: ProjectId,
-  worktreeId: WorktreeId,
-) {
+const projectWorktree = Effect.fnUntraced(function* (projectId: ProjectId, worktreeId: WorktreeId) {
   const worktree = yield* (yield* ProjectAccess).worktree(worktreeId);
   if (worktree.projectId !== projectId) return yield* new NotFound({ id: worktreeId });
 });

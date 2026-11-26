@@ -527,7 +527,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         }),
       );
 
-    const moveReaction = Effect.fn("SlackReporter.moveReaction")(function* (
+    const moveReaction = Effect.fnUntraced(function* (
       token: string,
       thread: SlackThreadSession,
       state: SlackSessionState,
@@ -577,7 +577,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
      * Edit the status message and move the reaction, once across workers. Only the session the
      * request last started takes its reaction: a switch reuses the request.
      */
-    const moveStatus = Effect.fn("SlackReporter.moveStatus")(function* (
+    const moveStatus = Effect.fnUntraced(function* (
       token: string,
       look: Look,
       receipt: SlackStatusReceipt,
@@ -621,7 +621,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
      * moves the state back to `starting` (`statusMayMove`): a launch that failed keeps `failed`,
      * and the rest of the message still follows what changes.
      */
-    const reportStatus = Effect.fn("SlackReporter.reportStatus")(function* (
+    const reportStatus = Effect.fnUntraced(function* (
       install: SealedSlackInstall,
       token: string,
       observed: Look,
@@ -823,7 +823,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       });
 
     /** The replies this look has that the last one did not: what is news. */
-    const reportReplies = Effect.fn("SlackReporter.reportReplies")(function* (
+    const reportReplies = Effect.fnUntraced(function* (
       install: SealedSlackInstall,
       token: string,
       look: Look,
@@ -971,7 +971,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     });
 
     /** The latest landing reply shares the status writer's queue and compare-and-set receipt. */
-    const reportReplyPreview = Effect.fn("SlackReporter.reportReplyPreview")(function* (
+    const reportReplyPreview = Effect.fnUntraced(function* (
       token: string,
       observedThread: SlackThreadSession,
       previews: WorktreePreviews,

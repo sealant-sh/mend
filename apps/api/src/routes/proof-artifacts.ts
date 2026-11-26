@@ -8,7 +8,7 @@ import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 
-const visible = Effect.fn("proofArtifact.visible")(function* (id: ProofArtifactId) {
+const visible = Effect.fnUntraced(function* (id: ProofArtifactId) {
   const artifact = yield* (yield* ProofArtifactsRepo).byId(id).pipe(Effect.orDie);
   if (artifact === null) return yield* new NotFound({ id });
   yield* (yield* ProjectAccess)
@@ -17,7 +17,7 @@ const visible = Effect.fn("proofArtifact.visible")(function* (id: ProofArtifactI
   return artifact;
 });
 
-const media = Effect.fn("proofArtifact.media")(function* (id: ProofArtifactId) {
+const media = Effect.fnUntraced(function* (id: ProofArtifactId) {
   const artifact = yield* visible(id);
   const capture = artifact.capture;
   if (capture._tag !== "Screenshot" && capture._tag !== "Video") return yield* new NotFound({ id });

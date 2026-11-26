@@ -194,10 +194,7 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
       ),
     );
 
-  const steerMessage = Effect.fn("ProtocolHost.steerMessage")(function* (
-    input: SendMessageInput,
-    turnId: AgentTurnId,
-  ) {
+  const steerMessage = Effect.fnUntraced(function* (input: SendMessageInput, turnId: AgentTurnId) {
     const turn = yield* conversations.byTurnId(turnId);
     if (turn === null) return yield* new AgentTurnNotFoundError({ turnId });
     const entry = host.hosted(turn.processId);

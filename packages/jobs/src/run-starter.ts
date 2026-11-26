@@ -120,7 +120,7 @@ export const runStarterLayer = Layer.effect(
      * exec is recorded, so even these facts have records behind them. Failures
      * degrade to nulls: a gap is content, not a broken pipeline.
      */
-    const discoverHeadFacts = Effect.fn("RunStarter.discoverHeadFacts")(function* (run: Run) {
+    const discoverHeadFacts = Effect.fnUntraced(function* (run: Run) {
       if (run.sealantWorkspaceId === null) {
         return { branch: "", baseSha: null, headSha: null };
       }
@@ -145,10 +145,7 @@ export const runStarterLayer = Layer.effect(
      * `mend/<issue>` one, so no real work is ever invisible to a git-state
      * review. Every exec is recorded, so the snapshot commit is honest evidence.
      */
-    const ensureCommitted = Effect.fn("RunStarter.ensureCommitted")(function* (
-      run: Run,
-      issue: Issue,
-    ) {
+    const ensureCommitted = Effect.fnUntraced(function* (run: Run, issue: Issue) {
       if (run.sealantWorkspaceId === null) return;
       const workspace = yield* sealant.getWorkspace(run.sealantWorkspaceId);
       const status = yield* sealant.exec(workspace, ["git", "status", "--porcelain"]);
@@ -187,7 +184,7 @@ export const runStarterLayer = Layer.effect(
       );
     });
 
-    const enqueueLogged = Effect.fn("RunStarter.enqueueLogged")(function* (
+    const enqueueLogged = Effect.fnUntraced(function* (
       run: Run,
       job: { name: string; payload: Record<string, unknown>; idempotencyKey: string },
     ) {
@@ -212,48 +209,44 @@ export const runStarterLayer = Layer.effect(
      */
     // Annotated: supervise → afterCompleted → startVerification → supervise is
     // a deliberate cycle (a run's settle can start the next run).
-    const afterCompleted: (run: Run, issue: Issue) => Effect.Effect<void> = Effect.fn(
-      "RunStarter.afterCompleted",
-    )(function* (staleRun: Run, issue: Issue) {
-      // The in-memory row predates setSealantIds — without the re-read, head
-      // discovery sees no workspace and the verification run never starts.
-      const run = yield* runs.byId(staleRun.id).pipe(Effect.orElseSucceed(() => staleRun));
-      // A verification run must change nothing; every other run's uncommitted
-      // work is snapshotted so it lands in the diff the brief reviews.
-      if (run.kind !== "verification") {
-        yield* ensureCommitted(run, issue).pipe(
+    const afterCompleted: (run: Run, issue: Issue) => Effect.Effect<void> = Effect.fnUntraced(
+      function* (staleRun: Run, issue: Issue) {
+        // The in-memory row predates setSealantIds — without the re-read, head
+        // discovery sees no workspace and the verification run never starts.
+        const run = yield* runs.byId(staleRun.id).pipe(Effect.orElseSucceed(() => staleRun));
+        // A verification run must change nothing; every other run's uncommitted
+        // work is snapshotted so it lands in the diff the brief reviews.
+        if (run.kind !== "verification") {
+          yield* ensureCommitted(run, issue).pipe(
+            Effect.catchTag("SealantPlatformError", (error) =>
+              Effect.logWarning("run supervisor: commit snapshot failed").pipe(
+                Effect.annotateLogs({ runId: run.id, error: error.message }),
+              ),
+            ),
+          );
+        }
+        const facts = yield* discoverHeadFacts(run).pipe(
           Effect.catchTag("SealantPlatformError", (error) =>
-            Effect.logWarning("run supervisor: commit snapshot failed").pipe(
+            Effect.logWarning("run supervisor: head discovery failed").pipe(
               Effect.annotateLogs({ runId: run.id, error: error.message }),
+              Effect.as({ branch: "", baseSha: null, headSha: null }),
             ),
           ),
         );
-      }
-      const facts = yield* discoverHeadFacts(run).pipe(
-        Effect.catchTag("SealantPlatformError", (error) =>
-          Effect.logWarning("run supervisor: head discovery failed").pipe(
-            Effect.annotateLogs({ runId: run.id, error: error.message }),
-            Effect.as({ branch: "", baseSha: null, headSha: null }),
-          ),
-        ),
-      );
-      const change = yield* changes.ensureForIssue(issue.id, facts);
-      yield* runs.linkChange(run.id, change.id);
-      yield* enqueueLogged(run, {
-        name: "brief",
-        payload: { issueId: issue.id, changeId: change.id, runId: run.id },
-        idempotencyKey: `brief:${change.id}:${run.id}`,
-      });
-      if (run.kind !== "verification") {
-        yield* startVerification(run, issue);
-      }
-    });
+        const change = yield* changes.ensureForIssue(issue.id, facts);
+        yield* runs.linkChange(run.id, change.id);
+        yield* enqueueLogged(run, {
+          name: "brief",
+          payload: { issueId: issue.id, changeId: change.id, runId: run.id },
+          idempotencyKey: `brief:${change.id}:${run.id}`,
+        });
+        if (run.kind !== "verification") {
+          yield* startVerification(run, issue);
+        }
+      },
+    );
 
-    const failRun = Effect.fn("RunStarter.failRun")(function* (
-      run: Run,
-      issueId: IssueId,
-      summary: string,
-    ) {
+    const failRun = Effect.fnUntraced(function* (run: Run, issueId: IssueId, summary: string) {
       yield* runs.settle(run.id, "failed", summary);
 
       // A failed verification or follow-up never drags the issue back to
@@ -283,7 +276,7 @@ export const runStarterLayer = Layer.effect(
       });
     });
 
-    const supervise = Effect.fn("RunStarter.supervise")(function* (
+    const supervise = Effect.fnUntraced(function* (
       run: Run,
       issue: Issue,
       sdkRun: SdkRun,
@@ -366,7 +359,7 @@ export const runStarterLayer = Layer.effect(
       yield* Effect.forkIn(work, scope);
     });
 
-    const launch = Effect.fn("RunStarter.launch")(function* (run: Run, issue: Issue) {
+    const launch = Effect.fnUntraced(function* (run: Run, issue: Issue) {
       const work = Effect.gen(function* () {
         const workspace = yield* sealant.createWorkspace({
           repository: issue.repository,
@@ -424,7 +417,7 @@ export const runStarterLayer = Layer.effect(
 
     yield* resume();
 
-    const start = Effect.fn("RunStarter.start")(function* (issue: Issue) {
+    const start = Effect.fnUntraced(function* (issue: Issue) {
       const run = yield* runs.create(issue.id, "initial");
       // Mark mending before forking so the next dispatcher tick sees the slot taken.
       yield* issues.markMending(issue.id).pipe(Effect.ignore);

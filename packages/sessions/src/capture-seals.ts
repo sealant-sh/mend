@@ -164,7 +164,7 @@ const readBacks = makeSingleFlight<SealStanding, never>();
  * bindings. And the read-back does not read again what this process already read whole, and
  * found to be what its name says, since the last moment a URL could have replaced it.
  */
-export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function* (
+export const sealStandingOf = Effect.fnUntraced(function* (
   seal: SealedCompletion,
   now: () => number,
 ) {
@@ -359,7 +359,7 @@ export const makeCaptureSealsStore = (options?: {
       const blobs = yield* BlobStore;
       const clock = yield* Clock.Clock;
       const now = options?.now ?? (() => clock.currentTimeMillisUnsafe());
-      const sealedCompletion = Effect.fn("CaptureSeals.sealedCompletion")(function* (
+      const sealedCompletion = Effect.fnUntraced(function* (
         worktreeId: WorktreeId,
         executorId: string,
         epoch?: number,

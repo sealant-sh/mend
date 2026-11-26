@@ -55,7 +55,7 @@ const make: Effect.Effect<CallerServices["Service"], never, SealantEnv | Scope.S
       (value) => Effect.promise(() => value.close()),
     );
     return CallerServices.of({
-      organization: Effect.fn("CallerServices.organization")(function* (key, budget) {
+      organization: Effect.fnUntraced(function* (key, budget) {
         const scope = yield* wrap(() =>
           client.scopes.ensure({ key, ownerKind: "organization", budget }),
         );

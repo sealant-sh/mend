@@ -106,7 +106,7 @@ export const ProtocolIdleStopLive: Layer.Layer<
      * On Boat, the open shells' terminal signals; undefined on Docker, or with no open shell,
      * where the `shell` hold reads as before.
      */
-    const shellTerminalsOf = Effect.fn("ProtocolIdleStop.shellTerminalsOf")(function* (
+    const shellTerminalsOf = Effect.fnUntraced(function* (
       session: Session,
       shells: ReadonlyArray<SessionProcess>,
       terminalActiveAt: Date | null,

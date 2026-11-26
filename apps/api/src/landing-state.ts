@@ -279,7 +279,7 @@ export const observeLandings = Effect.fn("observeLandings")(function* (input: {
  * commit. Anything else is not on origin, with the files and line counts that are not; in a project
  * with no origin, work that was never landed is on no remote at all (decision Q3).
  */
-export const changeStandingOf = Effect.fn("changeStandingOf")(function* (input: {
+export const changeStandingOf = Effect.fnUntraced(function* (input: {
   readonly change: Change | null;
   readonly project: Project;
   readonly worktree: Worktree;

@@ -238,7 +238,8 @@ export const JobRunnerLive: Layer.Layer<JobRunner, Config.ConfigError> = Layer.e
       }
     };
 
-    const enqueue = Effect.fn("JobRunner.enqueue")(function* (spec: JobSpec) {
+    // A PRODUCER span: it reads as `queue.publish — <queue>`, and its attempts join it.
+    const enqueue = Effect.fn("JobRunner.enqueue", { kind: "producer" })(function* (spec: JobSpec) {
       // The job carries this span's context, so its attempts join the trace that queued it.
       const job: JobSpec = { ...spec, payload: yield* withTraceEnvelope(spec.payload) };
       yield* Effect.annotateCurrentSpan({

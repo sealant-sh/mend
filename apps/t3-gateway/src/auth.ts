@@ -421,9 +421,7 @@ export const GatewayAuthLive: Layer.Layer<
       return yield* live(yield* state.findSession(hashBearer(token)));
     });
 
-    const authenticateSession = Effect.fn("GatewayAuth.authenticateSession")(function* (
-      sessionId: AuthSessionId,
-    ) {
+    const authenticateSession = Effect.fnUntraced(function* (sessionId: AuthSessionId) {
       return yield* live(yield* state.findSessionById(sessionId));
     });
 
@@ -452,9 +450,7 @@ export const GatewayAuthLive: Layer.Layer<
         );
       });
 
-    const confirmDevice = Effect.fn("GatewayAuth.confirmDevice")(function* (
-      bearer: AuthenticatedBearer,
-    ) {
+    const confirmDevice = Effect.fnUntraced(function* (bearer: AuthenticatedBearer) {
       const { session } = bearer;
       const now = yield* Clock.currentTimeMillis;
       const last = confirmedAt.get(session.deviceToken);
@@ -471,9 +467,7 @@ export const GatewayAuthLive: Layer.Layer<
       return yield* new GatewayCredentialInvalid({});
     });
 
-    const sessionState = Effect.fn("GatewayAuth.sessionState")(function* (
-      authorization: string | undefined,
-    ) {
+    const sessionState = Effect.fnUntraced(function* (authorization: string | undefined) {
       const unauthenticated: AuthSessionState = { authenticated: false, auth: environment.auth };
       const bearer = yield* authenticate(authorization).pipe(
         Effect.map(Option.some),

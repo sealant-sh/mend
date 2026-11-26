@@ -163,54 +163,99 @@ describe("an HTTP span", () => {
 
 describe("any other span", () => {
   it.each([
-    ["SealantClients.forPrincipal", "mend.sealant.for_principal", "mend.sealant"],
-    ["ProjectAccess.sessionAs", "mend.access.session_as", "mend.access"],
-    ["SessionEngine.changingBoatKey.drain", "mend.session.changing_boat_key.drain", "mend.session"],
-    ["BlobStore.listMultipart", "mend.store.list_multipart", "mend.store"],
-    ["SlackReporter.look", "mend.slack.look", "mend.slack"],
-  ])("names %s as %s, filed under %s, and keeps its own name", (name, renamed, op) => {
-    expect(read(enrichSpan(spanOf(name, 1, {})))).toMatchObject({
-      name: renamed,
-      "sentry.op": op,
-      "sentry.description": renamed,
-      "code.function.name": name,
-    });
-  });
+    ["SealantClients.forPrincipal", "mend.sealant.for_principal", "mend.sealant", "for principal"],
+    ["ProjectAccess.sessionAs", "mend.access.session_as", "mend.access", "authorize session"],
+    ["Auth.getSession", "mend.auth.get_session", "mend.auth", "authenticate request"],
+    [
+      "SessionEngine.deliverSkillsToWorkspace",
+      "mend.session.deliver_skills_to_workspace",
+      "mend.session",
+      "deliver skills to workspace",
+    ],
+    [
+      "SessionEngine.changingBoatKey.drain",
+      "mend.session.changing_boat_key.drain",
+      "mend.session",
+      "changing boat key drain",
+    ],
+    [
+      "SealantClient.createWorkspace",
+      "mend.sealant.create_workspace",
+      "mend.sealant",
+      "create workspace",
+    ],
+    ["ProtocolHost.sendMessage", "mend.turn.input", "mend.turn", "send turn input"],
+    ["BlobStore.listMultipart", "mend.store.list_multipart", "mend.store", "list multipart"],
+  ])(
+    "names %s as %s, filed under %s, reads %s, and keeps its own name",
+    (name, renamed, op, description) => {
+      expect(read(enrichSpan(spanOf(name, 1, {})))).toMatchObject({
+        name: renamed,
+        "sentry.op": op,
+        "sentry.description": description,
+        "code.function.name": name,
+      });
+    },
+  );
 
   it.each([
-    ["mend.session.start", "mend.session"],
-    ["mend.turn.dispatch", "mend.turn"],
-    ["sealant.sdk.sessions.get_session_output", "mend.sealant"],
-  ])("keeps %s, filed under %s", (name, op) => {
+    ["mend.session.launch", "mend.session", "launch session"],
+    ["mend.session.start", "mend.session", "start session"],
+    ["mend.turn.dispatch", "mend.turn", "dispatch turn"],
+    ["mend.turn.complete", "mend.turn", "complete turn"],
+    ["mend.store.sweep_handoff_quarantines", "mend.store", "sweep handoff quarantines"],
+    ["sealant.sdk.sessions.get_session_output", "mend.sealant", "get session output"],
+  ])("keeps %s, filed under %s, reading %s", (name, op, description) => {
     expect(read(enrichSpan(spanOf(name, 1, {})))).toMatchObject({
       name,
       "sentry.op": op,
-      "sentry.description": name,
+      "sentry.description": description,
     });
   });
 
-  it("files a procedure of the web tier as a call it serves", () => {
+  it("never describes a span with the operation it is filed under", () => {
+    const names = [
+      "SessionSteering.session",
+      "SessionEngine.launchInternal",
+      "ProjectAccess.sessionAs",
+      "mend.session.session",
+      "Migrator up",
+      "ensureCaptureCache",
+      "mend.web.message.send",
+    ];
+    for (const name of names) {
+      const span = read(enrichSpan(spanOf(name, 1, {})));
+      expect(span["sentry.description"]).not.toBe("");
+      expect(span["sentry.description"]).not.toMatch(/^(?:mend|sealant)\./);
+      expect(span["sentry.description"]?.startsWith(`${span["sentry.op"]}.`)).toBe(false);
+    }
+  });
+
+  it("describes a procedure of the web tier by its method", () => {
     const span = enrichSpan(
-      spanOf("mend.web.sessions.detail", 2, {
+      spanOf("mend.web.sessions.sendMessage", 2, {
         "rpc.system": "trpc",
-        "rpc.method": "sessions.detail",
+        "rpc.method": "sessions.sendMessage",
       }),
     );
     expect(read(span)).toMatchObject({
-      name: "mend.web.sessions.detail",
+      name: "mend.web.sessions.sendMessage",
       "sentry.op": "rpc.server",
-      "sentry.description": "mend.web.sessions.detail",
+      "sentry.description": "sessions.sendMessage",
     });
   });
 
-  it("files a job by its queue", () => {
-    const span = enrichSpan(
-      spanOf("mend.job.process", 5, {
-        "messaging.system": "pg-boss",
-        "messaging.destination.name": "session-start",
-      }),
-    );
-    expect(read(span)).toMatchObject({
+  it("files a job by its queue, as it is published and as it is processed", () => {
+    const attributes = {
+      "messaging.system": "pg-boss",
+      "messaging.destination.name": "session-start",
+    };
+    expect(read(enrichSpan(spanOf("JobRunner.enqueue", 4, attributes)))).toMatchObject({
+      name: "mend.job.enqueue",
+      "sentry.op": "queue.publish",
+      "sentry.description": "session-start",
+    });
+    expect(read(enrichSpan(spanOf("mend.job.process", 5, attributes)))).toMatchObject({
       name: "mend.job.process",
       "sentry.op": "queue.process",
       "sentry.description": "session-start",
@@ -223,41 +268,87 @@ describe("any other span", () => {
   });
 });
 
+/** The spans `effect` hands the OTLP transport, through the telemetry layer a process runs. */
+const exported = async (effect: Effect.Effect<void>): Promise<ReadonlyArray<Span>> => {
+  const settings = telemetrySettings({
+    SENTRY_DSN: "https://0123456789abcdef0123456789abcdef@sentry.example.test/3",
+  });
+  if (settings === null) throw new Error("expected settings");
+  const bodies: Array<string> = [];
+  const client = HttpClient.make((request) => {
+    if (request.body._tag === "Uint8Array")
+      bodies.push(new TextDecoder().decode(request.body.body));
+    return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("{}")));
+  });
+  await Effect.runPromise(
+    effect.pipe(
+      Effect.provide(
+        enabledTelemetryLayer(
+          settings,
+          { name: "mend-test" },
+          { otlp: Layer.succeed(HttpClient.HttpClient, client) },
+        ),
+      ),
+      Effect.scoped,
+    ),
+  );
+  return bodies
+    .filter((body) => body.includes("resourceSpans"))
+    .flatMap((body) => JSON.parse(body).resourceSpans[0].scopeSpans[0].spans);
+};
+
+/** A database query, as Effect's SQL client spans one. */
+const sqlQuery = (name: string) =>
+  Effect.withSpan(Effect.void, name, {
+    kind: "client",
+    attributes: { "db.system.name": "postgresql", "db.query.text": "select 1" },
+  });
+
 describe("the spans that reach Sentry", () => {
   it("hang a wrapper library span's child off the span above it", async () => {
-    const settings = telemetrySettings({
-      SENTRY_DSN: "https://0123456789abcdef0123456789abcdef@sentry.example.test/3",
-    });
-    if (settings === null) throw new Error("expected settings");
-    const bodies: Array<string> = [];
-    const client = HttpClient.make((request) => {
-      if (request.body._tag === "Uint8Array")
-        bodies.push(new TextDecoder().decode(request.body.body));
-      return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("{}")));
-    });
-    await Effect.runPromise(
-      Effect.withSpan(Effect.void, "mend.test.query")
-        .pipe(Effect.withSpan("drizzle.operation"), Effect.withSpan("mend.test.insert"))
-        .pipe(
-          Effect.provide(
-            enabledTelemetryLayer(
-              settings,
-              { name: "mend-test" },
-              {
-                otlp: Layer.succeed(HttpClient.HttpClient, client),
-              },
-            ),
-          ),
-          Effect.scoped,
-        ),
+    const spans = await exported(
+      Effect.withSpan(Effect.void, "mend.test.query").pipe(
+        Effect.withSpan("drizzle.operation"),
+        Effect.withSpan("mend.test.insert"),
+      ),
     );
-    const spans: ReadonlyArray<Span> = bodies
-      .filter((body) => body.includes("resourceSpans"))
-      .flatMap((body) => JSON.parse(body).resourceSpans[0].scopeSpans[0].spans);
     const names = spans.map((span) => span.name);
     expect(names).not.toContain("drizzle.operation");
     const insert = spans.find((span) => span.name === "mend.test.insert");
     const query = spans.find((span) => span.name === "mend.test.query");
     expect(query?.parentSpanId).toBe(insert?.spanId);
+  });
+
+  it("leave out a query that ran under no span, and keep one that did", async () => {
+    const spans = await exported(
+      Effect.andThen(
+        sqlQuery("orphan"),
+        sqlQuery("child").pipe(Effect.withSpan("mend.test.parent")),
+      ),
+    );
+    expect(
+      spans.filter((span) => span.parentSpanId === undefined).map((span) => span.name),
+    ).toEqual(["mend.test.parent"]);
+    expect(spans).toHaveLength(2);
+  });
+
+  it("fold the sealant SDK's span into the Mend call that made it, with its IDs", async () => {
+    const spans = await exported(
+      Effect.withSpan(Effect.void, "GET", { kind: "client" }).pipe(
+        Effect.withSpan("sealant.sdk.workspaces.get_workspace", {
+          kind: "client",
+          attributes: { "sealant.workspace_id": "ws_1" },
+        }),
+        Effect.withSpan("SealantClient.getWorkspace"),
+      ),
+    );
+    expect(spans.map((span) => span.name)).not.toContain("sealant.sdk.workspaces.get_workspace");
+    const call = spans.find((span) => span.name === "mend.sealant.get_workspace");
+    const request = spans.find((span) => span.name === "GET");
+    expect(request?.parentSpanId).toBe(call?.spanId);
+    expect(call?.attributes).toContainEqual({
+      key: "sealant.workspace_id",
+      value: { stringValue: "ws_1" },
+    });
   });
 });

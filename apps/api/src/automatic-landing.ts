@@ -349,7 +349,7 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
       });
 
     /** The checks, in the ADR's order, for one ended turn this worker claimed. */
-    const decide = Effect.fn("AutomaticLanding.decide")(function* (
+    const decide = Effect.fnUntraced(function* (
       session: Session,
       turn: AgentTurn,
       turns: ReadonlyArray<AgentTurn>,

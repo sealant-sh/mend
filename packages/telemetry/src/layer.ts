@@ -44,12 +44,18 @@ export const sampledRoots =
 
 /**
  * Spans a library opens around a single call of its own, which say nothing their one child does
- * not: drizzle's `drizzle.operation` around each insert's query. Their children hang off the
- * span above instead.
+ * not: drizzle's `drizzle.operation` around each insert's query, and the sealant SDK's
+ * `sealant.sdk.<group>.<endpoint>` around each request it sends, inside the Mend span that made
+ * the call (`mend.sealant — create workspace`) and around the request's own `http.client` span.
+ * Their children hang off the span above instead, and what they record lands on it.
  */
-const WRAPPER_SPANS: ReadonlySet<string> = new Set(["drizzle.operation"]);
+const isWrapperSpan = (name: string): boolean =>
+  name === "drizzle.operation" || name.startsWith("sealant.sdk.");
 
-/** A span that is its parent: what it records goes nowhere, and its children are its parent's. */
+/**
+ * A span that is its parent: its children are its parent's, and its attributes (the SDK's
+ * workspace and run IDs) are set on the parent when that is a span of this process.
+ */
 const parentAsSpan = (
   parent: Tracer.AnySpan,
   options: Parameters<Tracer.Tracer["span"]>[0],
@@ -66,16 +72,18 @@ const parentAsSpan = (
   sampled: parent.sampled,
   kind: options.kind,
   end: () => undefined,
-  attribute: () => undefined,
+  attribute: (key, value) => {
+    if (parent._tag === "Span" && parent.status._tag === "Started") parent.attribute(key, value);
+  },
   event: () => undefined,
   addLinks: () => undefined,
 });
 
-/** `tracer` without `WRAPPER_SPANS`: each becomes its parent, so its child is the parent's. */
+/** `tracer` without wrapper spans (`isWrapperSpan`): each becomes its parent. */
 export const withoutWrapperSpans = (tracer: Tracer.Tracer): Tracer.Tracer =>
   Tracer.make({
     span: (options) =>
-      WRAPPER_SPANS.has(options.name) && Option.isSome(options.parent)
+      isWrapperSpan(options.name) && Option.isSome(options.parent)
         ? parentAsSpan(options.parent.value, options)
         : tracer.span(options),
     ...(tracer.context === undefined ? {} : { context: tracer.context }),

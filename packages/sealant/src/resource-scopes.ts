@@ -136,7 +136,7 @@ export const ResourceScopesLive: Layer.Layer<ResourceScopes, never, SealantEnv> 
       };
     };
 
-    const of = Effect.fn("ResourceScopes.of")(function* (key: string) {
+    const of = Effect.fnUntraced(function* (key: string) {
       const known = ids.get(key);
       if (known !== undefined) return scopeOf(known);
       const ensured = yield* wrap(() => sealant.scopes.ensure({ key }));

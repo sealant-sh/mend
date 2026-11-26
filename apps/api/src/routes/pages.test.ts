@@ -356,7 +356,15 @@ describe("the page-view token never reaches a trace", () => {
       expect((await fetch(`${origin}/api/worktrees/wt/raw?path=secret-file-name`)).status).toBe(
         200,
       );
-      expect((await fetch(`${origin}/api/health?view=secret-token-value`)).status).toBe(200);
+      // A health check is traced only when its caller traced it: one with a caller's trace and
+      // one with none, which leaves no span.
+      expect(
+        (
+          await fetch(`${origin}/api/health?view=secret-token-value`, {
+            headers: { traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" },
+          })
+        ).status,
+      ).toBe(200);
       expect((await fetch(`${origin}/api/health?ticket=secret-ticket-value`)).status).toBe(200);
     } finally {
       await runtime.dispose();
@@ -369,7 +377,6 @@ describe("the page-view token never reaches a trace", () => {
       ...Array.from({ length: 6 }, () => getSpan(PAGE_VIEW_PATH, 200)),
       getSpan("unrouted", 404),
       getSpan("/api/worktrees/:id/raw", 200),
-      getSpan("/api/health", 200),
       getSpan("/api/health", 200),
     ]);
   });

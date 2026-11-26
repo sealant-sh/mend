@@ -1096,7 +1096,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
      * "Switch project" on a status message: the requester gets a picker of the other projects
      * they can start in here. The pick stops the session and restarts the request (`onInteraction`).
      */
-    const offerSwitch = Effect.fn("SlackRunner.offerSwitch")(function* (
+    const offerSwitch = Effect.fnUntraced(function* (
       install: SealedSlackInstall,
       token: string,
       channel: string,
@@ -1138,7 +1138,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
      * app. Null, after saying why, when not. Nothing is stopped here: the session keeps running
      * until its replacement has been created (`stopSwitched`).
      */
-    const switchable = Effect.fn("SlackRunner.switchable")(function* (
+    const switchable = Effect.fnUntraced(function* (
       install: SealedSlackInstall,
       token: string,
       mention: SlackMention,
@@ -1549,7 +1549,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
      * the thread and start a new session there, with the thread as context. True when the session
      * took the turn.
      */
-    const resumeOrStartAnew = Effect.fn("SlackRunner.resumeOrStartAnew")(function* (
+    const resumeOrStartAnew = Effect.fnUntraced(function* (
       install: SealedSlackInstall,
       token: string,
       mention: SlackMention,
@@ -1620,7 +1620,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
      * asked the owner a question, the owner's mention answers it instead. A mention that names
      * another project, harness or base branch asks for another session, and gets one.
      */
-    const followUp = Effect.fn("SlackRunner.followUp")(function* (
+    const followUp = Effect.fnUntraced(function* (
       install: SealedSlackInstall,
       token: string,
       mention: SlackMention,
@@ -1835,7 +1835,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
      * `@mend settings` (docs/adr/0006-slack.md, "Commands"): the channel's default project, with
      * buttons to set or clear it. The choices are the shared projects the member can see.
      */
-    const channelSettings = Effect.fn("SlackRunner.channelSettings")(function* (
+    const channelSettings = Effect.fnUntraced(function* (
       install: SealedSlackInstall,
       token: string,
       mention: SlackMention,
@@ -1872,7 +1872,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
      * A click on the settings reply: set the channel default to a shared project the member can
      * see, or clear it, and write it to the organization's audit log.
      */
-    const changeChannelDefault = Effect.fn("SlackRunner.changeChannelDefault")(function* (
+    const changeChannelDefault = Effect.fnUntraced(function* (
       install: SealedSlackInstall,
       token: string,
       at: SlackMention,
@@ -1935,7 +1935,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
      * Slack in this workspace, newest first, with their state and links. Only they see it; a
      * session whose project they can no longer see is left out.
      */
-    const listSessions = Effect.fn("SlackRunner.listSessions")(function* (
+    const listSessions = Effect.fnUntraced(function* (
       install: SealedSlackInstall,
       token: string,
       mention: SlackMention,
@@ -2047,10 +2047,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       linkedUserId: string | null,
     ) => runMention(install, mention, linkedUserId).pipe(reportingFailure(install, mention));
 
-    const onEvent = Effect.fn("SlackRunner.onEvent")(function* (
-      install: SealedSlackInstall,
-      body: unknown,
-    ) {
+    const onEvent = Effect.fnUntraced(function* (install: SealedSlackInstall, body: unknown) {
       const callback = decodeEventCallback(body);
       if (Option.isNone(callback) || callback.value.team_id !== install.teamId) return;
       const claimed = yield* claims.claim({
@@ -2073,10 +2070,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       yield* runClaimed(install, mention, null);
     });
 
-    const onInteraction = Effect.fn("SlackRunner.onInteraction")(function* (
-      install: SealedSlackInstall,
-      body: unknown,
-    ) {
+    const onInteraction = Effect.fnUntraced(function* (install: SealedSlackInstall, body: unknown) {
       const decoded = decodeBlockActions(body);
       if (Option.isNone(decoded) || decoded.value.team.id !== install.teamId) return;
       const payload = decoded.value;
@@ -2229,7 +2223,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         ),
       );
 
-    const receive = Effect.fn("SlackRunner.receive")(function* (
+    const receive = Effect.fnUntraced(function* (
       organizationId: OrganizationId,
       envelope: SlackEnvelope,
     ) {
