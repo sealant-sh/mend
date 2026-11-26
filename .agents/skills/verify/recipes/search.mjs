@@ -148,19 +148,37 @@ export default async ({ page, web, capture, note }) => {
     `made projects ${names.landingProject}, ${names.otherProject} and skills ${names.landingSkill}, ${names.otherSkill}`,
   );
 
-  // The fixture sessions, answered in place of the inbox read (and beside the stack's own rows).
+  // The fixture sessions, answered in place of the inbox read. The event stream reads one row
+  // again (`sessions.inboxRow`) for each session it hears about, and a check VM's own sessions are
+  // live: those reads answer "not found", so the list holds the fixture rows and nothing else (on
+  // 26 Nov a copy's `Saving` and `Running` rows reached the palette).
   const me = (await call("organization.current")).userId;
   const fixture = fixtureRows(me);
   await page.route("**/trpc/**", async (route) => {
     const url = new URL(route.request().url());
     const paths = decodeURIComponent(url.pathname.replace(/^\/trpc\//, "")).split(",");
-    const at = paths.indexOf("sessions.inbox");
-    if (at === -1) return route.continue();
+    if (!paths.includes("sessions.inbox") && !paths.includes("sessions.inboxRow"))
+      return route.continue();
+    const batched = url.searchParams.has("batch");
+    // The app sends its queries as POST (methodOverride), so the inputs are the body.
+    const inputs =
+      route.request().postDataJSON() ?? JSON.parse(url.searchParams.get("input") ?? "{}");
+    const answer = (at) => {
+      if (paths[at] === "sessions.inbox") return { result: { data: serialized(fixture) } };
+      if (paths[at] !== "sessions.inboxRow") return undefined;
+      const id = (batched ? inputs[String(at)] : inputs)?.json?.id;
+      const row = fixture.find((each) => each.session.id === id);
+      return row === undefined ? NOT_FOUND : { result: { data: serializedRow(row) } };
+    };
     const response = await route.fetch();
     const body = await response.json();
-    const data = { result: { data: serialized(fixture) } };
-    if (Array.isArray(body)) body[at] = data;
-    await route.fulfill({ response, json: Array.isArray(body) ? body : data });
+    if (!batched) {
+      const only = answer(0);
+      return route.fulfill({ response, status: only === NOT_FOUND ? 404 : 200, json: only });
+    }
+    const answered = body.map((each, at) => answer(at) ?? each);
+    const mixed = answered.some((each) => each.error !== undefined);
+    await route.fulfill({ response, status: mixed ? 207 : response.status(), json: answered });
   });
   // Fixtures don't survive a full load (the server renders the page): read the inbox again.
   await page.evaluate(() =>
@@ -372,7 +390,7 @@ export default async ({ page, web, capture, note }) => {
     });
   await settled();
   await screen.getByText("Recent sessions").waitFor();
-  await screen.getByRole("button", { name: /^New session/ }).waitFor();
+  await screen.getByRole("button", { name: "New session", exact: true }).waitFor();
   await screen.getByRole("button", { name: /^Add project/ }).waitFor();
   if ((await screen.getByRole("button", { name: /Collapse sidebar/ }).count()) > 0)
     throw new Error("the phone offers Collapse sidebar");
@@ -457,26 +475,41 @@ const fixtureRows = (me) =>
     activity: null,
   }));
 
+const DATES = ["startedAt", "createdAt", "updatedAt"];
+
+/** One row as JSON: its dates as ISO strings. */
+const plain = (row) => ({
+  ...row,
+  session: {
+    ...row.session,
+    ...Object.fromEntries(DATES.map((field) => [field, row.session[field].toISOString()])),
+  },
+});
+
 /** Rows as tRPC answers them, through superjson: dates as ISO strings, with their paths named. */
 const serialized = (rows) => ({
-  json: rows.map((row) => ({
-    ...row,
-    session: {
-      ...row.session,
-      startedAt: row.session.startedAt.toISOString(),
-      createdAt: row.session.createdAt.toISOString(),
-      updatedAt: row.session.updatedAt.toISOString(),
-    },
-  })),
+  json: rows.map(plain),
   meta: {
     values: Object.fromEntries(
-      rows.flatMap((_, index) =>
-        ["startedAt", "createdAt", "updatedAt"].map((field) => [
-          `${index}.session.${field}`,
-          ["Date"],
-        ]),
-      ),
+      rows.flatMap((_, index) => DATES.map((field) => [`${index}.session.${field}`, ["Date"]])),
     ),
     v: 1,
   },
 });
+
+/** One row as `sessions.inboxRow` answers it. */
+const serializedRow = (row) => ({
+  json: plain(row),
+  meta: { values: Object.fromEntries(DATES.map((field) => [`session.${field}`, ["Date"]])), v: 1 },
+});
+
+/** A row read for a session the fixture doesn't hold: tRPC's NOT_FOUND, which takes it out. */
+const NOT_FOUND = {
+  error: {
+    json: {
+      message: "Not one of the verify recipe's fixture sessions.",
+      code: -32004,
+      data: { code: "NOT_FOUND", httpStatus: 404 },
+    },
+  },
+};

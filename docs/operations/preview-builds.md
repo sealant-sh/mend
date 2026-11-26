@@ -415,6 +415,12 @@ DSNs are in SLNT-1349's contract. `pnpm verify stack up` hands them to the stack
 `mend server setup` under the environment `verify-stack`, and `pnpm verify vm up` to the copy's
 under `check-vm`. Unset, both report to nobody, as every install does.
 
+The daily run of `main` sets them for every copy it boots when the dev machine's
+`~/.local/share/sentry-mend/verify.env` names them (the `box-main-run` skill's `copies.sh` reads
+only the three names from it, as data). The setting lives in the copy's `server.env`, which
+`vm save` does not keep, so the next master, and a copy booted from it without the variables, reads
+`telemetry · off`.
+
 ## The box
 
 Two Mend servers run as VMs on one Proxmox host. A check on the box uses VM 131, the preview server

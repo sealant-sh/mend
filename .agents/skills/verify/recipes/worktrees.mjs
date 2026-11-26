@@ -136,9 +136,17 @@ export default async ({ page, web, capture, note }) => {
     await page.getByRole("dialog").waitFor({ state: "detached" });
   };
   const started = [];
-  const stopAll = async () => {
+  /**
+   * Stops what this drive started. A refused stop throws: on 24-26 Nov a swallowed refusal (the
+   * `starting-…` draft id, which nothing can stop) left the shell running, and the removal after
+   * it was refused ten times. At the end, `quietly` keeps cleanup from hiding an earlier failure.
+   */
+  const stopAll = async ({ quietly = false } = {}) => {
     for (const id of started.splice(0))
-      await call("sessions.stop", { id }, "mutate").catch(() => undefined);
+      await call("sessions.stop", { id }, "mutate").catch((error) => {
+        if (!quietly) throw new Error(`stopping session ${id} was refused: ${error.message}`);
+        note(`not restored · session ${id} · its stop was refused: ${error.message}`);
+      });
   };
 
   await page.setViewportSize(DESKTOP);
@@ -220,9 +228,10 @@ export default async ({ page, web, capture, note }) => {
   const items = await page.getByRole("menuitem").allInnerTexts();
   note(`worktrees-menu on ${fresh}: ${items.map((item) => item.replace(/\s+/g, " ")).join(" | ")}`);
   await menuitem("Open shell in this worktree").click();
+  // The address reads `/sessions/starting-…` (a draft) until the session exists: wait for its id.
   const shell = await waitFor(
     "the shell opening its session",
-    () => /^\/sessions\/([^/]+)$/.exec(path())?.[1],
+    () => /^\/sessions\/(?!starting-)([^/]+)$/.exec(path())?.[1],
     60,
   );
   started.push(shell);
@@ -250,11 +259,14 @@ export default async ({ page, web, capture, note }) => {
 
   // Stop the shell (the last running session, so its workspace stops too), then remove.
   await stopAll();
+  // Read the shell itself: the project's list leaves out an ended session with no transcript, and
+  // a session it doesn't list hasn't therefore stopped.
   await waitFor(
     "the shell to stop",
-    async () =>
-      (await call("projects.detail", { id: fixture.id })).sessions.find((s) => s.id === shell)
-        ?.status !== "running",
+    async () => {
+      const status = (await call("sessions.detail", { id: shell })).session?.status;
+      return status !== undefined && status !== "running";
+    },
     90,
   );
   await page.reload();
@@ -408,7 +420,7 @@ export default async ({ page, web, capture, note }) => {
   note("a project that fails to load shows the error screen; Try again reads it again");
 
   // Put back what this drive changed.
-  await stopAll();
+  await stopAll({ quietly: true });
   await call("projects.remove", { id: empty.id }, "mutate").catch(() => undefined);
   const gone = (await call("projects.removed")).find((p) => p.name === `wt-empty-${suffix}`);
   if (gone !== undefined)

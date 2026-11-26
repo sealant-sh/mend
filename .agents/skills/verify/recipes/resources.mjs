@@ -398,7 +398,13 @@ export default async ({ page, web, capture, note }) => {
   ).click();
   await settled();
   await visible(page.getByRole("button", { name: /^Worktree: / })).click();
-  await visible(page.getByText(`mend/${a.name}`, { exact: false })).click();
+  // With res-a's shell running, the picker lists it under "Your running workspaces" by its name;
+  // otherwise it is found by its branch under "Or start in a worktree".
+  await visible(
+    page
+      .getByRole("menuitemradio", { name: new RegExp(`^${a.name}(?![\\w-])`) })
+      .or(page.getByText(`mend/${a.name}`, { exact: false })),
+  ).click();
   const line = visible(page.locator("[data-slot=composer-resources]"));
   await line.getByText(`@${name} shared database`).waitFor({ timeout: 30_000 });
   await both("composer-desktop");

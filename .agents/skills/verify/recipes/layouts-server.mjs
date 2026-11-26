@@ -3,7 +3,8 @@
 // goes from the signed-in page, as the web app's data layer makes it, to the stack's API built
 // from this commit: `/api/me/layouts` and the web app's own `layouts` procedures under `/trpc`.
 // Two people in the stack's one organization: its first account, and a member who joins through
-// an invitation. The recipe removes every layout it saved, so it runs again on the same stack.
+// an invitation. The recipe removes every layout it saved, and the member it made, so it runs again
+// on the same stack and leaves a check VM's roster as it found it.
 //
 //   pnpm verify drive web --recipe layouts-server
 const PREFIX = "Verify ";
@@ -144,51 +145,69 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   expect("an invitation", invitation.status === 200, invitation.status);
   registerSecret("invitation-token", invitation.body.token);
   const second = await page.context().browser().newContext();
-  const memberPage = await second.newPage();
-  const joinHeading = memberPage.getByRole("heading", { name: /^Join / });
-  await memberPage.goto(`${web}/join#${invitation.body.token}`);
-  await joinHeading.waitFor({ timeout: 45_000 }).catch(async () => {
-    note("the join page didn't show its heading; loading it again");
+  const email = `verify-layouts-${Date.now()}@example.invalid`;
+  let memberId = null;
+  try {
+    const memberPage = await second.newPage();
+    const joinHeading = memberPage.getByRole("heading", { name: /^Join / });
     await memberPage.goto(`${web}/join#${invitation.body.token}`);
-    await joinHeading.waitFor({ timeout: 60_000 });
-  });
-  await memberPage.getByRole("textbox", { name: "Name" }).fill("Lin Verify");
-  await memberPage
-    .getByRole("textbox", { name: "Email" })
-    .fill(`verify-layouts-${Date.now()}@example.invalid`);
-  await typeSecret(
-    memberPage.getByLabel("Password", { exact: true }),
-    "member-password",
-    "a-layouts-verify-password",
-  );
-  await typeSecret(
-    memberPage.getByLabel("Confirm password"),
-    "member-password",
-    "a-layouts-verify-password",
-  );
-  await memberPage.getByRole("button", { name: "Create account and join", exact: true }).click();
-  await memberPage.waitForURL((url) => url.pathname === "/welcome/command-line");
-  const member = record("member", callsOf(memberPage));
-  const theirs = await member("GET", "/api/me/layouts");
-  expect(
-    "the member's own list",
-    theirs.status === 200 && theirs.body.layouts.length === 0,
-    theirs,
-  );
-  note("a second person joined: their list is empty, none of the owner's");
-  const notTheirs = await member("PATCH", `/api/me/layouts/${id}`, { name: "Mine now" });
-  expect("renaming the owner's", notTheirs.status === 404, notTheirs);
-  const notRemoved = await member("DELETE", `/api/me/layouts/${id}`);
-  expect("removing the owner's", notRemoved.body?.removed === false, notRemoved);
-  expect("the owner's is untouched", (await names(owner)).includes(`${PREFIX}Side by side`), null);
-  note(`the member renaming it: 404, "${notTheirs.body.message}"; removing it: removed false`);
-  const theirOwn = await member("POST", `/api/me/layouts`, {
-    name: `${PREFIX}Review`,
-    layout: beside,
-  });
-  expect("the member may use the owner's name", theirOwn.status === 200, theirOwn);
-  await removeOurs(member);
-  await second.close();
+    await joinHeading.waitFor({ timeout: 45_000 }).catch(async () => {
+      note("the join page didn't show its heading; loading it again");
+      await memberPage.goto(`${web}/join#${invitation.body.token}`);
+      await joinHeading.waitFor({ timeout: 60_000 });
+    });
+    await memberPage.getByRole("textbox", { name: "Name" }).fill("Lin Verify");
+    await memberPage.getByRole("textbox", { name: "Email" }).fill(email);
+    await typeSecret(
+      memberPage.getByLabel("Password", { exact: true }),
+      "member-password",
+      "a-layouts-verify-password",
+    );
+    await typeSecret(
+      memberPage.getByLabel("Confirm password"),
+      "member-password",
+      "a-layouts-verify-password",
+    );
+    await memberPage.getByRole("button", { name: "Create account and join", exact: true }).click();
+    await memberPage.waitForURL((url) => url.pathname === "/welcome/command-line");
+    const member = record("member", callsOf(memberPage));
+    memberId = (await member("GET", "/api/organization")).body?.userId ?? null;
+    const theirs = await member("GET", "/api/me/layouts");
+    expect(
+      "the member's own list",
+      theirs.status === 200 && theirs.body.layouts.length === 0,
+      theirs,
+    );
+    note("a second person joined: their list is empty, none of the owner's");
+    const notTheirs = await member("PATCH", `/api/me/layouts/${id}`, { name: "Mine now" });
+    expect("renaming the owner's", notTheirs.status === 404, notTheirs);
+    const notRemoved = await member("DELETE", `/api/me/layouts/${id}`);
+    expect("removing the owner's", notRemoved.body?.removed === false, notRemoved);
+    expect(
+      "the owner's is untouched",
+      (await names(owner)).includes(`${PREFIX}Side by side`),
+      null,
+    );
+    note(`the member renaming it: 404, "${notTheirs.body.message}"; removing it: removed false`);
+    const theirOwn = await member("POST", `/api/me/layouts`, {
+      name: `${PREFIX}Review`,
+      layout: beside,
+    });
+    expect("the member may use the owner's name", theirOwn.status === 200, theirOwn);
+    await removeOurs(member);
+  } finally {
+    // The member goes again, whatever happened: the owner removes them and reads the roster back.
+    await second.close();
+    const roster = async () => (await owner("GET", "/api/organization/members")).body ?? [];
+    // A join that failed after the account was made leaves no id here: find them by their email.
+    memberId ??= (await roster()).find((each) => each.email === email)?.userId ?? null;
+    if (memberId !== null) await owner("DELETE", `/api/organization/members/${memberId}`);
+    const left = (await roster()).some((each) => each.userId === memberId || each.email === email);
+    note(
+      `${left ? "not restored" : "restored"} · the member this run made · read back: the roster ${left ? "still lists" : "no longer lists"} ${email}`,
+    );
+    if (left) throw new Error(`the roster still lists ${email}`);
+  }
 
   // The limit: 20 per person.
   const count = (await names(owner)).length;
