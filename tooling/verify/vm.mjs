@@ -1175,12 +1175,18 @@ export const vmUp = async ({
       return fail("url", `mend server setup --url ${url}`, lastLine(setup.stdout));
     // Telemetry only when this machine names the projects (MEND_VERIFY_SENTRY_DSN and the rest),
     // and only through a CLI that takes the flags: a master's CLI from before them refuses the
-    // setup. Never a reason to fail the copy.
+    // setup. A CLI from before `--sealantd-sentry-dsn` gets the others, and its workspaces'
+    // sealantd stays off. Never a reason to fail the copy.
     const flags = telemetryFlags(process.env, "check-vm");
     if (flags.length > 0) {
-      const quoted = flags.map((part) => `'${part.replaceAll("'", "")}'`).join(" ");
+      const quote = (parts) => parts.map((part) => `'${part.replaceAll("'", "")}'`).join(" ");
+      const daemonAt = flags.indexOf("--sealantd-sentry-dsn");
+      const withoutDaemon =
+        daemonAt === -1 ? flags : flags.filter((_, at) => at !== daemonAt && at !== daemonAt + 1);
+      const setup = (parts) =>
+        `mend server setup --offline --yes ${quote(parts)} 2>&1 | grep '^telemetry'`;
       const turnedOn = ssh(
-        `set -o pipefail; if mend server setup --help 2>&1 | grep -q -- --sentry-dsn; then mend server setup --offline --yes ${quoted} 2>&1 | grep '^telemetry'; else echo "this copy's CLI takes no --sentry-dsn: telemetry stays off (verify box cli, then mend server setup --sentry-dsn)"; fi`,
+        `set -o pipefail; help=$(mend server setup --help 2>&1); if grep -q -- --sealantd-sentry-dsn <<<"$help"; then ${setup(flags)}; elif grep -q -- --sentry-dsn <<<"$help"; then ${setup(withoutDaemon)}; else echo "this copy's CLI takes no --sentry-dsn: telemetry stays off (verify box cli, then mend server setup --sentry-dsn)"; fi`,
       );
       steps.push(
         step(

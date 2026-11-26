@@ -3488,8 +3488,23 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `mend.`; web-write's `POST /api/sessions/:id/launch` showing one `launch session` with
   `provision workspace` and `mend.sealant — open session` under it, and no `session`,
   `require owner runs`, `launch as` or `launch internal` span; no `sealant.sdk.*` span (each sealant
-  call is one `mend.sealant` span over its `http.client`); and no root trace for `GET /api/health`
-  and no root trace that is a lone database query in the run's window.
+  call is one `mend.sealant` span over its `http.client`, with operation `mend.sealant`, never
+  `sealant.sdk`); and no root trace for `GET /api/health` and no root trace that is a lone database
+  query in the run's window. On a copy also started with `MEND_VERIFY_SEALANTD_SENTRY_DSN` (the
+  `telemetry · …` line reads `sealantd's to sentry.mend.run project 10`; on any other this part is
+  `not run · no sealantd DSN on this copy`), read the trace of web-write's session start once that
+  session has stopped and a minute has passed: sentry.mend.run keeps a trace's mend-server spans
+  back until none has joined it for 60 s, and Mend's reads of a running session join its start's
+  trace (SLNT-1393). Across projects 4, 3, 2 and 10 (SLNT-1358), that one trace holds
+  `mend.web.session.start` over `rpc.server — sessions.start`, `start session`, `launch session`,
+  `provision workspace`, sealant's `create workspace` and, when the image was built for it,
+  `queue.process — workspace-image-builds` with `build workspace` and `launch workspace` under it,
+  and under that in project 10 `sealantd.boot — boot workspace in a container` with its
+  `sealantd.boot.stage` spans (`restore capture`, `runtime healthy`, `control server ready`,
+  `start harness`). A message's trace reaches project 10's `sealantd.control/writeStdin`, and
+  project 10 has no span with operation `default` or an empty description. Until SLNT-1392,
+  `sealantd.control/openSession` (`create session journal`, `spawn PTY session`) is a trace of its
+  own under sealant's `POST /v1/sessions/as-user`, not under `mend.sealant — open session`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/server/`, `apps/web/src/lib/telemetry.ts`,

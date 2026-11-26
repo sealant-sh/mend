@@ -405,17 +405,28 @@ export const verifyT3GatewayRoot = async (root = T3_GATEWAY_ROOT) => {
 };
 
 /** The DSN names a container is given, one per product: each reports to its own Sentry project. */
-const SENTRY_DSN_NAMES = ["SENTRY_DSN", "MEND_SENTRY_DSN", "SEALANT_SENTRY_DSN"];
+const SENTRY_DSN_NAMES = [
+  "SENTRY_DSN",
+  "MEND_SENTRY_DSN",
+  "SEALANT_SENTRY_DSN",
+  "SEALANTD_SENTRY_DSN",
+];
 
 /**
  * The environment a child starts with: the container's, then its own, with the one `SENTRY_DSN`
  * its product reports to (SLNT-1355). Mend's processes take `MEND_SENTRY_DSN` (or a plain
  * `SENTRY_DSN`, Mend being what the container runs) and sealant's take `SEALANT_SENTRY_DSN`
  * alone, so neither reports into the other's project. Sealant's names its own release. Only the
- * web app (`web`) is given `SENTRY_BROWSER_DSN`, which it serves to the browser. No DSN, no
- * telemetry: nothing here is ever a default.
+ * web app (`web`) is given `SENTRY_BROWSER_DSN`, which it serves to the browser, and only sealant's
+ * worker (`daemons`) `SEALANTD_SENTRY_DSN`, which it hands the sealantd of each workspace it
+ * launches (SLNT-1358). No DSN, no telemetry: nothing here is ever a default.
  */
-export const childEnvironment = (container, product, own = {}, { web = false } = {}) => {
+export const childEnvironment = (
+  container,
+  product,
+  own = {},
+  { web = false, daemons = false } = {},
+) => {
   const env = { ...container, ...own };
   for (const name of SENTRY_DSN_NAMES) delete env[name];
   const dsn = (
@@ -426,6 +437,8 @@ export const childEnvironment = (container, product, own = {}, { web = false } =
   if (product === "sealant") delete env.SENTRY_RELEASE;
   // The browser's DSN is the web app's to serve to the browser, and no other process's.
   if (!web) delete env.SENTRY_BROWSER_DSN;
+  const daemonDsn = daemons ? container.SEALANTD_SENTRY_DSN?.trim() : undefined;
+  if (daemonDsn) env.SEALANTD_SENTRY_DSN = daemonDsn;
   return dsn ? { ...env, SENTRY_DSN: dsn } : env;
 };
 
@@ -436,7 +449,7 @@ const baseSpecification = (name, command, environment = {}) => ({
     process.env,
     name.startsWith("sealant-") ? "sealant" : "mend",
     environment,
-    { web: name === "mend-web" },
+    { web: name === "mend-web", daemons: name === "sealant-worker" },
   ),
 });
 
@@ -450,7 +463,7 @@ const startBundle = async (supervisor) => {
     SEALANT_CREDENTIALS_KEY: configuration.credentialsKey,
   };
 
-  console.log("[bundle] applying Sealant 0.40.0-next.947 migrations from its published API image");
+  console.log("[bundle] applying Sealant 0.40.0-next.951 migrations from its published API image");
   await supervisor.run(
     baseSpecification("sealant-migrate", ["node", "/opt/sealant/api/dist/migrate.js"], {
       DATABASE_URL: configuration.sealantDatabaseUrl,
