@@ -53,8 +53,15 @@ const isWrapperSpan = (name: string): boolean =>
   name === "drizzle.operation" || name.startsWith("sealant.sdk.");
 
 /**
+ * What a wrapper says about itself, which is not its parent's to take: the sealant SDK (0.40.0-next.951
+ * on) names its span's operation and description, and its own name, for Sentry.
+ */
+const WRAPPER_OWN = new Set(["sentry.op", "sentry.description", "code.function.name"]);
+
+/**
  * A span that is its parent: its children are its parent's, and its attributes (the SDK's
- * workspace and run IDs) are set on the parent when that is a span of this process.
+ * workspace and run IDs) are set on the parent when that is a span of this process, all but what
+ * describes the wrapper itself (`WRAPPER_OWN`), so the parent keeps its own operation and words.
  */
 const parentAsSpan = (
   parent: Tracer.AnySpan,
@@ -73,6 +80,7 @@ const parentAsSpan = (
   kind: options.kind,
   end: () => undefined,
   attribute: (key, value) => {
+    if (WRAPPER_OWN.has(key)) return;
     if (parent._tag === "Span" && parent.status._tag === "Started") parent.attribute(key, value);
   },
   event: () => undefined,

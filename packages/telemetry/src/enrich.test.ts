@@ -337,7 +337,13 @@ describe("the spans that reach Sentry", () => {
       Effect.withSpan(Effect.void, "GET", { kind: "client" }).pipe(
         Effect.withSpan("sealant.sdk.workspaces.get_workspace", {
           kind: "client",
-          attributes: { "sealant.workspace_id": "ws_1" },
+          // What sealant's SDK (0.40.0-next.951) says of its own span: the call keeps its own.
+          attributes: {
+            "sealant.workspace_id": "ws_1",
+            "sentry.op": "sealant.sdk",
+            "sentry.description": "get workspace",
+            "code.function.name": "sealant.sdk.workspaces.get_workspace",
+          },
         }),
         Effect.withSpan("SealantClient.getWorkspace"),
       ),
@@ -350,5 +356,10 @@ describe("the spans that reach Sentry", () => {
       key: "sealant.workspace_id",
       value: { stringValue: "ws_1" },
     });
+    const value = (key: string) =>
+      call?.attributes.find((attribute) => attribute.key === key)?.value;
+    expect(value("sentry.op")).toEqual({ stringValue: "mend.sealant" });
+    expect(value("sentry.description")).toEqual({ stringValue: "read workspace" });
+    expect(value("code.function.name")).toEqual({ stringValue: "SealantClient.getWorkspace" });
   });
 });

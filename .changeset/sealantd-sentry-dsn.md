@@ -10,4 +10,5 @@ workspace's trace now continues from Mend through sealant into its sealantd.
 
 The bundled sealant is 0.40.0-next.951, with sealantd 0.21.0-next.217. A workspace's build, launch
 and boot are now one trace under its create, its spans are described in plain words, and setup's
-host-vm self-test uses sealantd 0.21.0-next.217's vm-runner.
+host-vm self-test uses sealantd 0.21.0-next.217's vm-runner. Mend's calls into sealant keep their
+own operation in Sentry (`mend.sealant`), not the one the new SDK names its own span with.
