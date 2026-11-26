@@ -211,8 +211,13 @@ and the machine keys the data is sealed with (`mend/keys` in the `mend_mend-conf
 `ExecutorIdentityFailure`) and the workspace SSH gateway's host key. The checker account, the second
 account, their CLI logins and the agent logins all work on it unchanged. The build then starts one
 session in `boat-check-ubuntu` and one in `boat-check-arch` as the checker, so the two workspace
-images are built once, and loads the data again. Measured on 20 Nov 2026: about 10 minutes, 32 GiB
-on disk, of which the warm-up is 6.5 minutes.
+images are built once, and loads the data again. Before the reload it stops Mend and removes every
+`sealant-` container and network the two sessions left, keeping the images (SLNT-1384): sealant
+removes them itself some seconds after a run ends, but the reload stopped Mend before it had, and
+the loaded data does not know them. On the master of 26 Nov the last session's egress network held
+10.233.0.0/28, sealant handed that subnet to the first session on every copy, and Docker refused it.
+Once sealed, the build fails, naming each one, if Docker still holds any. Measured on 20 Nov 2026:
+about 10 minutes, 32 GiB on disk, of which the warm-up is 6.5 minutes.
 
 **The run's data** lives in `~/.local/share/mend-check-vms/box`, and the master is built from it:
 `world.sql`, `world.store.tgz`, `mend-git.tgz`, `mend-garage.tgz` (the blob store, where sessions'
