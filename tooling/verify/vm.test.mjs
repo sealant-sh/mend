@@ -1027,11 +1027,23 @@ test("a Boat copy removes no Boat image unless it is the copy vm save saves (SLN
   assert.equal(failed.out.status, 1);
 });
 
-/** Runs a VM script against a fake docker holding `containers` and `networks`; returns its output and docker's calls. */
-const withFakeDocker = (script, { containers, networks, failRead = false }) => {
+/**
+ * Runs a VM script against a fake docker holding `containers` and `networks`; returns its output,
+ * docker's calls and what it still holds. `endpoints` are `[network, container]` pairs (a network
+ * with one refuses removal); a container in `removing` refuses its first removal and is then gone,
+ * as one Docker is removing on its own; one in `stuck` always refuses.
+ */
+const withFakeDocker = (
+  script,
+  { containers, networks, endpoints = [], removing = [], stuck = [], failRead = false },
+) => {
   const dir = scratch();
-  writeFileSync(join(dir, "containers"), containers.map((name) => `${name}\n`).join(""));
-  writeFileSync(join(dir, "networks"), networks.map((name) => `${name}\n`).join(""));
+  const lines = (items) => items.map((item) => `${item}\n`).join("");
+  writeFileSync(join(dir, "containers"), lines(containers));
+  writeFileSync(join(dir, "networks"), lines(networks));
+  writeFileSync(join(dir, "endpoints"), lines(endpoints.map((pair) => pair.join(" "))));
+  writeFileSync(join(dir, "removing"), lines(removing));
+  writeFileSync(join(dir, "stuck"), lines(stuck));
   writeFileSync(
     join(dir, "docker"),
     `#!/usr/bin/env bash
@@ -1040,8 +1052,15 @@ drop() { grep -vxF "$2" "$STATE/$1" > "$STATE/$1.next"; mv "$STATE/$1.next" "$ST
 case "$1 $2" in
   "ps -a") [ -e "$STATE/fail" ] && exit 1; cat "$STATE/containers" ;;
   "network ls") cat "$STATE/networks" ;;
-  "rm -f") drop containers "$4" ;;
-  "network rm") drop networks "$3" ;;
+  "rm -f")
+    if grep -qxF "$4" "$STATE/stuck"; then echo "Error response from daemon: cannot remove container $4: device or resource busy" >&2; exit 1; fi
+    if grep -qxF "$4" "$STATE/removing"; then drop removing "$4"; drop containers "$4"; echo "Error response from daemon: removal of container $4 is already in progress" >&2; exit 1; fi
+    drop containers "$4" ;;
+  "network inspect") grep "^$5 " "$STATE/endpoints" | cut -d' ' -f2 | tr '\n' ' ' ;;
+  "network disconnect") drop endpoints "$4 $5" ;;
+  "network rm")
+    if grep -q "^$3 " "$STATE/endpoints"; then echo "Error response from daemon: error while removing network: network $3 has active endpoints" >&2; exit 1; fi
+    drop networks "$3" ;;
   stop*) ;;
   *) exit 2 ;;
 esac
@@ -1068,7 +1087,7 @@ esac
 const WARMED = "sealant-12de32df-14c4-4d45-ae3f-c3962941dfd8";
 
 test("the build removes what the warm runs left in Docker, Mend stopped first, and keeps Mend's own (SLNT-1384)", () => {
-  const dropped = withFakeDocker(dropWorkspacesScript, {
+  const dropped = withFakeDocker(dropWorkspacesScript({ pause: 0 }), {
     containers: ["mend-mend-1", "mend-postgres-1", WARMED, `${WARMED}-docker`],
     networks: ["bridge", "mend_default", `${WARMED}-egress`, `${WARMED}-network`],
   });
@@ -1087,13 +1106,49 @@ test("the build removes what the warm runs left in Docker, Mend stopped first, a
   ]);
 
   // Docker that cannot be read is not read as clean.
-  const unread = withFakeDocker(dropWorkspacesScript, {
+  const unread = withFakeDocker(dropWorkspacesScript({ pause: 0 }), {
     containers: [WARMED],
     networks: [],
     failRead: true,
   });
   assert.doesNotMatch(unread.stdout, /drop=done/);
   assert.match(unread.stdout, /drop=docker ps failed/);
+});
+
+test("the build's removal waits out Docker's own, frees a network of its endpoints, and names what stays with Docker's words (SLNT-1396)", () => {
+  // A container Docker is already removing, and the egress network a mirror is still on.
+  const raced = withFakeDocker(dropWorkspacesScript({ pause: 0 }), {
+    containers: ["mend-mend-1", "mend-mirror-1", `${WARMED}-docker`],
+    networks: ["mend_default", `${WARMED}-egress`],
+    endpoints: [[`${WARMED}-egress`, "mend-mirror-1"]],
+    removing: [`${WARMED}-docker`],
+  });
+  assert.deepEqual(raced.left, {
+    containers: ["mend-mend-1", "mend-mirror-1"],
+    networks: ["mend_default"],
+  });
+  assert.deepEqual(raced.stdout.trim().split("\n"), [
+    `retried=container ${WARMED}-docker: Error response from daemon: removal of container ${WARMED}-docker is already in progress`,
+    `disconnected=mend-mirror-1 from ${WARMED}-egress`,
+    `removed=network ${WARMED}-egress`,
+    "drop=done",
+  ]);
+
+  // One that never goes is named, with Docker's reason, and the script fails.
+  const stuck = withFakeDocker(dropWorkspacesScript({ rounds: 3, pause: 0 }), {
+    containers: [WARMED],
+    networks: [`${WARMED}-egress`],
+    stuck: [WARMED],
+  });
+  const said = stuck.stdout.trim().split("\n");
+  assert.ok(!said.includes("drop=done"));
+  assert.deepEqual(
+    said.filter((line) => line.startsWith("drop=")),
+    [
+      `drop=could not remove container ${WARMED}: Error response from daemon: cannot remove container ${WARMED}: device or resource busy`,
+    ],
+  );
+  assert.equal(said.filter((line) => line.startsWith("retried=")).length, 2);
 });
 
 test("the sealed master is read for anything sealant made, and Docker that cannot be read is not clean", () => {

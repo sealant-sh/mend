@@ -216,8 +216,13 @@ images are built once, and loads the data again. Before the reload it stops Mend
 removes them itself some seconds after a run ends, but the reload stopped Mend before it had, and
 the loaded data does not know them. On the master of 26 Nov the last session's egress network held
 10.233.0.0/28, sealant handed that subnet to the first session on every copy, and Docker refused it.
-Once sealed, the build fails, naming each one, if Docker still holds any. Measured on 20 Nov 2026:
-about 10 minutes, 32 GiB on disk, of which the warm-up is 6.5 minutes.
+The removal goes round until Docker lists none (SLNT-1396). Each round it first disconnects whatever
+is still on a `sealant-` network: sealant joins Mend's registry mirrors (`mend-npm-mirror`,
+`mend-docker-mirror`) to each workspace's networks, and Docker refuses to remove a network with a
+container on it, which failed both builds of 27 Nov. Whatever stays is named with Docker's own
+error, and the warm step lists what it disconnected or retried. Once sealed, the build fails, naming
+each one, if Docker still holds any. Measured on 20 Nov 2026: about 10 minutes, 32 GiB on disk, of
+which the warm-up is 6.5 minutes.
 
 **The run's data** lives in `~/.local/share/mend-check-vms/box`, and the master is built from it:
 `world.sql`, `world.store.tgz`, `mend-git.tgz`, `mend-garage.tgz` (the blob store, where sessions'
