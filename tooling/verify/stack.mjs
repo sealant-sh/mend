@@ -107,7 +107,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * A server's telemetry flags, from the verifier's own environment and never from the repository: a
  * stack or a check VM reports to Sentry only when this machine names the projects (SLNT-1355),
- * under `environment` (`verify-stack`, `check-vm`).
+ * under `environment` (`verify-stack`, `check-vm`), or `MEND_VERIFY_SENTRY_ENVIRONMENT` when a
+ * check names its own (`slnt-1408-web`), so its spans are told apart from every other run's.
  */
 export const telemetryFlags = (env, environment = "verify-stack") => {
   const named = [
@@ -120,7 +121,7 @@ export const telemetryFlags = (env, environment = "verify-stack") => {
   return [
     ...named.flatMap(([flag, value]) => [flag, value.trim()]),
     "--sentry-environment",
-    environment,
+    env.MEND_VERIFY_SENTRY_ENVIRONMENT?.trim() || environment,
   ];
 };
 
