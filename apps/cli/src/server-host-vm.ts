@@ -77,7 +77,7 @@ export const renderHostVmOverlay = (settings: {
  * which supports both Linux KVM and Apple Silicon `mac-vmd` self-tests. Moves with that pin.
  */
 export const VM_RUNNER_IMAGE =
-  "ghcr.io/sealant-sh/vm-runner-next:0.21.0-next.221@sha256:722fcf54623fc7b18417f0a0585e4a077584cccd18b13ef602c18aa9ed2ef10d";
+  "ghcr.io/sealant-sh/vm-runner-next:0.21.0-next.223@sha256:356c27e4962c449aa93ae308f459022fb4f40cbd06056e8f3f12d705ef90b96f";
 
 /** The first Docker Engine whose bridge driver takes `gateway_mode_ipv4=isolated`. */
 const ISOLATED_GATEWAY_ENGINE = 28;

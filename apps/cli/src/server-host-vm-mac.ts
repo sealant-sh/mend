@@ -30,7 +30,7 @@ export const MAC_MIN_DARWIN_MAJOR = 23;
  * Pinned macOS helper bundle built by `sealant-sh/sealantd`'s `macos-15` release workflow.
  * `MEND_MAC_VMD_BUNDLE` overrides this with a local `.tar.gz` path for offline / development runs.
  */
-export const MAC_VMD_RELEASE_VERSION = "0.21.0-next.221";
+export const MAC_VMD_RELEASE_VERSION = "0.21.0-next.223";
 export const MAC_VMD_ASSET_URL = `https://github.com/sealant-sh/sealantd/releases/download/v${MAC_VMD_RELEASE_VERSION}/sealant-vmd-darwin-arm64.tar.gz`;
 /** Empty until the first signed GitHub release asset digest is pinned; required for remote downloads. */
 export const MAC_VMD_SHA256: string = "";
