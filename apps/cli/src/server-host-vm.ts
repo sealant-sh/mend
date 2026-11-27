@@ -1,6 +1,11 @@
 import type { SessionRuntime } from "@mend/domain";
 import { Option, Schema } from "effect";
 
+import {
+  macHostEligibilityFailure,
+  renderMacHostVmOverlay,
+  type ServerMacHostVm,
+} from "./server-host-vm-mac.ts";
 import { type ServerProcessOptions, serverProcessDeadlines } from "./server-runtime.ts";
 
 /**
@@ -57,16 +62,22 @@ export const namesHostVm = (settings: {
 export const renderHostVmOverlay = (settings: {
   readonly sessionRuntime?: SessionRuntime;
   readonly sessionRuntimes?: ReadonlyArray<SessionRuntime>;
-}): string | undefined => (namesHostVm(settings) ? HOST_VM_COMPOSE_OVERLAY : undefined);
+  readonly macHostVm?: ServerMacHostVm;
+}): string | undefined =>
+  !namesHostVm(settings)
+    ? undefined
+    : settings.macHostVm !== undefined
+      ? renderMacHostVmOverlay(settings.macHostVm)
+      : HOST_VM_COMPOSE_OVERLAY;
 
 // ─── whether this server can run host-vm ────────────────────────────────────
 
 /**
- * The vm-runner setup runs `--self-test` with: sealantd 0.21.0-next.217's (the multi-arch index),
- * the image the server's sealant (0.40.0-next.952) runs host-vm workspaces with. Moves with that pin.
+ * The vm-runner setup runs `--self-test` with: sealantd 0.21.0-next.221's (the multi-arch index),
+ * which supports both Linux KVM and Apple Silicon `mac-vmd` self-tests. Moves with that pin.
  */
 export const VM_RUNNER_IMAGE =
-  "ghcr.io/sealant-sh/vm-runner-next:0.21.0-next.217@sha256:5d980937731275b900421366e9df2bb43893d8c33b37634f87dcca8a6f32bd7b";
+  "ghcr.io/sealant-sh/vm-runner-next:0.21.0-next.221@sha256:722fcf54623fc7b18417f0a0585e4a077584cccd18b13ef602c18aa9ed2ef10d";
 
 /** The first Docker Engine whose bridge driver takes `gateway_mode_ipv4=isolated`. */
 const ISOLATED_GATEWAY_ENGINE = 28;
@@ -76,14 +87,16 @@ const DOCKER_ONLY = "offering docker runtime (shared Linux kernel; no per-worksp
 
 /** What setup observed about running host-vm on this server's Docker host. */
 export type HostVmObservation =
-  | { readonly _tag: "passed" }
+  | { readonly _tag: "passed"; readonly backend?: "cloud-hypervisor" | "mac-vmd" }
   /** `observed`: what stopped it, as setup says it after "Observed: ". */
   | { readonly _tag: "unavailable"; readonly observed: string };
 
 /** The line setup prints for an observation it chose runtimes by. */
 export const hostVmChoiceLine = (observation: HostVmObservation): string =>
   observation._tag === "passed"
-    ? "Observed: this server's KVM passed the vm-runner self-test — offering host-vm (a virtual machine of its own per workspace) and docker; new organizations start on host-vm"
+    ? observation.backend === "mac-vmd"
+      ? "Observed: Apple Silicon macOS Virtualization.framework and Docker passed the host-vm self-test — offering host-vm (a virtual machine of its own per workspace) and docker; new organizations start on host-vm"
+      : "Observed: this server's KVM passed the vm-runner self-test — offering host-vm (a virtual machine of its own per workspace) and docker; new organizations start on host-vm"
     : `Observed: ${observation.observed} — ${DOCKER_ONLY}`;
 
 /**
@@ -111,6 +124,12 @@ interface ProbeOutput {
 /** What the probes need of setup's runtime. */
 export interface HostVmProbeRuntime {
   readonly platform: NodeJS.Platform;
+  /** CPU architecture on macOS (`arm64` required for native Virtualization.framework). */
+  readonly arch?: string;
+  /** Darwin release (`os.release()`) on macOS. */
+  readonly osRelease?: string;
+  /** Numeric user id for `gui/<uid>` launchd checks on macOS. */
+  readonly uid?: number;
   /** Whether /dev/kvm is on this machine; absent, setup never looks (`ServerSetupRuntime`). */
   readonly kvmDevice?: () => boolean;
   readonly run: (
@@ -222,14 +241,70 @@ const isolatedGatewayFailure = async (
 };
 
 /**
- * Whether this server's Docker host can run host-vm: a Linux host with /dev/kvm whose vm-runner
- * self-test passes (KVM, TUN, nftables, Landlock, Cloud Hypervisor) and whose Docker isolates a
- * network's gateway. On a Docker host that is not this machine, the self-test speaks for it.
+ * Whether this server's Docker host can run host-vm:
+ * - On Linux: `/dev/kvm`, `vm-runner --self-test` (KVM, TUN, nftables, Landlock, Cloud Hypervisor),
+ *   and Docker `gateway_mode_ipv4=isolated`.
+ * - On Apple Silicon macOS (when `runtime.arch` is supplied): macOS >= 14, local Docker context,
+ *   active `gui/<uid>` launchd domain, `vm-runner --self-test --vmm-backend mac-vmd` (TUN +
+ *   nftables, no `/dev/kvm`), and Docker `gateway_mode_ipv4=isolated`.
  */
 export const observeHostVm = async (
   runtime: HostVmProbeRuntime,
   host: HostVmDockerHost,
 ): Promise<HostVmObservation> => {
+  if (runtime.platform === "darwin" && runtime.arch !== undefined) {
+    const eligibility = await macHostEligibilityFailure(
+      {
+        platform: runtime.platform,
+        arch: runtime.arch,
+        ...(runtime.osRelease === undefined ? {} : { osRelease: runtime.osRelease }),
+        ...(runtime.uid === undefined ? {} : { uid: runtime.uid }),
+        configDir: "",
+        run: runtime.run,
+        fetchText: async () => ({ status: 0, body: "", error: "unused" }),
+        randomBytes: (size) => runtime.randomBytes(size),
+        sleep: async () => undefined,
+        writeLine: () => undefined,
+      },
+      host.endpoint,
+    );
+    if (eligibility !== null) return { _tag: "unavailable", observed: eligibility };
+    const selfTest = await runtime.run(
+      "docker",
+      [
+        "--context",
+        host.context,
+        "run",
+        "--rm",
+        ...(host.offline ? ["--pull", "never"] : []),
+        "--device",
+        "/dev/net/tun",
+        "--cap-drop",
+        "ALL",
+        "--cap-add",
+        "NET_ADMIN",
+        "--cap-add",
+        "SETUID",
+        "--cap-add",
+        "SETGID",
+        "--cap-add",
+        "SETPCAP",
+        "--security-opt",
+        "no-new-privileges:true",
+        VM_RUNNER_IMAGE,
+        "--vmm-backend",
+        "mac-vmd",
+        "--self-test",
+      ],
+      { timeoutMs: serverProcessDeadlines.pull },
+    );
+    const failed = selfTestFailure(selfTest);
+    if (failed !== null) return { _tag: "unavailable", observed: failed };
+    const gateway = await isolatedGatewayFailure(runtime, host.context);
+    return gateway === null
+      ? { _tag: "passed", backend: "mac-vmd" }
+      : { _tag: "unavailable", observed: gateway };
+  }
   const local = host.endpoint.startsWith("unix://");
   if (runtime.platform !== "linux" || (local && runtime.kvmDevice?.() !== true))
     return { _tag: "unavailable", observed: "/dev/kvm unavailable" };
@@ -266,7 +341,9 @@ export const observeHostVm = async (
   const failed = selfTestFailure(selfTest);
   if (failed !== null) return { _tag: "unavailable", observed: failed };
   const gateway = await isolatedGatewayFailure(runtime, host.context);
-  return gateway === null ? { _tag: "passed" } : { _tag: "unavailable", observed: gateway };
+  return gateway === null
+    ? { _tag: "passed", backend: "cloud-hypervisor" }
+    : { _tag: "unavailable", observed: gateway };
 };
 
 // ─── whether the VM disks share a filesystem with the server's data ──────────

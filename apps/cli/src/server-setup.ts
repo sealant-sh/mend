@@ -78,6 +78,7 @@ import {
   removeServerLeftovers,
   serverOldDataWords,
   SERVER_VOLUME_OWNER_LABEL,
+  serverVolumeOwner,
   type ServerDockerNamespace,
   verifyServerDockerVolumes,
 } from "./server-docker-volumes.ts";
@@ -123,6 +124,13 @@ import {
   type Tenancy,
   TENANCIES,
 } from "./server-edge.ts";
+import {
+  ensureMacHostVmInstalled,
+  observeMacVmdStatusLines,
+  parseMacHostVmField,
+  type ServerMacHostVm,
+  upgradeMacHostVm,
+} from "./server-host-vm-mac.ts";
 import {
   HOST_VM_COMPOSE_FILE,
   type HostVmDockerHost,
@@ -298,6 +306,16 @@ export interface ServerSetupRuntime {
   readonly configDir: string;
   /** Host operating system reported by Node. */
   readonly platform: NodeJS.Platform;
+  /** CPU architecture on macOS (`arm64` required for native Virtualization.framework). */
+  readonly arch?: string;
+  /** Darwin release (`os.release()`) on macOS. */
+  readonly osRelease?: string;
+  /** User home directory for macOS `~/Library/Application Support/Mend` and `LaunchAgents`. */
+  readonly homeDir?: string;
+  /** Numeric user id for `gui/<uid>` launchd operations on macOS. */
+  readonly uid?: number;
+  /** Optional local `.tar.gz` path overriding the pinned macOS `sealant-vmd` download URL. */
+  readonly macVmdBundlePath?: string;
   /** Version of this CLI, used for a fresh server pin. */
   readonly cliVersion: string;
   /** Run without a shell; enforce deadlines and await group termination; capture bounded output or stream stdout to an exclusive private file. */
@@ -550,6 +568,8 @@ export interface ServerConfig {
   readonly remoteEndpoints?: ServerRemoteEndpoints;
   /** Boat sessions' deployment and resources (server-boat.ts); the server's own key is in server.env only. */
   readonly boat?: ServerBoat;
+  /** Per-install Apple Silicon macOS `sealant-vmd` settings when host-vm runs on macOS. */
+  readonly macHostVm?: ServerMacHostVm;
   readonly schemaVersion: number;
   readonly assetContract: string;
   readonly serverVersion: string;
@@ -2030,6 +2050,13 @@ const parseServerConfig = (raw: string): ServerConfig => {
     throw setupError(
       "Server config is corrupt: telemetry must hold Sentry DSNs, an environment name and a sample rate from 0 to 1. Run mend server setup with --sentry-dsn and the flags beside it.",
     );
+  const macHostVm = fields.has("macHostVm")
+    ? parseMacHostVmField(fields.get("macHostVm"))
+    : undefined;
+  if (macHostVm === null)
+    throw setupError(
+      "Server config is corrupt: macHostVm must hold installId, port, imagesHostPath, dataHostPath, tokenHostPath and network.",
+    );
   const config: ServerConfig = {
     ...(fields.has("sessionRuntime")
       ? { sessionRuntime: savedSessionRuntimeOf(fields.get("sessionRuntime")) }
@@ -2039,6 +2066,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
       : {}),
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     ...(boat === undefined ? {} : { boat }),
+    ...(macHostVm === undefined ? {} : { macHostVm }),
     schemaVersion: requiredInteger(fields, "schemaVersion"),
     assetContract: requiredString(fields, "assetContract"),
     serverVersion,
@@ -5128,10 +5156,25 @@ const setupServer = async (
               : { certificate: active.files.previewCertificate, key: active.files.previewKey },
         },
   );
-  const generation = persistSetup(store, config, secrets, assets, preview.pem);
+  const macHostVm =
+    runtime.platform === "darwin" && namesHostVm(config)
+      ? await ensureMacHostVmInstalled(runtime, {
+          installId:
+            existing?.config.macHostVm?.installId ??
+            serverVolumeOwner(Buffer.from(renderIdentity(secrets))).slice(0, 12),
+          dockerContext: config.dockerContext,
+          helperImage: HOST_HELPER_IMAGE,
+          offline: options.offline,
+          existing: existing?.config.macHostVm,
+        }).catch((cause) => {
+          throw setupError(cause instanceof Error ? cause.message : String(cause));
+        })
+      : undefined;
+  const persistedConfig: ServerConfig = macHostVm === undefined ? config : { ...config, macHostVm };
+  const generation = persistSetup(store, persistedConfig, secrets, assets, preview.pem);
   const installation: ServerInstallation = {
     directory: generation.directory,
-    config,
+    config: persistedConfig,
     ...(generation.files.edge === undefined
       ? {}
       : { edgeImage: edgeImageOf(generation.files.edge) }),
@@ -5167,14 +5210,17 @@ const setupServer = async (
     for (const line of await boatEndpointLines(runtime, config.remoteEndpoints))
       runtime.writeLine(line);
   // Each workspace VM's data disk beside the server's own data (spec §5.4): a warning when one
-  // filesystem holds both. Compose has created every volume by now.
-  if (namesHostVm(config))
+  // filesystem holds both. Compose has created every volume by now. On macOS, VM disks live on
+  // APFS bind mounts checked during ensureMacHostVmInstalled rather than the mend-vm-data volume.
+  if (namesHostVm(persistedConfig) && persistedConfig.macHostVm === undefined)
     for (const line of await sharedFilesystemLines(
       runtime,
-      config.dockerContext,
+      persistedConfig.dockerContext,
       [
         { volume: POSTGRES_VOLUME, holds: "Postgres" },
-        ...(config.bucket === "garage" ? [{ volume: "mend-garage", holds: "Garage" }] : []),
+        ...(persistedConfig.bucket === "garage"
+          ? [{ volume: "mend-garage", holds: "Garage" }]
+          : []),
       ],
       HOST_HELPER_IMAGE,
     ))
@@ -6005,6 +6051,13 @@ const upgradeServer = async (
     );
   }
   runtime.writeLine(`Upgraded to ${version}. Retained database backup: ${backup.directory}`);
+  if (config.macHostVm !== undefined) {
+    await upgradeMacHostVm(runtime, config.macHostVm, options.offline).catch((cause) => {
+      runtime.writeLine(
+        `Warning: could not update macOS host-vm helper: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    });
+  }
   for (const line of mirrorsChangedLines(existing.config.mirrors, config)) runtime.writeLine(line);
   pruneUpgradeBackups(runtime, store, backup, options.keepBackups);
 };
@@ -6282,6 +6335,11 @@ const serverStatus = async (
   runtime.writeLine(workspaceMemoryLine(config.workspaceMemory));
   runtime.writeLine(telemetryLine(config.telemetry));
   if (config.boat !== undefined) runtime.writeLine(boatImagesLine(config.boat));
+  if (config.macHostVm !== undefined) {
+    for (const line of await observeMacVmdStatusLines(runtime, config.macHostVm)) {
+      runtime.writeLine(line);
+    }
+  }
   const state = await composeCommand(runtime, installation, ["ps", "--all"]);
   runtime.writeLine(state.stdout.trim() || "No Compose containers found. Run mend server start.");
   const running = await composeCommand(runtime, installation, [
@@ -6538,9 +6596,16 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
   const environment = { ...process.env };
   const home = os.homedir();
   const configHome = environment["XDG_CONFIG_HOME"] ?? path.join(home, ".config");
+  const macVmdBundlePath = environment["MEND_MAC_VMD_BUNDLE"]?.trim();
+  const uid = process.getuid?.();
   return {
     configDir: path.join(configHome, "mend"),
     platform: process.platform,
+    arch: process.arch,
+    osRelease: os.release(),
+    homeDir: home,
+    ...(uid === undefined ? {} : { uid }),
+    ...(macVmdBundlePath === undefined || macVmdBundlePath === "" ? {} : { macVmdBundlePath }),
     cliVersion: cliVersion(),
     run: (command, args, options) => runServerProcess(command, args, environment, options),
     fetchText: async (url, timeoutMs, headers) => {

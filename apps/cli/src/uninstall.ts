@@ -27,6 +27,7 @@ import {
   serverVolumeOwner,
 } from "./server-docker-volumes.ts";
 import { composeOverlays, EDGE_IMAGE, T3_GATEWAY_VOLUME } from "./server-edge.ts";
+import { removeMacHostVm } from "./server-host-vm-mac.ts";
 import { mirrorServices } from "./server-mirrors.ts";
 import {
   serverComposeArgs,
@@ -1753,6 +1754,12 @@ const removeServer = async (
           report.remaining.push(...left, configDir);
           outcome = "partial";
           return;
+        }
+        if (installation.config.macHostVm !== undefined) {
+          const removedMac = await removeMacHostVm(server, installation.config.macHostVm);
+          if (removedMac.length > 0) {
+            server.writeLine(`removed macOS host-vm resources: ${removedMac.join(", ")}`);
+          }
         }
       } else {
         // No generation was activated: what Docker holds goes first, and the identity stays while
