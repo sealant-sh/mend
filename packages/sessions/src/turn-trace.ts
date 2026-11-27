@@ -1,5 +1,5 @@
 import { spanOfCarrier, traced } from "@mend/telemetry";
-import { Clock, Context, Effect, Exit, Option, Tracer } from "effect";
+import { Clock, Context, Duration, Effect, Exit, Fiber, Option, Tracer } from "effect";
 
 /**
  * A conversation turn's trace (SLNT-1349, "Crossing async boundaries"). A turn is accepted in one
@@ -24,7 +24,16 @@ export interface TracedTurn<Id extends string = string> {
 interface Run {
   readonly span: Tracer.Span;
   firstOutput: boolean;
+  /** Ends the span once `RUN_SPAN_LIMIT` passes with the turn still running. */
+  timer?: Fiber.Fiber<void>;
 }
+
+/**
+ * A turn's run span ends by now even while the turn still runs (SLNT-1404): no span stays open
+ * longer than about ten minutes. The turn's end is then its own `mend.turn.complete`, in the
+ * same trace.
+ */
+const RUN_SPAN_LIMIT = Duration.minutes(10);
 
 /** Runs this many turns at most are held open; the oldest is ended first past it. */
 const MAX_OPEN_RUNS = 1_000;
@@ -88,10 +97,22 @@ export const makeTurnTraces = <Id extends string>(
         ...parent,
         attributes: attributesOf(turn),
       }).pipe(traced);
-      runs.set(providerTurnId, { span, firstOutput: false });
+      const run: Run = { span, firstOutput: false };
+      runs.set(providerTurnId, run);
+      run.timer = yield* Effect.sleep(RUN_SPAN_LIMIT).pipe(
+        Effect.andThen(
+          Effect.suspend(() => {
+            if (runs.get(providerTurnId) !== run) return Effect.void;
+            runs.delete(providerTurnId);
+            return endRun(run, { "mend.turn.status": "running" });
+          }),
+        ),
+        Effect.forkDetach,
+      );
       for (const [id, run] of runs) {
         if (runs.size <= MAX_OPEN_RUNS) break;
         runs.delete(id);
+        if (run.timer !== undefined) yield* Fiber.interrupt(run.timer);
         yield* endRun(run, { "mend.turn.status": "unobserved" });
       }
     });
@@ -124,6 +145,7 @@ export const makeTurnTraces = <Id extends string>(
       const run = runs.get(providerTurnId);
       if (run !== undefined) {
         runs.delete(providerTurnId);
+        if (run.timer !== undefined) yield* Fiber.interrupt(run.timer);
         return yield* endRun(run, { "mend.turn.status": turn.status });
       }
       // Ended after a restart, or by a run this process never began: its trace still ends.
