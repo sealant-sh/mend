@@ -5,7 +5,9 @@ import {
   close,
   createTransport,
   flush,
+  getClient,
   init,
+  spanToJSON,
   startInactiveSpan,
   startSpan,
   withActiveSpan,
@@ -14,11 +16,15 @@ import { TRPCClientError } from "@trpc/client";
 import { afterAll, describe, expect, it } from "vitest";
 
 import {
+  aside,
+  backgroundRead,
   currentAction,
+  elementPath,
   firstVisibleOutput,
+  procedureSpanName,
   reportCaught,
+  routeTemplate,
   sentryOptions,
-  spansRequest,
   traceAction,
 } from "./telemetry-sentry.ts";
 import type { TraceRef } from "./telemetry.ts";
@@ -61,6 +67,57 @@ init(
 
 afterAll(() => close());
 
+/** A span as the client sent it (a v2 streamed span). */
+interface SentSpan {
+  readonly name: string;
+  readonly trace_id: string;
+  readonly span_id: string;
+  readonly parent_span_id?: string;
+  readonly start_timestamp: number;
+  readonly end_timestamp: number;
+  readonly status: string;
+  readonly attributes: Readonly<Record<string, { readonly value: unknown } | undefined>>;
+  readonly links?: ReadonlyArray<{ readonly trace_id: string; readonly span_id: string }>;
+}
+
+const isSentSpan = (item: unknown): item is SentSpan =>
+  typeof item === "object" && item !== null && "span_id" in item && "trace_id" in item;
+
+/**
+ * A request read to its end, as tRPC reads it, and its span ended: the SDK ends a request's span
+ * once it has read a copy of the answer's body, after the page has its answer.
+ */
+const answered = async (url: string, request: RequestInit): Promise<void> => {
+  const ended = new Promise<void>((resolve) => {
+    const stop = getClient()?.on("spanEnd", (span) => {
+      const { attributes } = spanToJSON(span);
+      if (attributes?.["sentry.op"] !== "http.client") return;
+      if (attributes["url.path"] !== url.split("?")[0]) return;
+      stop?.();
+      resolve();
+    });
+  });
+  await (await fetch(url, request)).text();
+  await ended;
+};
+
+/** Every span the client has sent so far. */
+const sentSpans = (): ReadonlyArray<SentSpan> =>
+  sent
+    .flatMap((body) => body.split("\n"))
+    .flatMap((line) => {
+      const parsed: unknown = JSON.parse(line);
+      return typeof parsed === "object" &&
+        parsed !== null &&
+        "items" in parsed &&
+        Array.isArray(parsed.items)
+        ? parsed.items.filter(isSentSpan)
+        : [];
+    });
+
+const attribute = (span: SentSpan | undefined, key: string): unknown =>
+  span?.attributes[key]?.value;
+
 describe("the browser's Sentry client", () => {
   it("sends an error and a trace with no secret in either (CONTRACT.md, Privacy)", async () => {
     // The page's own address, a call's address and the error's words each carry the canary.
@@ -80,6 +137,15 @@ describe("the browser's Sentry client", () => {
       },
       () => undefined,
     );
+    // A click on a control whose label is a session's name, and a batch whose input is a prompt.
+    startInactiveSpan({
+      name: `button[aria-label="${CANARY}"]`,
+      op: "ui.interaction.click",
+      attributes: {
+        "browser.web_vital.inp.target": `SessionRow > button.flex[aria-label="${CANARY}"]`,
+      },
+    }).end();
+    await answered(`/trpc/sessions.sendMessage?batch=1&input=${CANARY}`, { method: "POST" });
     reportCaught(new Error(`clone failed: token=${CANARY} (Authorization: Bearer ${CANARY})`));
     await flush(2_000);
 
@@ -88,6 +154,8 @@ describe("the browser's Sentry client", () => {
     expect(everything).toContain("clone failed");
     expect(everything).toContain("/sessions/s1");
     expect(everything).toContain("GET /api/resources/r1");
+    expect(everything).toContain("SessionRow > button");
+    expect(everything).toContain("trpc sessions.send_message");
     expect(everything).not.toContain(CANARY);
     expect(everything).not.toContain("canary0secret");
   });
@@ -172,11 +240,17 @@ describe("an action and what follows it", () => {
       "POST",
       "http://localhost:45877/trpc/sessions.detail,sessions.pages,sessions.items?batch=1&input=%7B%7D",
     );
-    expect(batch?.name).toBe("POST /trpc/sessions.detail +2");
+    expect(batch?.name).toBe("POST /trpc/:procedures");
     expect(batch?.attributes).toMatchObject({
-      "sentry.description": "POST /trpc/sessions.detail +2",
+      "sentry.description": "POST /trpc/:procedures",
+      "url.template": "/trpc/:procedures",
       "mend.trpc.procedures": "sessions.detail,sessions.pages,sessions.items",
+      "mend.trpc.batch_size": 3,
     });
+    // One call alone reads the same: the name never says what or how many a request carries.
+    expect(request("POST", "http://localhost:45877/trpc/sessions.launch")?.name).toBe(
+      "POST /trpc/:procedures",
+    );
     const send = request(
       "POST",
       "http://localhost:45877/api/sessions/852bcfd6-bcde-45d8-970e-17161c13515c/messages",
@@ -204,10 +278,10 @@ describe("an action and what follows it", () => {
     expect(timing?.attributes["sentry.description"]).toBe("/sessions/:sessionId");
   });
 
-  it("makes no span for a read the page repeats on a timer", () => {
-    expect(spansRequest("http://localhost:3105/trpc/executor.calls?batch=1")).toBe(false);
-    expect(spansRequest("http://localhost:3105/trpc/executor.calls,sessions.detail")).toBe(true);
-    expect(spansRequest("/api/health")).toBe(true);
+  it("tells a read the page repeats on a timer from the rest", () => {
+    expect(backgroundRead("http://localhost:3105/trpc/executor.calls?batch=1")).toBe(true);
+    expect(backgroundRead("http://localhost:3105/trpc/executor.calls,sessions.detail")).toBe(false);
+    expect(backgroundRead("/api/health")).toBe(false);
   });
 
   it("measures a turn's first visible output as its own span, with the turn's id and a link to its send", async () => {
@@ -232,5 +306,148 @@ describe("an action and what follows it", () => {
     expect(span?.trace_id).not.toBe(ref.traceId);
     expect(span?.links?.[0]?.trace_id).toBe(ref.traceId);
     expect(span?.end_timestamp - span?.start_timestamp).toBeGreaterThanOrEqual(0.25);
+  });
+});
+
+describe("each trace covers one thing the page did", () => {
+  it("gives a tRPC request one child span per procedure, named for it", async () => {
+    sent.length = 0;
+    await answered("/trpc/sessions.inboxRow,changes.stats?batch=1&input=%7B%7D", {
+      method: "POST",
+    });
+    await flush(2_000);
+    const spans = sentSpans();
+    const request = spans.find(
+      (span) => attribute(span, "mend.trpc.procedures") === "sessions.inboxRow,changes.stats",
+    );
+    expect(request?.name).toBe("POST /trpc/:procedures");
+    // The trace's root name, as every span of it repeats it, is the request's route too.
+    expect(attribute(request, "sentry.segment.name")).toBe("POST /trpc/:procedures");
+    const procedures = spans.filter((span) => span.parent_span_id === request?.span_id);
+    expect(procedures.map((span) => span.name).toSorted()).toEqual([
+      "trpc changes.stats",
+      "trpc sessions.inbox_row",
+    ]);
+    for (const procedure of procedures) {
+      expect(attribute(procedure, "sentry.op")).toBe("rpc.client");
+      expect(attribute(procedure, "rpc.system")).toBe("trpc");
+      expect(procedure.end_timestamp).toBe(request?.end_timestamp);
+    }
+    expect(attribute(procedures[0], "rpc.method")).toMatch(/^(sessions\.inboxRow|changes\.stats)$/);
+  });
+
+  it("starts a trace of its own for each request no span holds", async () => {
+    requests.length = 0;
+    await fetch("/trpc/sessions.inbox", { method: "POST" });
+    await fetch("/trpc/sessions.inbox", { method: "POST" });
+    const [first, second] = requests.map((each) => each.headers.get("traceparent")?.split("-")[1]);
+    expect(first).toMatch(/^[0-9a-f]{32}$/);
+    expect(second).toMatch(/^[0-9a-f]{32}$/);
+    expect(second).not.toBe(first);
+  });
+
+  it("keeps a background read out of the span that is running", async () => {
+    requests.length = 0;
+    let running = "none";
+    await startSpan({ name: "/sessions/$sessionId", op: "navigation" }, async (span) => {
+      running = span.spanContext().traceId;
+      await aside("/trpc/executor.calls?batch=1", () =>
+        fetch("/trpc/executor.calls?batch=1", { method: "POST" }),
+      );
+      await aside("/trpc/sessions.detail?batch=1", () =>
+        fetch("/trpc/sessions.detail?batch=1", { method: "POST" }),
+      );
+    });
+    const [poll, read] = requests.map((each) => each.headers.get("traceparent")?.split("-")[1]);
+    expect(poll).not.toBe(running);
+    expect(read).toBe(running);
+  });
+
+  it("starts a span whose parent already ended in a trace of its own, linked to the parent", async () => {
+    sent.length = 0;
+    const page = startInactiveSpan({ name: "/sessions/$sessionId", op: "pageload" });
+    page.end();
+    // A web vital reported when the page is left, at the moment it measured.
+    startInactiveSpan({
+      name: "Click",
+      op: "ui.interaction.click",
+      parentSpan: page,
+      attributes: { "ui.component_name": "SessionRow" },
+    }).end();
+    await flush(2_000);
+    const click = sentSpans().find((span) => span.name === "SessionRow");
+    expect(click?.trace_id).not.toBe(page.spanContext().traceId);
+    expect(click?.parent_span_id).toBeUndefined();
+    expect(click?.links?.[0]?.span_id).toBe(page.spanContext().spanId);
+    expect(click?.links?.[0]?.trace_id).toBe(page.spanContext().traceId);
+  });
+
+  it("names a click, a layout shift and a paint for the component it happened in", () => {
+    const { beforeSendSpan } = sentryOptions({
+      dsn: "https://6f570eb21e7adee8a5de60116db1b2a7@sentry.example/4",
+      environment: "test",
+      release: null,
+      tracesSampleRate: 1,
+    });
+    const vital = (op: string, name: string, attributes: Record<string, string>) =>
+      beforeSendSpan?.({
+        trace_id: "0af7651916cd43dd8448eb211c80319c",
+        span_id: "b7ad6b7169203333",
+        name,
+        start_timestamp: 1,
+        end_timestamp: 2,
+        status: "ok",
+        is_segment: false,
+        attributes: { "sentry.op": op, ...attributes },
+      });
+    const click = vital("ui.interaction.click", "SessionRow", {
+      "ui.component_name": "SessionRow",
+      "browser.web_vital.inp.target":
+        'SessionRow > div.flex.gap-2 > button.group/button.inline-flex[aria-label="Stop Fix the login bug"]',
+    });
+    expect(click?.name).toBe("SessionRow");
+    expect(click?.attributes["sentry.description"]).toBe("SessionRow");
+    expect(click?.attributes["browser.web_vital.inp.target"]).toBe("SessionRow > div > button");
+    const bare = vital("ui.interaction.click", "Click", {
+      "browser.web_vital.inp.target": "body > div#root.flex > button.inline-flex",
+    });
+    expect(bare?.name).toBe("Click");
+    expect(bare?.attributes["sentry.description"]).toBe("click on body > div > button");
+    // A page whose layout never moved still reports its CLS, with no element to name.
+    const still = vital("ui.webvital.cls", "Layout shift", {});
+    expect(still?.attributes["sentry.description"]).toBe("no layout shift");
+    const shifted = vital("ui.webvital.cls", "InboxGroups", {
+      "ui.component_name": "InboxGroups",
+      "browser.web_vital.cls.source.1": "InboxGroups > div.flex.flex-col.gap-0.5.border-t",
+    });
+    expect(shifted?.attributes["sentry.description"]).toBe("InboxGroups");
+    expect(shifted?.attributes["browser.web_vital.cls.source.1"]).toBe("InboxGroups > div");
+  });
+
+  it("writes an element's path as tags and components only", () => {
+    expect(elementPath("a.block.truncate.hover:underline")).toBe("a");
+    expect(elementPath('Composer > button#base-ui-_R_1mm_[type="submit"]')).toBe(
+      "Composer > button",
+    );
+    expect(elementPath("<unknown>")).toBe("?");
+  });
+
+  it("names a procedure's span by router and procedure in snake case", () => {
+    expect(procedureSpanName("sessions.inboxRow")).toBe("trpc sessions.inbox_row");
+    expect(procedureSpanName("platform.machine")).toBe("trpc platform.machine");
+    expect(procedureSpanName("settings.agentLogins.listAll")).toBe(
+      "trpc settings.agent_logins.list_all",
+    );
+  });
+
+  it("names a page by URL template: a splat as `*`, an index without its slash", () => {
+    expect(routeTemplate("/$")).toBe("/*");
+    expect(routeTemplate("/settings/$")).toBe("/settings/*");
+    expect(routeTemplate("/projects/$projectId/settings/$")).toBe(
+      "/projects/$projectId/settings/*",
+    );
+    expect(routeTemplate("/projects/")).toBe("/projects");
+    expect(routeTemplate("/sessions/$sessionId/$view")).toBe("/sessions/$sessionId/$view");
+    expect(routeTemplate("/")).toBe("/");
   });
 });

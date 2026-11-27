@@ -12,10 +12,13 @@ import {
   functionToStringIntegration,
   getActiveSpan,
   getClient,
+  getCurrentScope,
+  getRootSpan,
   globalHandlersIntegration,
   httpContextIntegration,
   init,
   linkedErrorsIntegration,
+  spanToJSON,
   startBrowserTracingNavigationSpan,
   startBrowserTracingPageLoadSpan,
   startInactiveSpan,
@@ -57,8 +60,8 @@ const QUERY_ATTRIBUTES: ReadonlySet<string> = new Set([
 
 /**
  * Reads the page repeats on a timer whatever the person does: the session's Executor calls every
- * five seconds. A span for each would stretch the page's load to its thirty-second cap and bury
- * what the person did under them, so they leave without one (the call still carries the trace).
+ * five seconds. Each is a trace of its own (`aside`), even while the page loads: as part of the
+ * load, they would stretch it to its thirty-second cap and bury what the person did under them.
  */
 const BACKGROUND_READS: ReadonlySet<string> = new Set(["executor.calls"]);
 
@@ -68,11 +71,24 @@ const proceduresOf = (path: string): ReadonlyArray<string> | null => {
   return match?.[1] === undefined ? null : decodeURIComponent(match[1]).split(",");
 };
 
-/** Whether the page makes a span for a request to `url`: none for a background read. */
-export const spansRequest = (url: string): boolean => {
+/** Whether a request to `url` only repeats a background read. */
+export const backgroundRead = (url: string): boolean => {
   const procedures = proceduresOf(pathOf(url) ?? url);
-  return procedures === null || !procedures.every((procedure) => BACKGROUND_READS.has(procedure));
+  return procedures !== null && procedures.every((procedure) => BACKGROUND_READS.has(procedure));
 };
+
+/** The name of a tRPC request, however many calls it batches: the route, never what it carries. */
+const TRPC_REQUEST = "/trpc/:procedures";
+
+/**
+ * A procedure's span, `trpc sessions.inbox_row`: its router and procedure, each part in snake
+ * case, as Mend's server names it (`mend.web.sessions.inbox_row`).
+ */
+export const procedureSpanName = (procedure: string): string =>
+  `trpc ${procedure
+    .split(".")
+    .map((part) => part.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase())
+    .join(".")}`;
 
 const stringAttribute = (attributes: Readonly<Record<string, unknown>>, key: string) => {
   const value = attributes[key];
@@ -84,10 +100,85 @@ const stringAttribute = (attributes: Readonly<Record<string, unknown>>, key: str
   return undefined;
 };
 
+/** A string attribute rewritten by `change`, whether bare or wrapped (`{ value }`). */
+const mapString = (value: unknown, change: (text: string) => string): unknown => {
+  if (typeof value === "string") return change(value);
+  if (typeof value === "object" && value !== null && "value" in value) {
+    const inner = value.value;
+    if (typeof inner === "string") return { ...value, value: change(inner) };
+  }
+  return value;
+};
+
+/** A string attribute that is a URL loses its query. */
+const scrubbed = (value: unknown): unknown => mapString(value, withoutQueries);
+
 /**
- * A request's span as a trace reads it, and a page timing's (below): `POST /trpc/sessions.detail +3`, the first procedure a
- * batch carries and how many more (all of them in `mend.trpc.procedures`), or
- * `GET /api/sessions/:sessionId/output`: never the page's origin, its port, an ID or a query.
+ * A web vital's or an interaction's name when Sentry found no component around it, and what it
+ * measured, for its description.
+ */
+const UNNAMED_VITALS: Readonly<Record<string, readonly [name: string, measured: string]>> = {
+  "ui.webvital.cls": ["Layout shift", "layout shift"],
+  "ui.webvital.lcp": ["Largest contentful paint", "largest contentful paint"],
+  "ui.interaction.click": ["Click", "click"],
+  "ui.interaction.press": ["Press", "key press"],
+  "ui.interaction.hover": ["Hover", "hover"],
+  "ui.interaction.drag": ["Drag", "drag"],
+};
+
+/**
+ * The element a vital or an interaction measured, as Sentry wrote it (`SessionRow > div.flex.gap-2
+ * > button[aria-label="Stop"]`), down to its tags and the components they belong to
+ * (`SessionRow > div > button`): a class list says nothing a reader needs, and an `aria-label`,
+ * a `title` or an `alt` can hold a session's or a file's name.
+ */
+export const elementPath = (selector: string): string =>
+  selector
+    .split(" > ")
+    .map((part) => /^[A-Za-z][\w$-]*/.exec(part)?.[0] ?? "?")
+    .join(" > ");
+
+/**
+ * A web vital's or an interaction's span, named for the Mend component it happened in
+ * (`ui.component_name`, from `data-sentry-component`): `SessionRow` for a click on a session's
+ * row. With no component around it, it is named for what it measured (`Click`), never for an
+ * element, and says where: `click on div > button`, or `no layout shift` for a page whose layout
+ * never moved.
+ */
+const vitalNamed = (
+  op: string,
+  attributes: Record<string, unknown>,
+): { readonly name: string; readonly attributes: Record<string, unknown> } => {
+  const kept = Object.fromEntries(
+    Object.entries(attributes).map(([key, value]) =>
+      /^browser\.web_vital\.(?:inp\.target|lcp\.element|cls\.source\.\d+)$/.test(key)
+        ? [key, mapString(value, elementPath)]
+        : [key, value],
+    ),
+  );
+  const component = stringAttribute(attributes, "ui.component_name");
+  if (component !== undefined) {
+    return { name: component, attributes: { ...kept, "sentry.description": component } };
+  }
+  const element =
+    stringAttribute(kept, "browser.web_vital.inp.target") ??
+    stringAttribute(kept, "browser.web_vital.lcp.element") ??
+    stringAttribute(kept, "browser.web_vital.cls.source.1");
+  const [name, measured] = UNNAMED_VITALS[op] ?? [op, op];
+  const description =
+    element !== undefined
+      ? `${measured} on ${element}`
+      : op === "ui.webvital.cls"
+        ? "no layout shift"
+        : measured;
+  return { name, attributes: { ...kept, "sentry.description": description } };
+};
+
+/**
+ * A span as a trace reads it. A request: `POST /trpc/:procedures` for any tRPC request (its calls
+ * are its child spans, and in `mend.trpc.procedures`), or `GET /api/sessions/:sessionId/output`:
+ * never the page's origin, its port, an ID, a query or a count. A page timing by its page's path,
+ * and a web vital or an interaction by its component (`vitalNamed`).
  */
 const requestNamed = (
   name: string,
@@ -102,24 +193,28 @@ const requestNamed = (
       ? { name, attributes }
       : { name, attributes: { ...attributes, "sentry.description": templatePath(page) } };
   }
+  if (op?.startsWith("ui.webvital.") === true || op?.startsWith("ui.interaction.") === true) {
+    return vitalNamed(op, attributes);
+  }
   if (op !== "http.client") return { name, attributes };
   const method = stringAttribute(attributes, "http.request.method") ?? name.split(" ")[0] ?? "GET";
   const path = pathOf(stringAttribute(attributes, "url.full") ?? name.split(" ")[1] ?? "");
   if (path === undefined) return { name, attributes };
   const procedures = proceduresOf(path);
-  const [first, ...rest] = procedures ?? [];
-  const template =
-    first === undefined
-      ? templatePath(path)
-      : `/trpc/${first}${rest.length === 0 ? "" : ` +${rest.length}`}`;
+  const template = procedures === null ? templatePath(path) : TRPC_REQUEST;
   const description = `${method} ${template}`;
   return {
     name: description,
     attributes: {
       ...attributes,
       "sentry.description": description,
-      "url.template": first === undefined ? template : `/trpc/${procedures?.join(",") ?? ""}`,
-      ...(procedures === null ? {} : { "mend.trpc.procedures": procedures.join(",") }),
+      "url.template": template,
+      ...(procedures === null
+        ? {}
+        : {
+            "mend.trpc.procedures": procedures.join(","),
+            "mend.trpc.batch_size": procedures.length,
+          }),
     },
   };
 };
@@ -130,16 +225,6 @@ const requestNamed = (
  */
 const answeredByServer = (error: unknown): boolean =>
   isTRPCClientError(error) && error.data !== undefined && error.data !== null;
-
-/** A string attribute that is a URL loses its query, whether bare or wrapped (`{ value }`). */
-const scrubbed = (value: unknown): unknown => {
-  if (typeof value === "string") return withoutQueries(value);
-  if (typeof value === "object" && value !== null && "value" in value) {
-    const inner = value.value;
-    if (typeof inner === "string") return { ...value, value: withoutQueries(inner) };
-  }
-  return value;
-};
 
 /** Attributes with every query gone: the ones that hold only a query, and any URL's own. */
 const scrubAttributes = (attributes: Readonly<Record<string, unknown>>): Record<string, unknown> =>
@@ -204,6 +289,134 @@ const traceHeaderWithoutQueries = (): Integration => ({
   },
 });
 
+type Span = NonNullable<ReturnType<typeof getActiveSpan>>;
+type PropagationContext = ReturnType<ReturnType<typeof getCurrentScope>["getPropagationContext"]>;
+
+/** Sentry's span status for a failure (`SPAN_STATUS_ERROR` in @sentry/core, not re-exported). */
+const SPAN_STATUS_ERROR = 2;
+
+/** A trace no span has used yet, as the SDK starts one (`startNewTrace`). */
+const freshTrace = (): PropagationContext =>
+  startNewTrace(() => getCurrentScope().getPropagationContext());
+
+/**
+ * Each trace covers one thing the page did, and ends with it (SLNT-1408). Left to itself, the
+ * SDK keeps a page's trace ID once its load or navigation ends, and every span started with no
+ * parent after it (a poll, a refetch, a click's timing) joins that trace for as long as the tab
+ * stays open:
+ *
+ * - a span started with no parent begins a trace of its own, unless the page continues one it
+ *   was handed;
+ * - a span started under a parent that already ended (a web vital, reported when the page is left
+ *   or the next navigation starts) begins a trace of its own too, linked to that parent, so it
+ *   never stretches the page's trace to the minute it happened;
+ * - once a page's load or navigation ends, what no span holds (an error, a request) is part of no
+ *   old trace either.
+ */
+const traceShape = (): Integration => ({
+  name: "MendTraceShape",
+  setup: (client) => {
+    let endedParent: Span | undefined;
+    client.on("prepareSpanScope", (spanScope) => {
+      const { parentSpan, scope } = spanScope;
+      // A span not ended yet has no end timestamp (`browserTracingIntegration` reads it so too).
+      if (parentSpan !== undefined && !spanToJSON(parentSpan).end_timestamp) return;
+      if (parentSpan === undefined && scope.getPropagationContext().parentSpanId !== undefined) {
+        return;
+      }
+      const own = scope.clone();
+      own.setPropagationContext(freshTrace());
+      spanScope.scope = own;
+      spanScope.parentSpan = undefined;
+      endedParent = parentSpan;
+    });
+    client.on("spanStart", (span) => {
+      nameAtStart(span);
+      const parent = endedParent;
+      endedParent = undefined;
+      if (parent !== undefined && getRootSpan(span) === span) {
+        span.addLink({
+          context: parent.spanContext(),
+          attributes: { "sentry.link.type": "mend.ended_parent" },
+        });
+      }
+      startProcedures(span);
+    });
+    client.on("spanEnd", endProcedures);
+    // Registered after `browserTracingIntegration`'s own, which keeps the ended span's trace.
+    client.on("beforeIdleSpanEnd", () => {
+      getCurrentScope().setPropagationContext(freshTrace());
+    });
+  },
+});
+
+/**
+ * A span is named as it starts (`requestNamed`), not only as it leaves: the trace's root name,
+ * which the trace header carries and every span of the trace repeats (`sentry.segment.name`), is
+ * the name its root span started with.
+ */
+const nameAtStart = (span: Span): void => {
+  const { name, attributes } = spanToJSON(span);
+  const named = requestNamed(withoutQueries(name), scrubAttributes(attributes ?? {}));
+  if (named.name !== name) span.updateName(named.name);
+};
+
+/** Each tRPC request's span's procedure spans, while it runs. */
+const procedureSpans = new WeakMap<Span, ReadonlyArray<Span>>();
+
+/**
+ * A tRPC request's span gets one child span for each procedure it carries, named
+ * `trpc <router>.<procedure>`. Its op is `rpc.client`, not `http.client`: Sentry's request views
+ * count every `http.client` span as a request of its own, and a batch is one.
+ */
+const startProcedures = (span: Span): void => {
+  const { attributes } = spanToJSON(span);
+  if (attributes?.["sentry.op"] !== "http.client") return;
+  const url = attributes["url.full"];
+  const procedures = typeof url === "string" ? proceduresOf(pathOf(url) ?? url) : null;
+  if (procedures === null) return;
+  procedureSpans.set(
+    span,
+    procedures.map((procedure) =>
+      startInactiveSpan({
+        name: procedureSpanName(procedure),
+        op: "rpc.client",
+        parentSpan: span,
+        attributes: { "rpc.system": "trpc", "rpc.method": procedure },
+      }),
+    ),
+  );
+};
+
+/** A tRPC request's procedures end with it, failed if it failed. */
+const endProcedures = (span: Span): void => {
+  const procedures = procedureSpans.get(span);
+  if (procedures === undefined) return;
+  procedureSpans.delete(span);
+  const { status, end_timestamp: end } = spanToJSON(span);
+  for (const procedure of procedures) {
+    if (status === "error")
+      procedure.setStatus({ code: SPAN_STATUS_ERROR, message: "internal_error" });
+    procedure.end(end);
+  }
+};
+
+/**
+ * Run `send`, a request leaving, in a trace of its own when it only repeats a background read
+ * (`BACKGROUND_READS`); in the page's current span otherwise.
+ */
+export const aside = <A>(url: string, send: () => A): A => {
+  if (!backgroundRead(url)) return send();
+  let result: { readonly value: A } | undefined;
+  // `startNewTrace` given a promise keeps its scope until the promise settles: only the request's
+  // synchronous start runs inside it.
+  startNewTrace(() => {
+    result = { value: send() };
+  });
+  if (result === undefined) throw new Error("startNewTrace did not run its callback");
+  return result.value;
+};
+
 /**
  * Every option the client starts with. The transport is the SDK's own unless a test records
  * what would leave.
@@ -251,7 +464,6 @@ export const sentryOptions = (
     browserTracingIntegration({
       instrumentPageLoad: false,
       instrumentNavigation: false,
-      shouldCreateSpanForRequest: spansRequest,
       ignoreResourceSpans: [
         "resource.script",
         "resource.css",
@@ -261,6 +473,8 @@ export const sentryOptions = (
       ],
     }),
     traceHeaderWithoutQueries(),
+    // After `browserTracingIntegration`, so its hooks run after the SDK's own.
+    traceShape(),
   ],
   beforeSend: (event, hint) =>
     answeredByServer(hint.originalException) ? null : scrubEvent(event),
@@ -275,10 +489,18 @@ export const sentryOptions = (
   ...overrides,
 });
 
+/**
+ * A route's path as a URL template: `/sessions/$sessionId`, `/projects` for the index the router
+ * writes `/projects/`, and `/settings/*` for a splat (`/settings/$`, any address under Settings no
+ * page owns), which the router writes as a bare `$`.
+ */
+export const routeTemplate = (fullPath: string): string =>
+  fullPath.replace(/(^|\/)\$$/, "$1*").replace(/(.)\/$/, "$1");
+
 /** The route a path renders, as its template (`/sessions/$sessionId`): no ids in a span's name. */
 const routeOf = (router: AnyRouter, pathname: string): string => {
   const [, , found] = router.getMatchedRoutes(pathname);
-  return found?.fullPath ?? "/";
+  return routeTemplate(found?.fullPath ?? "/");
 };
 
 /** Start reporting: errors from now on, the page's load, and each navigation after it. */
@@ -308,11 +530,6 @@ export const reportCaught = (error: unknown): void => {
   if (answeredByServer(error)) return;
   captureException(error, { mechanism: { type: "mend.error_boundary", handled: true } });
 };
-
-type Span = NonNullable<ReturnType<typeof getActiveSpan>>;
-
-/** Sentry's span status for a failure (`SPAN_STATUS_ERROR` in @sentry/core, not re-exported). */
-const SPAN_STATUS_ERROR = 2;
 
 /** Each action's span while it runs, by its span id: what a request names to be part of it. */
 const actions = new Map<string, Span>();

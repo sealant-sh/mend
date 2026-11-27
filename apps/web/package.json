@@ -52,6 +52,7 @@
   "devDependencies": {
     "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
+    "@sentry/babel-plugin-component-annotate": "4.8.0",
     "@types/node": "catalog:",
     "@types/qrcode": "catalog:",
     "@types/react": "catalog:",
