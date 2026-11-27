@@ -60,6 +60,20 @@ export default async ({ page, web, capture, note }) => {
   note(`the page reports to Sentry as ${telemetry}`);
   await task().waitFor();
   await both("now-desktop");
+  // Codex, the agent the CLI batch signed in (the composer may open on Claude Code, with none).
+  const agent = () =>
+    page
+      .getByRole("button", { name: /^Agent and model: / })
+      .filter({ visible: true })
+      .first();
+  await agent().click();
+  await page.getByRole("menuitemradio", { name: /^Codex/ }).click();
+  await page.keyboard.press("Escape").catch(() => undefined);
+  await page
+    .getByRole("button", { name: /^Agent and model: Codex/ })
+    .filter({ visible: true })
+    .first()
+    .waitFor();
   await task().click();
   await task().fill("Change nothing. Reply with done.");
 
