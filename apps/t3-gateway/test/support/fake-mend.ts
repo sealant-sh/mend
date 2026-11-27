@@ -34,6 +34,8 @@ export interface FakeMend {
   readonly setPairingRateLimited: (limited: boolean) => void;
   /** Every `authorization` header `GET /api/me/devices` saw. */
   readonly deviceChecks: ReadonlyArray<string | undefined>;
+  /** Every request Mend saw, with the trace headers it carried (SLNT-1404). */
+  readonly requests: ReadonlyArray<FakeMendRequest>;
   /** Every `authorization` header `GET /api/harnesses/models` saw. */
   readonly modelReads: ReadonlyArray<string | undefined>;
   /** Make `GET /api/harnesses/models` answer 503 until set back. */
@@ -95,6 +97,15 @@ export const MEND_MODEL_CATALOG = [
   },
 ] as const;
 
+/** A request the fake Mend saw: its method, its path without the query, and its trace headers. */
+export interface FakeMendRequest {
+  readonly method: string;
+  readonly path: string;
+  readonly trace: Readonly<Record<string, string>>;
+}
+
+const TRACE_HEADERS = ["traceparent", "tracestate", "baggage", "b3", "sentry-trace"] as const;
+
 export interface FakeMendUser {
   readonly id: string;
   readonly name: string;
@@ -136,6 +147,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
   const tokens = new Map<string, { revoked: boolean; readonly userId: string }>();
   const claims: Array<FakeMend["claims"][number]> = [];
   const deviceChecks: Array<string | undefined> = [];
+  const requests: Array<FakeMendRequest> = [];
   const modelReads: Array<string | undefined> = [];
   const pairForwardedFor: Array<string | undefined> = [];
   let modelsDown = false;
@@ -165,6 +177,16 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
   };
 
   const server: Server = createServer((request, response) => {
+    const trace: Record<string, string> = {};
+    for (const name of TRACE_HEADERS) {
+      const value = request.headers[name];
+      if (typeof value === "string") trace[name] = value;
+    }
+    requests.push({
+      method: request.method ?? "",
+      path: (request.url ?? "").split("?")[0] ?? "",
+      trace,
+    });
     const json = (status: number, body: unknown) => {
       response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify(body));
@@ -321,6 +343,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
       pairingRateLimited = limited;
     },
     deviceChecks,
+    requests,
     modelReads,
     setModelsDown: (down) => {
       modelsDown = down;
