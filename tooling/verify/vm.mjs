@@ -937,14 +937,22 @@ fi`);
           `mend run in ${project}: ${lastLine(warmed.stdout + warmed.stderr)}`,
         );
     }
-    const dropped = ssh(dropWorkspacesScript);
-    if (!dropped.stdout.includes("drop=done"))
+    const dropped = ssh(dropWorkspacesScript());
+    const said = dropped.stdout.split("\n");
+    const told = (prefix) =>
+      said.filter((line) => line.startsWith(prefix)).map((line) => line.slice(prefix.length));
+    // Docker's own words, so a failure names what stayed and why, not only the ssh exit status.
+    if (!told("drop=").includes("done"))
       return fail(
         "warm",
         "Warm the workspace images",
-        `the warm runs' workspaces: ${lastLine(dropped.stdout + dropped.stderr)}`,
+        `the warm runs' workspaces: ${told("drop=").join("; ") || lastLine(dropped.stdout + dropped.stderr)}`,
       );
-    const removed = dropped.stdout.split("\n").filter((line) => line.startsWith("removed=")).length;
+    const removed = told("removed=").length;
+    const along = [
+      ...told("disconnected=").map((line) => `disconnected ${line}`),
+      ...told("retried=").map((line) => `retried ${line}`),
+    ];
     const again = ssh(restoreScript("/root/main-run/world.sql"));
     if (!again.stdout.includes("restore=done"))
       return fail("warm", "Warm the workspace images", `reload: ${lastLine(again.stdout)}`);
@@ -966,7 +974,7 @@ fi`);
         "warm",
         "Warm the workspace images",
         "passed",
-        `${WARM_PROJECTS.join(", ")}: ${images} workspace image tags in ${seconds(warmAt)}s; the runs' ${removed} workspace containers and networks removed; data loaded again`,
+        `${WARM_PROJECTS.join(", ")}: ${images} workspace image tags in ${seconds(warmAt)}s; the runs' ${removed} workspace containers and networks removed${along.length > 0 ? ` (${along.join("; ")})` : ""}; data loaded again`,
       ),
     );
   } else {
@@ -1405,22 +1413,52 @@ export const vmDown = async ({
  * workspace's container, its Docker service and its networks some seconds later, and the reload
  * that follows stops Mend first, so the last run's stay. The loaded data knows none of them, so
  * sealant hands that egress network's subnet out again and Docker refuses it. The workspace images
- * stay. Prints `removed=<kind> <name>`, then `drop=done`.
+ * stay.
+ *
+ * It goes round until Docker lists no `sealant-` container or network, at most `rounds` times
+ * `pause` seconds apart (SLNT-1396): a container Docker is still removing on its own refuses a
+ * second removal, and Docker refuses to remove a network a container is still on (sealant joins
+ * Mend's `mend-npm-mirror` and `mend-docker-mirror` to each workspace's networks), so those are
+ * disconnected first. Prints `removed=<kind> <name>`, `disconnected=<container> from <network>` and
+ * `retried=<kind> <name>: <Docker's words>` as it goes, then `drop=done`, or one
+ * `drop=could not remove <kind> <name>: <Docker's words>` per thing still there.
  */
-export const dropWorkspacesScript = `# drop-workspaces
+export const dropWorkspacesScript = ({ rounds = 10, pause = 3 } = {}) => `# drop-workspaces
 set -uo pipefail
 docker stop --time 60 mend-mend-1 >/dev/null 2>&1 || { echo "drop=could not stop mend-mend-1"; exit 1; }
-containers=$(docker ps -a --format '{{.Names}}') || { echo "drop=docker ps failed"; exit 1; }
-for c in $(printf '%s\\n' "$containers" | grep '^sealant-'); do
-  docker rm -f -v "$c" >/dev/null || { echo "drop=could not remove container $c"; exit 1; }
-  echo "removed=container $c"
+declare -A why=()
+one_line() { printf '%s' "$1" | tr '\\n' ' ' | sed 's/ *$//'; }
+for round in $(seq 1 ${rounds}); do
+  containers=$(docker ps -a --format '{{.Names}}') || { echo "drop=docker ps failed"; exit 1; }
+  networks=$(docker network ls --format '{{.Name}}') || { echo "drop=docker network ls failed"; exit 1; }
+  left=$(printf '%s\\n' "$containers" | grep '^sealant-' | sed 's/^/container /'; printf '%s\\n' "$networks" | grep '^sealant-' | sed 's/^/network /')
+  if [ -z "$left" ]; then echo "drop=done"; exit 0; fi
+  [ "$round" -eq ${rounds} ] && break
+  for c in $(printf '%s\\n' "$containers" | grep '^sealant-'); do
+    if out=$(docker rm -f -v "$c" 2>&1); then
+      echo "removed=container $c"
+    else
+      why["container $c"]=$(one_line "$out")
+      echo "retried=container $c: \${why["container $c"]}"
+    fi
+  done
+  for n in $(printf '%s\\n' "$networks" | grep '^sealant-'); do
+    for e in $(docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' "$n" 2>/dev/null); do
+      docker network disconnect -f "$n" "$e" >/dev/null 2>&1 && echo "disconnected=$e from $n"
+    done
+    if out=$(docker network rm "$n" 2>&1); then
+      echo "removed=network $n"
+    else
+      why["network $n"]=$(one_line "$out")
+      echo "retried=network $n: \${why["network $n"]}"
+    fi
+  done
+  sleep ${pause}
 done
-networks=$(docker network ls --format '{{.Name}}') || { echo "drop=docker network ls failed"; exit 1; }
-for n in $(printf '%s\\n' "$networks" | grep '^sealant-'); do
-  docker network rm "$n" >/dev/null || { echo "drop=could not remove network $n"; exit 1; }
-  echo "removed=network $n"
+printf '%s\\n' "$left" | while IFS= read -r thing; do
+  echo "drop=could not remove $thing: \${why["$thing"]:-still listed after ${rounds} rounds}"
 done
-echo "drop=done"
+exit 1
 `;
 
 /** Names each container and network sealant made that Docker still holds, then `read=done`. */
