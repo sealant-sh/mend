@@ -63,7 +63,7 @@ export const renderHostVmOverlay = (settings: {
 
 /**
  * The vm-runner setup runs `--self-test` with: sealantd 0.21.0-next.217's (the multi-arch index),
- * the image the server's sealant (0.40.0-next.951) runs host-vm workspaces with. Moves with that pin.
+ * the image the server's sealant (0.40.0-next.952) runs host-vm workspaces with. Moves with that pin.
  */
 export const VM_RUNNER_IMAGE =
   "ghcr.io/sealant-sh/vm-runner-next:0.21.0-next.217@sha256:5d980937731275b900421366e9df2bb43893d8c33b37634f87dcca8a6f32bd7b";
