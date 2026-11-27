@@ -1,5 +1,5 @@
-import { carrierOf, reportCause, spanOfCarrier } from "@mend/telemetry";
-import { Effect, Option } from "effect";
+import { currentTraceCarrier, reportCause, spanOfCarrier } from "@mend/telemetry";
+import { Effect } from "effect";
 
 /**
  * A job's trace, carried in its data (SLNT-1349, "Crossing async boundaries"): the publisher
@@ -13,8 +13,8 @@ export const TRACE_KEY = "_trace";
 export const withTraceEnvelope = (
   payload: Record<string, unknown>,
 ): Effect.Effect<Record<string, unknown>> =>
-  Effect.map(Effect.option(Effect.currentParentSpan), (span) =>
-    Option.isNone(span) ? payload : { ...payload, [TRACE_KEY]: carrierOf(span.value) },
+  Effect.map(currentTraceCarrier, (carrier) =>
+    carrier === undefined ? payload : { ...payload, [TRACE_KEY]: carrier },
   );
 
 /** A job's data without its envelope, for the handler, and the span the envelope names. */

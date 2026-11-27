@@ -76,6 +76,7 @@ import {
   type SealantRequestPriority,
   withSealantRequestPriority,
 } from "@mend/sealant";
+import { untraced } from "@mend/telemetry";
 import { SealantApiError, SealantBudgetExceededError, type InteractiveSession } from "@sealant/sdk";
 import {
   Cause,
@@ -1685,7 +1686,7 @@ export const ProtocolHostLive: Layer.Layer<
       // Each event is projected untraced: an agent reports many per turn, and a span each would
       // be one per token. The turn's own stages are spans of its trace (turn-trace.ts).
       const onEvent = (event: AgentEvent): Effect.Effect<void> =>
-        projectUntraced(event).pipe(Effect.withTracerEnabled(false));
+        projectUntraced(event).pipe(untraced);
       const projectUntraced = (event: AgentEvent): Effect.Effect<void> => {
         const position = {
           outputSequence: currentOutputSequence,

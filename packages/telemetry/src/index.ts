@@ -30,3 +30,15 @@ export {
   telemetrySettings,
 } from "./settings.ts";
 export { carrierOf, currentTraceCarrier, spanOfCarrier, TraceCarrier } from "./trace-carrier.ts";
+export {
+  currentOrigin,
+  detachTrace,
+  inOwnTrace,
+  isTraceable,
+  linksTo,
+  type OwnTraceOptions,
+  traced,
+  Tracing,
+  tracingOff,
+  untraced,
+} from "./trace-shape.ts";

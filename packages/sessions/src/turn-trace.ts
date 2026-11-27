@@ -1,4 +1,4 @@
-import { spanOfCarrier } from "@mend/telemetry";
+import { spanOfCarrier, traced } from "@mend/telemetry";
 import { Clock, Context, Effect, Exit, Option, Tracer } from "effect";
 
 /**
@@ -76,7 +76,7 @@ export const makeTurnTraces = <Id extends string>(
     Effect.flatMap(parentOf(turn), (parent) =>
       effect.pipe(
         Effect.withSpan("mend.turn.dispatch", { ...parent, attributes: attributesOf(turn) }),
-        Effect.withTracerEnabled(true),
+        traced,
       ),
     );
 
@@ -87,7 +87,7 @@ export const makeTurnTraces = <Id extends string>(
       const span = yield* Effect.makeSpan("mend.turn.run", {
         ...parent,
         attributes: attributesOf(turn),
-      }).pipe(Effect.withTracerEnabled(true));
+      }).pipe(traced);
       runs.set(providerTurnId, { span, firstOutput: false });
       for (const [id, run] of runs) {
         if (runs.size <= MAX_OPEN_RUNS) break;
@@ -130,7 +130,7 @@ export const makeTurnTraces = <Id extends string>(
       const parent = yield* parentOf(turn);
       yield* Effect.annotateCurrentSpan("mend.turn.status", turn.status).pipe(
         Effect.withSpan("mend.turn.complete", { ...parent, attributes: attributesOf(turn) }),
-        Effect.withTracerEnabled(true),
+        traced,
       );
     });
 

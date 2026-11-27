@@ -1,11 +1,13 @@
-import { Cause, Clock, Context, Data, Effect, Exit, Layer, Option, Tracer } from "effect";
+import { Cause, Clock, Context, Data, Effect, Exit, Layer, Option, Stream, Tracer } from "effect";
 import {
   Headers,
+  HttpBody,
+  HttpEffect,
   HttpMiddleware,
   HttpRouter,
   HttpServerError,
   HttpServerRequest,
-  type HttpServerResponse,
+  HttpServerResponse,
   HttpTraceContext,
   UrlParams,
 } from "effect/http";
@@ -207,6 +209,43 @@ const failedProbeSpan = (name: string, startTime: bigint) =>
     });
   });
 
+/**
+ * A request that lives on once it is open, a socket or an event stream (SLNT-1404): its span
+ * covers the opening, never the connection's life, which can be days.
+ */
+class OpenedRequest extends Context.Service<
+  OpenedRequest,
+  { readonly opened: (status: number) => Effect.Effect<void> }
+>()("@mend/network/http-observation/OpenedRequest") {}
+
+/**
+ * The request being served is open, and what it does from now on is not the request: its span
+ * ends now, with `status` (101 for a socket). A socket handler calls it once it has upgraded what
+ * it needs, and runs the rest detached from the request's trace. An event stream needs no call:
+ * its span ends when its headers go out, and its body runs outside the request's trace.
+ */
+export const requestOpened = (status = 101): Effect.Effect<void> =>
+  Effect.flatMap(Effect.serviceOption(OpenedRequest), (opened) =>
+    Option.isNone(opened) ? Effect.void : opened.value.opened(status),
+  );
+
+const EVENT_STREAM = "text/event-stream";
+
+const withoutParentSpanOf = (context: Context.Context<never>): Context.Context<never> => {
+  const services = new Map(context.mapUnsafe);
+  services.delete(Tracer.ParentSpan.key);
+  return Context.makeUnsafe<never>(services);
+};
+
+/**
+ * `stream` pulled with no parent span: what it does is not part of the request that answered it.
+ * Each pull runs without it (`Stream.updateContext` leaves the span a stream is run under).
+ */
+const withoutParentSpan = <A, E>(stream: Stream.Stream<A, E>): Stream.Stream<A, E> =>
+  Stream.transformPull(stream, (pull) =>
+    Effect.succeed(Effect.updateContext(pull, withoutParentSpanOf)),
+  );
+
 const observed = <E, R>(
   request: HttpServerRequest.HttpServerRequest,
   app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
@@ -219,6 +258,36 @@ const observed = <E, R>(
       parent === undefined && isProbe(request)
         ? undefined
         : yield* Effect.makeSpan(request.method, { kind: "server", parent });
+    /** Whether the span has ended: at the request's end, or once it was open (`requestOpened`). */
+    let spanEnded = false;
+    const endOpened = (status: number) =>
+      Effect.gen(function* () {
+        if (span === undefined || spanEnded) return;
+        spanEnded = true;
+        const endTime = yield* Clock.currentTimeNanos;
+        endSpan(
+          span,
+          {
+            method: request.method,
+            route,
+            outcome: { kind: "response", status },
+            durationMillis: Number(endTime - startTime) / 1_000_000,
+          },
+          endTime,
+          pathnameOf(request),
+        );
+      });
+    /** An event stream's span ends as its headers go out, and its body leaves the request's trace. */
+    const openEventStream: HttpEffect.PreResponseHandler = (_request, response) =>
+      Effect.gen(function* () {
+        const body = response.body;
+        if (body._tag !== "Stream" || !body.contentType.startsWith(EVENT_STREAM)) return response;
+        yield* endOpened(response.status);
+        return HttpServerResponse.setBody(
+          response,
+          HttpBody.stream(withoutParentSpan(body.stream), body.contentType, body.contentLength),
+        );
+      });
     const observe = Effect.onExit((exit: Exit.Exit<HttpServerResponse.HttpServerResponse, E>) =>
       Effect.gen(function* () {
         const endTime = yield* Clock.currentTimeNanos;
@@ -237,13 +306,20 @@ const observed = <E, R>(
           (failureOf(observation.outcome) === null
             ? undefined
             : yield* failedProbeSpan(request.method, startTime));
-        if (ended !== undefined) endSpan(ended, observation, endTime, pathnameOf(request));
+        if (ended !== undefined && !(ended === span && spanEnded))
+          endSpan(ended, observation, endTime, pathnameOf(request));
       }),
     );
     const served =
       span === undefined
-        ? app.pipe(Effect.withTracerEnabled(false), observe)
+        ? // Untraced, and no `noop` trace header on a request the app makes (SLNT-1404).
+          app.pipe(
+            Effect.withTracerEnabled(false),
+            Effect.provideService(Tracer.DisablePropagation, true),
+            observe,
+          )
         : app.pipe(observe, Effect.withParentSpan(span));
+    if (span !== undefined) HttpEffect.appendPreResponseHandlerUnsafe(request, openEventStream);
     return yield* served.pipe(
       Effect.provideService(MatchedRoute, {
         matched: (template) => {
@@ -251,6 +327,7 @@ const observed = <E, R>(
         },
         route: () => route,
       }),
+      Effect.provideService(OpenedRequest, { opened: endOpened }),
     );
   });
 

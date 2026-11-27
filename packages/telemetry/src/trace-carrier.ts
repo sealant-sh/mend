@@ -1,5 +1,7 @@
 import { Effect, Option, Schema, Tracer } from "effect";
 
+import { isTraceable } from "./trace-shape.ts";
+
 /**
  * A trace's W3C context, kept where work waits for later: in a pg-boss job's data (under `_trace`)
  * and on a conversation turn's row. Whatever picks the work up continues the trace from it
@@ -20,10 +22,13 @@ export const carrierOf = (span: Tracer.AnySpan): TraceCarrier => ({
   traceparent: `00-${span.traceId.padStart(32, "0")}-${span.spanId}-${span.sampled ? "01" : "00"}`,
 });
 
-/** The current span's carrier, or undefined outside any span. */
+/**
+ * The current span's carrier, or undefined outside any span, or inside a disabled one (telemetry
+ * off, or an `untraced` region), whose `noop` IDs name nothing.
+ */
 export const currentTraceCarrier: Effect.Effect<TraceCarrier | undefined> = Effect.map(
   Effect.option(Effect.currentParentSpan),
-  (span) => (Option.isSome(span) ? carrierOf(span.value) : undefined),
+  (span) => (Option.isSome(span) && isTraceable(span.value) ? carrierOf(span.value) : undefined),
 );
 
 /**

@@ -6,6 +6,7 @@ import { enrichingSerialization } from "./enrich.ts";
 import { ErrorReporter, makeSentryReporter, type SentryReporterOptions } from "./errors.ts";
 import { scrubbingSerialization } from "./scrub.ts";
 import { type TelemetrySettings, TelemetrySettingsError, telemetrySettings } from "./settings.ts";
+import { tracingOff } from "./trace-shape.ts";
 
 export interface TelemetryService {
   /** `service.name` on every span and log, and the `service` tag on every error. */
@@ -215,8 +216,11 @@ const read = (name: string) =>
 
 /**
  * Traces and logs over OTLP and errors to Sentry for this process, or nothing at all when it has
- * no `SENTRY_DSN`: no client, no exporter, no network call. Provide it beneath everything else,
- * so every layer above builds with its tracer, its logger and its `ErrorReporter`.
+ * no `SENTRY_DSN`: no client, no exporter, no network call, no span and no trace header on any
+ * request (`tracingOff`; SLNT-1404: Effect's own tracer would otherwise make spans in memory and
+ * send their `traceparent`, so a server with telemetry on hangs every request of this process
+ * off spans nobody exported). Provide it beneath everything else, so every layer above builds
+ * with its tracer, its logger and its `ErrorReporter`.
  *
  * Telemetry never stops a server: a DSN that is not one is logged and leaves telemetry off.
  */
@@ -237,9 +241,9 @@ export const telemetryLayer = (service: TelemetryService): Layer.Layer<never, Co
       } catch (error) {
         if (!(error instanceof TelemetrySettingsError)) throw error;
         yield* Effect.logWarning(`${error.message}: telemetry is off`);
-        return Layer.empty;
+        return tracingOff;
       }
-      if (settings === null) return Layer.empty;
+      if (settings === null) return tracingOff;
       yield* Effect.logInfo("telemetry on").pipe(
         Effect.annotateLogs({
           service: service.name,

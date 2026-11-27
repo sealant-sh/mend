@@ -58,6 +58,7 @@ import {
   type ServerRemoveKeybindingInput,
   type ResolvedKeybindingsConfig,
 } from "@mend/t3-contracts";
+import { currentOrigin, detachTrace, inOwnTrace } from "@mend/telemetry";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -76,6 +77,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import type * as Tracer from "effect/Tracer";
 
 import { GatewayConfig } from "./config.ts";
 import { gateDeviceCalls, type GatedMend } from "./device-gate.ts";
@@ -1400,6 +1402,18 @@ const mergeItems = (watch: Watch, read: ReadonlyArray<MendItem>) => {
   }
 };
 
+/** The span a refresh of `key` runs in (`refreshKeyOf`'s keys): one name per kind, never an ID. */
+const refreshSpanOf = (key: string): string =>
+  key === "all"
+    ? "mend.gateway.refresh_all"
+    : key === "devices"
+      ? "mend.gateway.check_devices"
+      : key.startsWith("project:")
+        ? "mend.gateway.refresh_project"
+        : key.startsWith("conversation:")
+          ? "mend.gateway.refresh_conversation"
+          : "mend.gateway.refresh";
+
 export const makePersonHub = (input: {
   /** The only way the hub reaches Mend (`device-gate.ts`). */
   readonly mend: GatedMend;
@@ -1422,6 +1436,12 @@ export const makePersonHub = (input: {
   readonly queueTimings?: Queueing.QueueTimings;
   /** Mend's API origin, for the terminal socket; terminals answer "not running" without it. */
   readonly mendUrl?: URL;
+  /**
+   * The request that opened the hub (SLNT-1404). The hub outlives it by hours: what the hub does
+   * on its own (reading Mend's events, refreshing, checking devices) is a trace per unit of work,
+   * linked to this request, never inside its trace.
+   */
+  readonly origin?: Tracer.AnySpan | undefined;
 }): Effect.Effect<PersonHub, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { mend, state, tokens } = input;
@@ -3438,6 +3458,11 @@ export const makePersonHub = (input: {
         );
       });
 
+    /** One refresh, as its own trace linked to the request that opened the hub (SLNT-1404). */
+    const refreshTraced = (key: string): Effect.Effect<void, HubReadError> =>
+      refreshOf(key).pipe(
+        inOwnTrace(refreshSpanOf(key), { origin: input.origin }),
+      );
     const refreshOf = (key: string): Effect.Effect<void, HubReadError> => {
       if (key === "all") {
         return loadLock.withPermits(1)(refreshAll.pipe(Effect.tap(() => markLoaded)));
@@ -3462,7 +3487,7 @@ export const makePersonHub = (input: {
                 deferredKeys.add(key);
                 return Effect.void;
               }
-              return refreshOf(key).pipe(
+              return refreshTraced(key).pipe(
                 Effect.catch((error) =>
                   Effect.logWarning("t3 gateway could not refresh from Mend", {
                     key,
@@ -3503,6 +3528,10 @@ export const makePersonHub = (input: {
         return refresh.pipe(
           Effect.andThen(
             Effect.suspend(() => readNativeHistory(sessionId, ++readGeneration)).pipe(
+              inOwnTrace("mend.gateway.read_native_history", {
+                origin: input.origin,
+                attributes: { "mend.session_id": sessionId },
+              }),
               Effect.forkIn(hubScope),
               Effect.asVoid,
             ),
@@ -7062,7 +7091,16 @@ export const makePersonHub = (input: {
       );
     });
     const shellSnapshot = ensureLoaded.pipe(
-      Effect.andThen(Effect.forkIn(refreshPullRequests, hubScope)),
+      // A trace of its own, linked to the call that asked for the shell: it reads every linked
+      // pull request, and outlives that call.
+      Effect.andThen(
+        Effect.flatMap(currentOrigin, (origin) =>
+          refreshPullRequests.pipe(
+            inOwnTrace("mend.gateway.refresh_pull_requests", { origin }),
+            Effect.forkIn(hubScope),
+          ),
+        ),
+      ),
       Effect.andThen(locked(Effect.sync(currentShell))),
     );
 
@@ -7974,7 +8012,10 @@ export const ProjectionsLive: Layer.Layer<
     const hubs: RcMap.RcMap<string, PersonHub> = yield* RcMap.make({
       lookup: (userId: string) => {
         const tokens = tokensOf(userId);
-        return makePersonHub({
+        // Built inside the request that first asked for it, and living on long after: everything
+        // the hub does on its own starts its own trace, linked to that request (SLNT-1404).
+        return Effect.flatMap(currentOrigin, (origin) =>
+          makePersonHub({
           // Every call the hub makes with a device token goes through the gate.
           mend: gateDeviceCalls(mend, tokens.refuse),
           viewer: viewers.get(userId) ?? null,
@@ -7983,9 +8024,11 @@ export const ProjectionsLive: Layer.Layer<
           parser,
           retain: retainFor(userId),
           queueTimings: { ...Queueing.DEFAULT_QUEUE_TIMINGS, ...config.queueTimings },
-          mendUrl: config.mendUrl,
-          dispose: RcMap.invalidate(hubs, userId),
-        });
+            mendUrl: config.mendUrl,
+            dispose: RcMap.invalidate(hubs, userId),
+            origin,
+          }).pipe(detachTrace),
+        );
       },
       idleTimeToLive: config.hubIdleTimeToLive ?? HUB_IDLE_TTL,
     });
@@ -8021,6 +8064,8 @@ export const ProjectionsLive: Layer.Layer<
           Effect.scoped(
             RcMap.get(hubs, userId).pipe(Effect.flatMap((held) => held.shellSnapshot)),
           ).pipe(
+            // Each attempt a trace of its own: Mend may not answer for a while (SLNT-1404).
+            inOwnTrace("mend.gateway.restore_queue"),
             // A device Mend refused will not come back; only Mend not answering is waited out.
             Effect.retry({
               schedule: Schedule.spaced(QUEUE_RESTORE_RETRY),
@@ -8066,6 +8111,8 @@ export const ProjectionsLive: Layer.Layer<
         devices.values(),
         (session) =>
           mend.checkDevice(session.deviceToken).pipe(
+            // Each attempt a trace of its own: Mend may not answer for a while (SLNT-1404).
+            inOwnTrace("mend.gateway.check_device"),
             Effect.retry({ schedule: DEVICE_RECONCILE_RETRY, while: isOutage }),
             Effect.flatMap((verdict) =>
               // A person with no hub yet holds no known token, so this also completes their

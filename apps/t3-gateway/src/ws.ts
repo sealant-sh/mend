@@ -5,6 +5,8 @@ import {
   ORCHESTRATION_PROTOCOL_VERSION,
   WsRpcGroup,
 } from "@mend/t3-contracts";
+import { requestOpened } from "@mend/network/http-observation";
+import { detachTrace } from "@mend/telemetry";
 import * as Effect from "effect/Effect";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
@@ -165,10 +167,14 @@ export const WebSocketRouteLive: Layer.Layer<
         // connection. It lives in the request's scope, which lasts as long as the socket.
         // The person's hub, held while the socket is open (ADR 0012, "Projection").
         const hub = yield* projections.hub(bearer.session);
+        // Authenticated, with its hub: the request is open, and its span ends here. The socket
+        // lives on for hours; nothing it carries joins this request's trace (SLNT-1404).
+        yield* requestOpened(101);
         const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
         const { tracked, answered } = trackInFlight(protocol);
         // Each call is a span of its own, parented on the trace the client sent with it (SLNT-1355),
-        // never on the socket's handshake: the socket outlives every call made over it.
+        // never on the socket's handshake: the socket outlives every call made over it. A call
+        // that came with no trace starts its own.
         yield* RpcServer.make(WsRpcGroup, { spanPrefix: "mend.gateway.rpc" }).pipe(
           Effect.provideService(RpcServer.Protocol, tracked),
           Effect.provide(
@@ -183,12 +189,13 @@ export const WebSocketRouteLive: Layer.Layer<
           Effect.provideService(GatewayEnvironment, environment),
           Effect.provideService(AssetUrls, assetUrls),
           Effect.provideService(AttachmentUploads, attachmentUploads),
+          detachTrace,
           Effect.forkScoped,
         );
         // Mend refusing the socket's device token (revoked) closes the socket, whichever token
         // the person's hub reads with.
         return yield* Effect.raceFirst(
-          httpEffect,
+          detachTrace(httpEffect),
           hub.refusal(bearer.session.deviceToken).pipe(
             // The call that found the refusal, and any other in flight, is answered first: its
             // typed refusal is written before the socket closes, never lost to the close.
