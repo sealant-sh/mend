@@ -333,7 +333,7 @@ describe("captureSealUnfinishedDetail (SLNT-1381)", () => {
     ).toBe(
       `not saved · final seal not confirmed · Mend could not finish checking the save: ${unfinished} · 0 B pending · workspace kept`,
     );
-    expect(captureSealUnfinishedDetail(`${"x".repeat(400)}`)?.length).toBe(200);
+    expect(captureSealUnfinishedDetail("x".repeat(400))?.length).toBe(200);
     expect(captureSealUnfinishedDetail("  ")).toBeNull();
   });
 });
