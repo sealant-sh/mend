@@ -114,6 +114,15 @@ export default async ({ page, web, capture, note }) => {
   await both("not-found-desktop");
   note("/no-such-page drew the not-found screen");
 
+  // A click on the session's row as the only interaction of a page view: Sentry sends one
+  // interaction (INP) span per page view, its slowest, when the page is left.
+  await open(`/sessions/${session}`);
+  const own = page.locator(`[data-session-id="${session}"]`).filter({ visible: true }).first();
+  await own.waitFor({ timeout: 30_000 });
+  await own.click();
+  await page.waitForTimeout(2_000);
+  note("clicked the session's row as the page view's only interaction");
+
   // A session's page left open: its polls and refetches, then a late click.
   await open(`/sessions/${session}`);
   note(
