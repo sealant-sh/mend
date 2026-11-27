@@ -911,6 +911,9 @@ export const GIT_SECTION_FAILED = "git section failed";
  * section of this very capture failed verification on this ask (`GIT_SECTION_FAILED`) — git's
  * word on its content, which no later ask changes. A seal withheld because a check could not
  * finish (`unavailable`, `verifying`) never says so, whatever the row recorded before.
+ * `unfinished`: what those checks could not finish, in the checks' own words, when the seal was
+ * withheld because of it (`unavailable`); absent otherwise. What the session says behind `final
+ * seal not confirmed` (SLNT-1381).
  */
 export interface CaptureSealNotice {
   readonly n: number;
@@ -918,7 +921,14 @@ export interface CaptureSealNotice {
   readonly epoch: number;
   readonly outcome: RegisterSealOutcome;
   readonly gitSectionFailed: boolean;
+  readonly unfinished?: string;
 }
+
+/** `the git section could not be verified`, with the verifier's own words when it gave some. */
+const gitSectionUnverified = (detail: string | null): string =>
+  detail === null || detail.trim() === ""
+    ? "the git section could not be verified"
+    : `the git section could not be verified: ${detail.trim()}`;
 
 /** Every `waiting` notice's words begin with this — a launch's words, cleared once it starts. */
 export const PLAN_WAITING_PREFIX = "launch waiting · ";
@@ -1669,10 +1679,6 @@ export const CaptureChannelLive: Layer.Layer<
           }
           return verification;
         });
-
-      /** `checkRow`'s outcome alone. */
-      const verifyRow = (row: CaptureRow, manifest: CaptureManifest) =>
-        checkRow(row, manifest).pipe(Effect.map((verification) => verification.outcome));
 
       /** Tell the session what this plan did instead of restoring the head (`CaptureScope`). */
       const notePlan = (notice: CapturePlanNotice) =>
@@ -2601,6 +2607,7 @@ export const CaptureChannelLive: Layer.Layer<
       const unavailableAnswer = (verdict: SealVerdict) => ({
         outcome: { state: "withheld", reason: "unavailable" } satisfies RegisterSealOutcome,
         detail: `its checks could not finish (${(verdict.unavailable ?? []).join("; ")}); registering the same capture again checks it again`,
+        unfinished: (verdict.unavailable ?? []).join("; "),
       });
 
       /**
@@ -2732,12 +2739,14 @@ export const CaptureChannelLive: Layer.Layer<
             // 2026-09-28 (12) #4), and so is one recorded `failed` (review 2026-09-28 (13) #1: a
             // re-ask checks once more before it refuses); still not verifiable, the checks
             // conclude nothing.
-            const gitFsck =
-              row.gitFsck === "verified" ? row.gitFsck : yield* verifyRow(row, manifest);
-            if (gitFsck === "unverified") {
-              return { problems: [], unavailable: ["the git section could not be verified"] };
+            const git =
+              row.gitFsck === "verified"
+                ? { outcome: row.gitFsck, detail: null }
+                : yield* checkRow(row, manifest);
+            if (git.outcome === "unverified") {
+              return { problems: [], unavailable: [gitSectionUnverified(git.detail)] };
             }
-            if (gitFsck !== "verified") return { problems: [GIT_SECTION_FAILED] };
+            if (git.outcome !== "verified") return { problems: [GIT_SECTION_FAILED] };
             const meta = yield* verifyWorktreeMeta(manifest.sections.workspace).pipe(Effect.result);
             if (Result.isFailure(meta)) {
               return { problems: [`worktree metadata unrestorable: ${meta.failure._tag}`] };
@@ -3317,7 +3326,7 @@ export const CaptureChannelLive: Layer.Layer<
           // answering), a tree it could not list. Withheld (`unavailable`); the re-ask verifies
           // again (`lateSealChecks`).
           const factUnavailable = [
-            gitFsck === "unverified" ? "the git section could not be verified" : null,
+            gitFsck === "unverified" ? gitSectionUnverified(verification?.detail ?? null) : null,
             gitFsck !== "failed" && metaNamespace === "unverified"
               ? "the tree a restore checks out could not be listed"
               : null,
@@ -3536,6 +3545,7 @@ export const CaptureChannelLive: Layer.Layer<
             epoch: input.epoch,
             outcome: sealAnswer.outcome,
             gitSectionFailed: "gitSectionFailed" in sealAnswer && sealAnswer.gitSectionFailed,
+            ...("unfinished" in sealAnswer ? { unfinished: sealAnswer.unfinished } : {}),
           });
         }
         if (sealAnswer !== null && sealAnswer.outcome.state !== "recorded") {

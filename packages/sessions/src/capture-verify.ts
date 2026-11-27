@@ -170,6 +170,12 @@ const isolation = (cause: unknown) => ({
  * A bare repository whose object store is exactly `packKeys` as the runner cache at `cachePath`
  * installed them (links to `objects/pack/pack-<sha256>.{pack,idx}`), made for `use` and removed
  * after. Nothing else is reachable from it: no other pack, no loose object, no alternate.
+ *
+ * One link per digest, not per key: a manifest may list the same bytes under two keys. A worktree
+ * that comes back to a tree an earlier capture packed (going back to a checkpoint, or a session
+ * writing the same files again) packs the same objects into a byte-identical pack, which a later
+ * epoch or generation stores under its own prefix. Linking both named one file twice, and the
+ * second link failed `EEXIST` on every check, so the seal over it was never confirmed (SLNT-1381).
  */
 const isolatedPacks = <A, E>(
   cachePath: string,
@@ -181,9 +187,12 @@ const isolatedPacks = <A, E>(
   Effect.acquireUseRelease(
     Effect.gen(function* () {
       const linkPacks = (repo: string) => {
-        for (const key of new Set(packKeys)) {
+        const linked = new Set<string>();
+        for (const key of packKeys) {
           const digest = digestOfKey(key);
           if (digest === null) throw new Error(`pack key carries no sha256: ${key}`);
+          if (linked.has(digest)) continue;
+          linked.add(digest);
           for (const ext of ["pack", "idx"]) {
             fs.symlinkSync(
               path.join(cachePath, "objects", "pack", `pack-${digest}.${ext}`),

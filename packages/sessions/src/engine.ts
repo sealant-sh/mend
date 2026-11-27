@@ -301,6 +301,7 @@ import {
   type CapturePosition,
   captureUnsavedWordsOf,
   saveCoversUnsaved,
+  captureSealUnfinishedDetail,
   captureSnapDetailOf,
   captureSnapFailing,
   captureStatusLine,
@@ -4832,6 +4833,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           : reading;
       };
 
+      /**
+       * What a final flush waiting on its seal (`sealing`) says behind `final seal not confirmed`
+       * when the registrar's last answer withheld that very capture's seal (its `n`, its epoch)
+       * because its checks could not finish: what they could not check (SLNT-1381: a Stop whose
+       * checks failed the same way on every ask read `final seal not confirmed` and nothing else
+       * for an hour). Null for any other answer, or a reading of another capture.
+       */
+      const sealUnfinishedDetail = (
+        worktreeId: WorktreeId,
+        reading: CaptureReading,
+      ): string | null => {
+        if (reading.complete !== false || reading.incompleteReason !== "sealing") return null;
+        const answer = sealAnswers.get(worktreeId);
+        if (
+          answer?.unfinished === undefined ||
+          answer.n !== reading.headN ||
+          (reading.epoch ?? answer.epoch) !== answer.epoch
+        ) {
+          return null;
+        }
+        return captureSealUnfinishedDetail(answer.unfinished);
+      };
+
       const observeCaptureFlush = (
         session: Session,
         workspace: Workspace,
@@ -5051,7 +5075,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? {}
               : {
                   incompleteReason,
-                  incompleteDetail: incompleteReason === null ? null : captureSnapDetailOf(reading),
+                  incompleteDetail:
+                    incompleteReason === null
+                      ? null
+                      : (captureSnapDetailOf(reading) ??
+                        sealUnfinishedDetail(session.worktreeId, reading)),
                 }),
           },
           position,
