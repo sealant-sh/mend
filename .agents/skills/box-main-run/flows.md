@@ -1023,8 +1023,10 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `M codex "Create a file named MAIN-RUN.md containing the one line: seen. Change nothing else." --name main-run-<sha8> --project <p> --effort low --detach --conversation --json`;
   record the session id in the ledger as `session` and `main-run-<sha8>` as `worktree`. Then
   `M wait <id> --turn --timeout 8m` and `M sessions --project <p>`.
-- **See:** `mend wait` exits `0` on a completed turn; the session lists in `<p>` as `codex`, its dim
-  facts ending `· <default model id> · low`, its change one file, `+1`.
+- **See:** `mend wait` exits `0` on a completed turn; the session lists in `<p>` as `codex` on
+  `mend/main-run-<sha8>`, its dim facts reading `… · <default model id> · low`. The CLI's session
+  and worktree rows print no change counts: the change's one file, `+1`, is read in
+  `review-change.web-review`.
 - **Mode:** `agent`
 - **Box-only:** `boat`, `real-agent-turn`
 - **Sample:** yes
@@ -1884,7 +1886,8 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `M ssh`, `M ssh keys`, `M ssh bogus`. Never `ssh setup`.
 - **See:** either `gateway  <host>:<port> · published for <web>` or
   `workspace ssh   no gateway · this deployment exposes none` (record which), exit `0`; the key list
-  or `no keys registered`; the `Unknown ssh subcommand "bogus"` line, exit `1`.
+  or `no workspace ssh keys registered · run: mend ssh setup`; the `Unknown ssh subcommand "bogus"`
+  line, exit `1`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `packages/workspace-ssh/`, `apps/cli/src/`
@@ -2456,8 +2459,9 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
 - **Map:** now-and-sessions.md `inbox-groups`
 - **Needs:** either; no turn; web; `start-session.boat-turn`
 - **Do:** Recipe `now` with `MAIN_RUN_SESSION` set to the turn's session.
-- **See:** the Now page's `Sessions` inbox, with a row linking to that session.
-- **Mode:** `scripted` (recipes/now.mjs)
+- **See:** the sidebar's `Inbox` (navigation), with a row linking to that session under its group;
+  the recipe opens a folded group (`Running`, say) and `Show N more` to reach it.
+- **Mode:** `scripted` (.agents/skills/box-main-run/recipes/now.mjs)
 - **Box-only:** no
 - **Sample:** yes
 - **Areas:** `apps/web/src/routes/_inbox.tsx`, `apps/web/src/routes/_inbox.index.tsx`,
@@ -3086,15 +3090,19 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `mend server setup --offline --tenancy multi` there.
 - **Do:** Drive the recipe `org-create-operator`: the operator's switcher on the desk, the Create
   organization dialog with a name, the home it lands on, Settings → Server's Organizations rows, and
-  the phone's Settings sheet. Then, as the second account (not an operator), `M2 organization` reads
-  `canCreateOrganizations` false and a create is refused.
+  the phone's Settings sheet. Then, as the second account (not an operator), in its own browser
+  (Mend's CLI creates no organization):
+  `web2 <out dir>/member .agents/skills/box-main-run/recipes/operator-create-refused.mjs`.
 - **See:** the recipe's `steps.log`: `organizationCreation operator, canCreateOrganizations true`;
   the switcher reads `… | Create organization…`; `role owner, 1 member(s)` for the new organization;
   `Only an operator creates organizations, and owns each one they create.`;
-  `Mend's git may reach private networks`. The second account's create answers
+  `Mend's git may reach private networks`;
+  `restored · this sign-in's organization · read back: Default`. The member recipe's `steps.log`:
+  `operator false`, `canCreateOrganizations false`; the create refused with
   `On this Mend, only an operator creates organizations (MEND_ORGANIZATION_CREATION=operator). Ask one for an organization.`;
-  the recipe's `restored · this sign-in's organization · read back: Default`.
-- **Mode:** `scripted` (recipes/org-create-operator.mjs)
+  the second account's switcher with no `Create organization…` (or no switcher).
+- **Mode:** `scripted` (recipes/org-create-operator.mjs, then
+  `.agents/skills/box-main-run/recipes/operator-create-refused.mjs` as the second account)
 - **Box-only:** no
 - **Areas:** `apps/api/src/tenancy.ts`, `apps/api/src/routes/organization.ts`,
   `apps/web/src/lib/server-settings.ts`

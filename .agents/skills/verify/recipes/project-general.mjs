@@ -268,11 +268,12 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       "a-project-general-verify-password",
     );
     await memberPage.getByRole("button", { name: "Create account and join", exact: true }).click();
-    await memberPage.waitForURL((url) => url.pathname === "/welcome");
+    // /welcome sends a new member straight on to their next setup step (/welcome/command-line).
+    await memberPage.waitForURL((url) => url.pathname.startsWith("/welcome"));
     const memberMe = await apiOf(memberPage)("GET", "/api/organization");
     expect("the member joined", memberMe.body?.role === "member", memberMe);
     memberId = memberMe.body.userId;
-    note(`${personName} joined as a member`);
+    note(`${personName} joined as a member and landed on ${new URL(memberPage.url()).pathname}`);
 
     const ownerCookies = await page.context().cookies();
     await page.context().clearCookies();
