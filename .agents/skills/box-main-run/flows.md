@@ -3462,9 +3462,12 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   any other, `not run · no DSN on this copy`. Drive the owner's browser with every request carrying
   a `traceparent` the run chose (Playwright `setExtraHTTPHeaders`, a fresh trace id): load the Now
   page, then go to Projects in the page. Read sentry.mend.run back with the read-only token in
-  `~/.local/share/sentry-mend/api-token` (never print it): project 3 (mend-server) for that trace
-  id, spans by `span.name` and `parent_span`; project 4 (mend-web) for the copy's environment over
-  the time `start-session.web-write` ran.
+  `~/.local/share/sentry-mend/api-token` (never print it): read that trace from
+  `/api/0/organizations/sealant/trace/<trace_id>/?statsPeriod=24h` (or paginate
+  `/events/?dataset=spans&sort=id&per_page=100` — never paginate by timestamp, since same-second
+  spans duplicate and drop across pages) for project 3 (mend-server) spans by `span.name` and
+  `parent_span`; project 4 (mend-web) for the copy's environment over the time
+  `start-session.web-write` ran.
 - **See:** in project 3, `mend.web.<procedure>` spans (`mend.web.sessions.inbox`,
   `mend.web.projects.list`, …) whose parent is the request's own span id, both for the page the
   server rendered and for the calls made in the page; under each, the web server's `http.client`
@@ -3490,8 +3493,9 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `require owner runs`, `launch as` or `launch internal` span; no `sealant.sdk.*` span (each sealant
   call is one `mend.sealant` span over its `http.client`, with operation `mend.sealant`, never
   `sealant.sdk`); and no root trace for `GET /api/health` and no root trace that is a lone database
-  query in the run's window. On a copy also started with `MEND_VERIFY_SEALANTD_SENTRY_DSN` (the
-  `telemetry · …` line reads `sealantd's to sentry.mend.run project 10`; on any other this part is
+  query in the run's window after `server.upgrade` finished (spans from the pre-upgrade master do
+  not count). On a copy also started with `MEND_VERIFY_SEALANTD_SENTRY_DSN` (the `telemetry · …`
+  line reads `sealantd's to sentry.mend.run project 10`; on any other this part is
   `not run · no sealantd DSN on this copy`), read the trace of web-write's session start once that
   session has stopped and a minute has passed: sentry.mend.run keeps a trace's mend-server spans
   back until none has joined it for 60 s, and Mend's reads of a running session join its start's
