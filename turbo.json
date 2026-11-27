@@ -44,7 +44,8 @@
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/.oxlintrc.json",
-        "$TURBO_ROOT$/tooling/oxlint-plugin-mend/src/**"
+        "$TURBO_ROOT$/tooling/oxlint-plugin-mend/src/**",
+        "$TURBO_ROOT$/packages/telemetry/src/span-names.ts"
       ],
       "outputs": []
     },

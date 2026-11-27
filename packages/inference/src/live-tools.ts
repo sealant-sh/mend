@@ -88,7 +88,7 @@ export const readIssueLayer = Layer.effect(
   Effect.gen(function* () {
     const issues = yield* IssuesRepo;
 
-    const read = Effect.fn("ReadIssue.read")(function* (issueId: IssueId) {
+    const read = Effect.fnUntraced(function* (issueId: IssueId) {
       const issue = yield* issues
         .byId(issueId)
         .pipe(
@@ -201,7 +201,7 @@ export const readBriefLayer = Layer.effect(
   Effect.gen(function* () {
     const briefs = yield* BriefsRepo;
 
-    const read = Effect.fn("ReadBrief.read")(function* (changeId: ChangeId) {
+    const read = Effect.fnUntraced(function* (changeId: ChangeId) {
       return yield* briefs.byChange(changeId).pipe(
         Effect.mapError(
           () =>
@@ -222,11 +222,7 @@ export const publishBriefLayer = Layer.effect(
   Effect.gen(function* () {
     const briefs = yield* BriefsRepo;
 
-    const publish = Effect.fn("PublishBrief.publish")((changeId: ChangeId, document) =>
-      briefs.publish(changeId, document),
-    );
-
-    return { publish };
+    return { publish: briefs.publish };
   }),
 );
 

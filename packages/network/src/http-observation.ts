@@ -110,9 +110,20 @@ const failureOf = (outcome: Outcome): string | null => {
   return outcome.status >= 500 ? `status ${outcome.status}` : null;
 };
 
-const endSpan = (span: Tracer.Span, observation: HttpObservation, endTime: bigint) => {
+/**
+ * A request no route matched has only its path to be named by: it goes on the span as `url.path`,
+ * which the exporter templates into the span's name and never sends as it came
+ * (`@mend/telemetry`'s `enrich.ts`).
+ */
+const endSpan = (
+  span: Tracer.Span,
+  observation: HttpObservation,
+  endTime: bigint,
+  path: string,
+) => {
   span.attribute("http.request.method", observation.method);
   span.attribute("http.route", observation.route);
+  if (observation.route === UNROUTED) span.attribute("url.path", path);
   if (observation.outcome.kind === "response")
     span.attribute("http.response.status_code", observation.outcome.status);
   const failure = failureOf(observation.outcome);
@@ -171,12 +182,13 @@ const PROBE_PATHS: ReadonlySet<string> = new Set([
   "/api/health",
 ]);
 
+const pathnameOf = (request: HttpServerRequest.HttpServerRequest): string =>
+  Option.getOrUndefined(HttpServerRequest.toURL(request))?.pathname ??
+  request.url.split("?")[0] ??
+  "";
+
 const isProbe = (request: HttpServerRequest.HttpServerRequest): boolean =>
-  PROBE_PATHS.has(
-    Option.getOrUndefined(HttpServerRequest.toURL(request))?.pathname ??
-      request.url.split("?")[0] ??
-      "",
-  );
+  PROBE_PATHS.has(pathnameOf(request));
 
 /** A span for a probe that failed, started when the request was, with no parent: its own trace. */
 const failedProbeSpan = (name: string, startTime: bigint) =>
@@ -224,7 +236,7 @@ const observed = <E, R>(
           (failureOf(observation.outcome) === null
             ? undefined
             : yield* failedProbeSpan(request.method, startTime));
-        if (ended !== undefined) endSpan(ended, observation, endTime);
+        if (ended !== undefined) endSpan(ended, observation, endTime, pathnameOf(request));
       }),
     );
     const served =

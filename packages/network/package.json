@@ -10,6 +10,7 @@
     "./address-kind": "./src/address-kind.ts",
     "./handed-links": "./src/handed-links.ts",
     "./http-observation": "./src/http-observation.ts",
+    "./secret-segments": "./src/secret-segments.ts",
     "./tunnel-client": "./src/tunnel-client.ts"
   },
   "scripts": {

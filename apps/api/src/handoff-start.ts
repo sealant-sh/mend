@@ -146,10 +146,7 @@ export const makeHandoffStart = Effect.gen(function* () {
     return terms;
   });
 
-  const instanceTerms = capturedStore.pipe(
-    Effect.as(terms),
-    Effect.withSpan("HandoffStart.instanceTerms"),
-  );
+  const instanceTerms = capturedStore.pipe(Effect.as(terms));
 
   const remoteEnvFor = (project: Project, userId: string) =>
     Effect.gen(function* () {

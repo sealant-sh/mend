@@ -150,7 +150,7 @@ export const ResourceStatusReadsLive: Layer.Layer<
     const loads = yield* ResourceLoadsRepo;
     const runtime = yield* ResourceRuntime;
     const reads = yield* ResourceTableReads;
-    const viewsFor = Effect.fn("ResourceStatusReads.viewsFor")(function* (
+    const viewsFor = Effect.fnUntraced(function* (
       listed: ReadonlyArray<DefinitionWithChoice>,
       projectId: ProjectId,
       worktreeId: WorktreeId | null,

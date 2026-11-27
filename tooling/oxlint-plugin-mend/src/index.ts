@@ -6,6 +6,7 @@ import { noRawColors } from "./rules/no-raw-colors.ts";
 import { noUseClient } from "./rules/no-use-client.ts";
 import { queryStates } from "./rules/query-states.ts";
 import { routerDefaultStates } from "./rules/router-default-states.ts";
+import { spanName } from "./rules/span-name.ts";
 
 const plugin: Plugin = {
   meta: { name: "mend" },
@@ -17,6 +18,7 @@ const plugin: Plugin = {
     "no-use-client": noUseClient,
     "query-states": queryStates,
     "router-default-states": routerDefaultStates,
+    "span-name": spanName,
   },
 };
 

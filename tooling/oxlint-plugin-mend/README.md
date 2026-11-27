@@ -1,8 +1,9 @@
 # @mend/oxlint-plugin-mend
 
 Mend's own oxlint rules, loaded as a JS plugin by the root `.oxlintrc.json`. They run on the web app
-(`apps/web`) and its UI kit (`packages/ui`) only. New code there passes them without disable
-comments: when ordinary code trips a rule, the rule is wrong and gets narrowed here.
+(`apps/web`) and its UI kit (`packages/ui`) only, except `mend/span-name`, which runs on every app's
+and package's `src`. New code there passes them without disable comments: when ordinary code trips a
+rule, the rule is wrong and gets narrowed here.
 
 The rules are syntactic. oxlint's JS plugins get no type information, so each rule reads one file
 and says below what it can't see.
@@ -186,3 +187,28 @@ useEffect(() => {
   setDraft(name);
 }, [name]); // Flagged
 ```
+
+## `mend/span-name`
+
+A span the code names has an entry in `SPAN_NAMES` (`packages/telemetry/src/span-names.ts`): the
+`mend.<area>.<operation>` name and the short description Sentry shows for it. The exporter renames
+each span by that table, so the code can keep naming a span for the function it times.
+
+```ts
+// Flagged: "Span "SlackReporter.look" has no entry in SPAN_NAMES …"
+const look = Effect.fn("SlackReporter.look")(function* () { … });
+
+// Allowed, once SPAN_NAMES holds
+//   "SlackReporter.look": ["mend.slack.update_thread", "update session slack thread"],
+const look = Effect.fn("SlackReporter.look")(function* () { … });
+```
+
+It reads the literal name of `Effect.fn("…")`, `withSpan("…")` (either argument order), `makeSpan`,
+`makeSpanScoped`, `useSpan` and `tracer.span({ name: "…" })`. Also allowed:
+
+- `Effect.fnUntraced`, which makes no span.
+- A name built at run time (`` `mend.web.${path}` ``): the exporter names those by rule.
+- Test files, whose spans never reach Sentry.
+
+`span-names.test.ts` in `packages/telemetry` checks the table itself: every name follows the
+convention, no two names share a description, and no entry outlives its span.

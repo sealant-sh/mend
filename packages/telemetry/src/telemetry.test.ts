@@ -141,6 +141,54 @@ describe("what telemetry may send", () => {
     expect(event.server_name).toBeUndefined();
   });
 
+  it("never names a span for a sign-in code in a path, asked for or called", async () => {
+    // Letters only, as a CLI sign-in's user code can be: no digit gives it away as an ID.
+    const CODE = "QZXW-PLMK";
+    const settings = telemetrySettings({ SENTRY_DSN: DSN });
+    if (settings === null) throw new Error("expected settings");
+    const { otlp, transports } = capturingTransports();
+    const api = HttpClient.make((request) =>
+      Effect.succeed(HttpClientResponse.fromWeb(request, new Response("{}"))),
+    );
+    const routes = HttpRouter.use((router) =>
+      router.add(
+        "GET",
+        "/approve",
+        Effect.gen(function* () {
+          yield* api.get(`http://mend-api.internal/api/me/cli-auth/${CODE}`);
+          yield* api.post(`http://mend-api.internal/api/me/cli-auth/${CODE}/approve`);
+          return HttpServerResponse.empty();
+        }).pipe(Effect.orDie),
+      ),
+    );
+    const { handler, dispose } = observedWebHandler(
+      routes.pipe(
+        Layer.provideMerge(enabledTelemetryLayer(settings, { name: "mend-test" }, transports)),
+      ),
+    );
+    expect((await handler(new Request("http://mend.internal/approve"))).status).toBe(204);
+    // No route of this server: the request is named by its path, templated.
+    expect(
+      (await handler(new Request(`http://mend.internal/api/me/cli-auth/${CODE}`))).status,
+    ).toBe(404);
+    await dispose();
+
+    const sent = otlp.map((request) => request.body).join("\n");
+    expect(sent).not.toContain(CODE);
+    const traces = otlp.find((request) => request.url.endsWith("/v1/traces"));
+    const names = JSON.parse(traces?.body ?? "{}").resourceSpans.flatMap(
+      (resource: { scopeSpans: ReadonlyArray<{ spans: ReadonlyArray<ExportedSpan> }> }) =>
+        resource.scopeSpans.flatMap((scope) => scope.spans.map((span) => span.name)),
+    );
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "GET /approve",
+        "GET /api/me/cli-auth/:code",
+        "POST /api/me/cli-auth/:code/approve",
+      ]),
+    );
+  });
+
   it("makes no network call, and builds no client, when the process has no DSN", async () => {
     const fetching = vi.spyOn(globalThis, "fetch");
     await Effect.runPromise(
