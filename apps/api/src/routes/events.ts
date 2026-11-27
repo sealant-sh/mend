@@ -136,15 +136,17 @@ export const EventsRoutes = HttpRouter.use((router) =>
         const initial = yield* viewOf(signIn);
         const view = yield* Ref.make(initial);
         // The stream lives for hours, and its request's span ends once its headers go out
-        // (SLNT-1404). What the stream does after is not that request: each refresh of the
-        // caller's view is a trace of its own, linked to the request that opened the stream, and
-        // deciding which frames to send is untraced (one per bus event, for every stream).
+        // (SLNT-1404). What the stream does after is not that request: a refresh an event asked
+        // for is a trace of its own, linked to the request that opened the stream. Deciding which
+        // frames to send, and the heartbeat's refresh every 25 seconds, are untraced: one per bus
+        // event, and one per open stream every 25 seconds.
         const origin = yield* currentOrigin;
-        const refresh = Effect.gen(function* () {
+        const reread = Effect.gen(function* () {
           const next = yield* viewOf(signIn);
           yield* Ref.set(view, next);
           return next;
-        }).pipe(inOwnTrace("mend.events.refresh_view", { origin }), traced);
+        });
+        const refresh = reread.pipe(inOwnTrace("mend.events.refresh_view", { origin }), traced);
 
         const ends = (signal: BusSignal | { readonly kind: "tick" }) =>
           Effect.gen(function* () {
@@ -171,7 +173,7 @@ export const EventsRoutes = HttpRouter.use((router) =>
             // A revoked stream says nothing more but why it ended.
             if ((yield* Deferred.isDone(revoked)) && !(yield* ends(signal))) return null;
             if (signal.kind === "tick") {
-              yield* refresh;
+              yield* reread;
               return ": ping\n\n";
             }
             if (signal.kind === "resync") {
