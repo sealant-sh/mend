@@ -362,6 +362,46 @@ const page = cdp
   : await context.newPage();
 page.setDefaultTimeout(timeout);
 
+// Track in-flight Sentry envelope uploads so a recipe that finishes right after an action
+// (such as starting a session) does not cut off its browser span when Chromium closes.
+const pendingEnvelopes = new Set();
+const envelopeWaiters = new Set();
+const isEnvelope = (request) => /\/api\/\d+\/envelope(?:\/|$|\?)/.test(request.url());
+if (!cdp) {
+  context.on("request", (request) => {
+    if (isEnvelope(request)) pendingEnvelopes.add(request);
+  });
+  const done = (request) => {
+    if (!pendingEnvelopes.delete(request) || pendingEnvelopes.size > 0) return;
+    for (const wake of envelopeWaiters) wake();
+    envelopeWaiters.clear();
+  };
+  context.on("requestfinished", done);
+  context.on("requestfailed", done);
+}
+
+const flushTelemetry = async () => {
+  if (cdp) return;
+  const hasTelemetry =
+    pendingEnvelopes.size > 0 ||
+    (await page.evaluate(() => Boolean(window.__MEND_TELEMETRY__)).catch(() => false));
+  if (!hasTelemetry) return;
+  // Let a span ending on the final render tick dispatch its fetch before checking in-flight ones.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  if (pendingEnvelopes.size === 0) return;
+  await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      envelopeWaiters.delete(finish);
+      resolve();
+    }, 2000);
+    const finish = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    envelopeWaiters.add(finish);
+  });
+};
+
 const capture = async (name) => {
   // A reused name must not leave an older image or digest after this capture is withheld/fails.
   for (const suffix of [".png", ".png.checked", ".png.withheld"])
@@ -487,6 +527,7 @@ try {
     await context.storageState({ path: state });
     secrets = loadSecrets(privateDir);
   }
+  await flushTelemetry().catch(() => undefined);
   // Over CDP this only disconnects: the desktop app stays as it was for the next recipe.
   await browser.close();
 }
