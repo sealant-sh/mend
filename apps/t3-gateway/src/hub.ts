@@ -77,7 +77,6 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import type * as Tracer from "effect/Tracer";
 
 import { GatewayConfig } from "./config.ts";
 import { gateDeviceCalls, type GatedMend } from "./device-gate.ts";
@@ -1436,12 +1435,6 @@ export const makePersonHub = (input: {
   readonly queueTimings?: Queueing.QueueTimings;
   /** Mend's API origin, for the terminal socket; terminals answer "not running" without it. */
   readonly mendUrl?: URL;
-  /**
-   * The request that opened the hub (SLNT-1404). The hub outlives it by hours: what the hub does
-   * on its own (reading Mend's events, refreshing, checking devices) is a trace per unit of work,
-   * linked to this request, never inside its trace.
-   */
-  readonly origin?: Tracer.AnySpan | undefined;
 }): Effect.Effect<PersonHub, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { mend, state, tokens } = input;
@@ -3458,11 +3451,12 @@ export const makePersonHub = (input: {
         );
       });
 
-    /** One refresh, as its own trace linked to the request that opened the hub (SLNT-1404). */
+    /**
+     * One refresh, as a trace of its own (SLNT-1404): the hub runs detached from the request that
+     * opened it (`Projections`), and each of its traces is linked to that request.
+     */
     const refreshTraced = (key: string): Effect.Effect<void, HubReadError> =>
-      refreshOf(key).pipe(
-        inOwnTrace(refreshSpanOf(key), { origin: input.origin }),
-      );
+      refreshOf(key).pipe(inOwnTrace(refreshSpanOf(key)));
     const refreshOf = (key: string): Effect.Effect<void, HubReadError> => {
       if (key === "all") {
         return loadLock.withPermits(1)(refreshAll.pipe(Effect.tap(() => markLoaded)));
@@ -3529,7 +3523,6 @@ export const makePersonHub = (input: {
           Effect.andThen(
             Effect.suspend(() => readNativeHistory(sessionId, ++readGeneration)).pipe(
               inOwnTrace("mend.gateway.read_native_history", {
-                origin: input.origin,
                 attributes: { "mend.session_id": sessionId },
               }),
               Effect.forkIn(hubScope),
@@ -8014,8 +8007,7 @@ export const ProjectionsLive: Layer.Layer<
         const tokens = tokensOf(userId);
         // Built inside the request that first asked for it, and living on long after: everything
         // the hub does on its own starts its own trace, linked to that request (SLNT-1404).
-        return Effect.flatMap(currentOrigin, (origin) =>
-          makePersonHub({
+        return makePersonHub({
           // Every call the hub makes with a device token goes through the gate.
           mend: gateDeviceCalls(mend, tokens.refuse),
           viewer: viewers.get(userId) ?? null,
@@ -8024,11 +8016,9 @@ export const ProjectionsLive: Layer.Layer<
           parser,
           retain: retainFor(userId),
           queueTimings: { ...Queueing.DEFAULT_QUEUE_TIMINGS, ...config.queueTimings },
-            mendUrl: config.mendUrl,
-            dispose: RcMap.invalidate(hubs, userId),
-            origin,
-          }).pipe(detachTrace),
-        );
+          mendUrl: config.mendUrl,
+          dispose: RcMap.invalidate(hubs, userId),
+        }).pipe(detachTrace);
       },
       idleTimeToLive: config.hubIdleTimeToLive ?? HUB_IDLE_TTL,
     });

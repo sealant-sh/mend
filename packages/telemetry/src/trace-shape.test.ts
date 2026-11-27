@@ -9,6 +9,7 @@ import {
   detachTrace,
   inOwnTrace,
   isTraceable,
+  linkingRoots,
   traced,
   untraced,
 } from "./trace-shape.ts";
@@ -52,10 +53,7 @@ describe("a process with telemetry off", () => {
           carrier: yield* currentTraceCarrier,
           span: yield* Effect.currentParentSpan,
         };
-      }).pipe(
-        Effect.withSpan("mend.test.long_lived"),
-        Effect.provide(Layer.merge(off, layer)),
-      ),
+      }).pipe(Effect.withSpan("mend.test.long_lived"), Effect.provide(Layer.merge(off, layer))),
     );
     expect(sent).toHaveLength(3);
     for (const headers of sent) expect(traceHeadersOf(headers)).toEqual([]);
@@ -103,7 +101,10 @@ describe("a process with telemetry on", () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const request = yield* Effect.currentSpan;
-        const inside = yield* Effect.currentSpan.pipe(Effect.withSpan("mend.test.poll"), detachTrace);
+        const inside = yield* Effect.currentSpan.pipe(
+          Effect.withSpan("mend.test.poll"),
+          detachTrace,
+        );
         const outside = yield* Effect.option(Effect.currentParentSpan).pipe(detachTrace);
         return { request, inside, outside };
       }).pipe(Effect.withSpan("mend.test.request")),
@@ -111,6 +112,32 @@ describe("a process with telemetry on", () => {
     expect(result.inside.traceId).not.toBe(result.request.traceId);
     expect(Option.isNone(result.inside.parent)).toBe(true);
     expect(Option.isNone(result.outside)).toBe(true);
+  });
+
+  it("links every trace detached work starts to the span it was started from", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const launch = yield* Effect.currentSpan;
+        const detached = Effect.gen(function* () {
+          const step = yield* Effect.currentSpan.pipe(Effect.withSpan("mend.test.step"));
+          const unit = yield* Effect.currentSpan.pipe(inOwnTrace("mend.test.unit"));
+          const child = yield* Effect.currentSpan.pipe(
+            Effect.withSpan("mend.test.child"),
+            Effect.withSpan("mend.test.parent"),
+          );
+          return { step, unit, child };
+        }).pipe(detachTrace);
+        return { launch, ...(yield* detached) };
+      }).pipe(
+        Effect.withSpan("mend.test.launch"),
+        Effect.withTracer(linkingRoots(Tracer.nativeTracer)),
+      ),
+    );
+    expect(result.step.traceId).not.toBe(result.launch.traceId);
+    expect(result.step.links.map((link) => link.span.spanId)).toEqual([result.launch.spanId]);
+    expect(result.unit.links.map((link) => link.span.spanId)).toEqual([result.launch.spanId]);
+    // Only a trace's first span carries the link; its children are in that trace.
+    expect(result.child.links).toEqual([]);
   });
 
   it("links nothing to a disabled span", () => {

@@ -8,23 +8,45 @@ import { Effect } from "effect";
  * trace. sealant's queues carry the same envelope.
  */
 export const TRACE_KEY = "_trace";
+/** Set beside `_trace` when the job's attempts are traces of their own, linked to it. */
+export const TRACE_LINK_KEY = "_traceLink";
 
-/** `payload` with the current span's context under `_trace`, or as it is outside any span. */
+/**
+ * `payload` with the current span's context under `_trace`, or as it is outside any span; with
+ * `_traceLink` when its attempts should link to that span instead of joining its trace.
+ */
 export const withTraceEnvelope = (
   payload: Record<string, unknown>,
+  relation: "continue" | "link" = "continue",
 ): Effect.Effect<Record<string, unknown>> =>
   Effect.map(currentTraceCarrier, (carrier) =>
-    carrier === undefined ? payload : { ...payload, [TRACE_KEY]: carrier },
+    carrier === undefined
+      ? payload
+      : {
+          ...payload,
+          [TRACE_KEY]: carrier,
+          ...(relation === "link" ? { [TRACE_LINK_KEY]: true } : {}),
+        },
   );
 
-/** A job's data without its envelope, for the handler, and the span the envelope names. */
+/**
+ * A job's data without its envelope, for the handler, the span the envelope names, and whether
+ * its attempts link to that span rather than run inside its trace.
+ */
 export const openEnvelope = (
   data: unknown,
-): { readonly payload: unknown; readonly parent: ReturnType<typeof spanOfCarrier> } => {
+): {
+  readonly payload: unknown;
+  readonly parent: ReturnType<typeof spanOfCarrier>;
+  readonly link: boolean;
+} => {
   if (typeof data !== "object" || data === null || Array.isArray(data) || !(TRACE_KEY in data))
-    return { payload: data, parent: undefined };
-  const { [TRACE_KEY]: carrier, ...payload } = data;
-  return { payload, parent: spanOfCarrier(carrier) };
+    return { payload: data, parent: undefined, link: false };
+  const { [TRACE_KEY]: carrier, ...rest } = data;
+  const parent = spanOfCarrier(carrier);
+  if (!(TRACE_LINK_KEY in rest)) return { payload: rest, parent, link: false };
+  const { [TRACE_LINK_KEY]: link, ...payload } = rest;
+  return { payload, parent, link: link === true };
 };
 
 /** What the consumer knows of an attempt. pg-boss counts retries from 0. */
@@ -37,15 +59,16 @@ export interface JobAttempt {
 }
 
 /**
- * One attempt of a job: a CONSUMER span parented on the job's publisher, or a trace of its own for
- * a job enqueued with none (or by an older Mend), with the queue, the attempt and how long the job
+ * One attempt of a job: a CONSUMER span parented on the job's publisher, a trace of its own linked
+ * to the publisher for a job queued to link (`JobSpec.trace`), or a trace of its own for a job
+ * enqueued with none (or by an older Mend), with the queue, the attempt and how long the job
  * waited. A failed attempt is reported once, with its trace, before pg-boss retries it.
  */
 export const processAttempt = (
   attempt: JobAttempt,
   handler: (payload: unknown) => Effect.Effect<void>,
 ): Effect.Effect<void> => {
-  const { payload, parent } = openEnvelope(attempt.data);
+  const { payload, parent, link } = openEnvelope(attempt.data);
   const number = (attempt.retryCount ?? 0) + 1;
   return Effect.gen(function* () {
     if (attempt.createdOn !== undefined) {
@@ -63,7 +86,11 @@ export const processAttempt = (
   }).pipe(
     Effect.withSpan("mend.job.process", {
       kind: "consumer",
-      ...(parent === undefined ? { root: true } : { parent }),
+      ...(parent === undefined
+        ? { root: true }
+        : link
+          ? { root: true, links: [{ span: parent, attributes: {} }] }
+          : { parent }),
       attributes: {
         "messaging.system": "pg-boss",
         "messaging.destination.name": attempt.queue,

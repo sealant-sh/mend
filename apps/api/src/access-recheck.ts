@@ -2,6 +2,7 @@ import { accessKeyIdOf, deviceIdOf } from "@mend/api-contracts";
 import type { TicketCredential } from "@mend/db";
 import type { OrganizationId } from "@mend/domain";
 import { forkSealantBackground } from "@mend/sealant";
+import { quietWhenIdle } from "@mend/telemetry";
 import {
   Array as Arr,
   Cause,
@@ -320,10 +321,13 @@ export const makeAccessRecheck = <A extends Admission, Refusal>(
         const selection = selectionOf(signal);
         return selection === null ? Effect.void : supervisedRecheck(selection);
       }),
+      // A recheck that ends nobody's access leaves no trace (SLNT-1404).
+      quietWhenIdle,
       Effect.forkScoped,
     );
     yield* supervisedRecheck({ _tag: "All" }).pipe(
       Effect.repeat(Schedule.fixed(timing.sweepEvery)),
+      quietWhenIdle,
       Effect.forkScoped,
     );
     yield* Effect.addFinalizer(() => stopAll(registry, { _tag: "Unavailable" }));

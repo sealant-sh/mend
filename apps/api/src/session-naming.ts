@@ -149,6 +149,7 @@ export const nameOnMessage = (session: {
           idempotencyKey: `name-session:${session.id}:message`,
           retryDelaySeconds: 30,
           retryLimit: 3,
+          trace: "link",
         });
       }).pipe(
         Effect.catchCause((cause) =>

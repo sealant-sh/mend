@@ -449,6 +449,8 @@ export const makeSessionStart = Effect.gen(function* () {
         startAfterSeconds: inlineNamePrompt === null ? 45 : 0,
         retryDelaySeconds: 30,
         retryLimit: 6,
+        // Runs and retries for minutes after the start answered: its own traces (SLNT-1393).
+        trace: "link",
       });
     }).pipe(
       Effect.catchCause((cause) =>

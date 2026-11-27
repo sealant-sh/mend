@@ -19,6 +19,7 @@ import {
 } from "@mend/domain/workbench";
 import { forkSealantBackground } from "@mend/sealant";
 import { SessionEngine, WorktreeReads } from "@mend/sessions";
+import { quietWhenIdle } from "@mend/telemetry";
 import {
   Cause,
   Clock,
@@ -259,6 +260,8 @@ export const previewPreparation = (
               return again.delete(sessionId) ? look(sessionId) : Effect.void;
             }),
           ),
+          // A look that prepares nothing leaves no trace (SLNT-1404).
+          quietWhenIdle,
           forkSealantBackground(scope),
           Effect.asVoid,
         );
@@ -272,6 +275,7 @@ export const previewPreparation = (
           ),
         ),
         Effect.repeat(Schedule.spaced(options.sweepInterval ?? PREPARATION_SWEEP_INTERVAL)),
+        quietWhenIdle,
       ),
     );
     yield* events.pipe(

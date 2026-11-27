@@ -23,6 +23,7 @@ import {
 } from "@mend/domain/workbench";
 import { CaptureRuntime, WorktreeReads } from "@mend/sessions";
 import type { GitError } from "@mend/store";
+import { quietWhenIdle } from "@mend/telemetry";
 import { Cause, Duration, Effect, FiberMap, Layer, Schema, Stream } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
@@ -509,6 +510,8 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
           Effect.annotateLogs({ cause: Cause.pretty(cause) }),
         ),
       ),
+      // An event that prepares nothing leaves no trace (SLNT-1404).
+      quietWhenIdle,
       Effect.forkScoped,
     );
   });

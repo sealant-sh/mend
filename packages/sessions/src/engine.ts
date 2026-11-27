@@ -404,6 +404,7 @@ import {
   sessionRuntimeOfferOf,
   SourcePolicy,
 } from "@mend/store";
+import { inOwnTrace, quietWhenIdle, traced, untraced } from "@mend/telemetry";
 import type {
   CreateOptions,
   Harness,
@@ -2329,6 +2330,13 @@ const CLAIMED_STANDBY_WORDS = [
 /** A session whose launch gave its claimed standby up, once that standby ended with nothing. */
 const CLAIMED_STANDBY_ENDED =
   "launch failed: the claimed standby never took this session's worktree · this session's command never ran · the standby ended with nothing of the session on it · start the session again";
+
+/**
+ * How long a drain's span covers its passes (`runDrain`): a drain that saves is done well inside
+ * it, and one that stalls (`DEFAULT_CAPTURE_DRAIN_STALL_SECONDS`) runs its later passes as traces
+ * of their own, so no span stays open past about ten minutes (SLNT-1404).
+ */
+const DRAIN_SPAN_BUDGET_MS = 5 * 60_000;
 
 const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
   Schedule.modifyDelay(({ duration }) =>
@@ -7315,383 +7323,429 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return "terminated" as const;
       });
 
-      const runDrain = Effect.fn("SessionEngine.runDrain")(function* (
-        sessionId: SessionId,
+      /** What a drain carries from one pass to the next. */
+      interface DrainState {
+        previous: CaptureReading | null;
+        progressAtMs: number;
+        begun: boolean;
+        standbyLooked: boolean;
+      }
+
+      /**
+       * One pass of a drain: its outcome, or null while the executor is still flushing and the
+       * drain asks again after `drainPolicy.pollInterval`.
+       */
+      const drainPass = Effect.fnUntraced(function* (
+        session: Session,
         workspaceId: SealantWorkspaceId,
         reason: CaptureDrainReason,
         force: boolean,
+        state: DrainState,
       ) {
-        const session = yield* sessions.byId(sessionId);
-        let previous: CaptureReading | null = null;
-        let progressAtMs = clock.currentTimeMillisUnsafe();
-        let begun = false;
-        let standbyLooked = false;
-        while (true) {
-          if (discards.has(workspaceId)) return "discarded" as const;
-          const lookup = yield* lookupWorkspace(workspaceId);
-          if (lookup.kind === "gone") {
-            if (begun) {
-              yield* Effect.logWarning(
-                "session engine: capture drain · the workspace went while draining",
-              ).pipe(
-                Effect.annotateLogs({
-                  sessionId,
-                  workspaceId,
-                  reason,
-                  status: lookup.status,
-                  pending: previous?.pending ?? null,
-                }),
-              );
-            }
-            // Ended without Mend: how it ended, as observed (read while its lease still names
-            // it), is what a settled session reads.
-            const current = yield* sessions
-              .byId(sessionId)
-              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-            const end =
-              current !== null && current.sealantWorkspaceId === workspaceId
-                ? yield* executorEndOfSession(current, workspaceId)
-                : null;
-            // What the Stop put off runs before the lease goes with the tidy, on the drain's
-            // last reading of the executor: a FINAL that registered the head before it went
-            // leaves a readable head (`flushed`, the harvest reads it); none leaves an unflushed
-            // checkpoint and no harvest (`refused`). There is no later round: every piece is
-            // waited for.
-            yield* runDeferred(
-              workspaceId,
-              deferredEvidence.get(workspaceId) ?? lastReadings.get(workspaceId) ?? "refused",
-              null,
-              true,
-            );
-            yield* tidyAfterGone(sessionId, workspaceId);
-            if (end !== null && current !== null) {
-              const confirmed = yield* confirmedExecutorEnd(current, end);
-              yield* restateSettled(sessionId, {
-                outcome: confirmed.outcome,
-                words: confirmed.summary,
-              });
-              if (endedOutsideMend.delete(workspaceId) && confirmed.outcome === "stopped") {
-                yield* sayEndedOutsideMend(sessionId, confirmed.summary);
-              }
-            }
-            yield* removeIfRequested(sessionId);
-            return "gone" as const;
-          }
-          if (!begun) {
-            begun = true;
-            // Durable first, then the in-use look: a join reads the intent and stays out
-            // (`leaseHolderWorkspace`), and whatever started before it is seen here.
-            yield* sessions.beginCaptureDrain(sessionId, reason, new Date(progressAtMs));
-            // With the intent durable, a next round is owed: from here the drain holds what the
-            // Stop put off (a round that saves runs it before the executor goes; a kept round
-            // leaves it for the next), and nothing holds it without an intent to come back.
-            queueHeld.add(workspaceId);
-            // An executor already sent a final flush ended whatever ran in it and admits nothing
-            // new: whatever reads live there is stale, and the drain goes on.
-            const ending = yield* workspaceFinalFlushed(session.worktreeId, workspaceId);
-            if (!force && !ending && lookup.kind === "found") {
-              const inUse = yield* workspaceInUse(workspaceId);
-              if (inUse > 0) {
-                // Not flushed at all: what the Stop put off flushes for itself, as it did
-                // (`none`), detached, and before the intent goes, so a request that gives up here
-                // leaves nothing queued without a consumer (Astra reviews, 2026-10-03).
-                yield* runDeferredDetached(workspaceId, "none");
-                yield* endDrain(sessionId);
-                yield* Effect.logInfo(
-                  "session engine: capture drain · the workspace is in use · nothing stopped",
-                ).pipe(Effect.annotateLogs({ sessionId, workspaceId, leases: inUse }));
-                return "in-use" as const;
-              }
-            }
-          }
-          // Ended on its runtime and kept by the platform (e2e run 5): no daemon answers a final
-          // flush. sealant's own stop says what it is — ended, or retained for recovery — and only
-          // an end it confirms releases the lease and the executor's token; kept, both stay for
-          // the recovery boot, and the drain reads `not saved · executor kept for recovery`.
-          if (lookup.kind === "kept") {
-            // sealant's stop below may confirm an end and release the lease: what the Stop put off
-            // runs first, on whatever the drain last read of the executor.
-            if (
-              !(yield* runDeferred(
-                workspaceId,
-                deferredEvidence.get(workspaceId) ?? lastReadings.get(workspaceId) ?? "refused",
-                drainPolicy.deferredWorkLimit,
-                true,
-              ))
-            ) {
-              yield* recordKept(
-                sessionId,
-                workspaceId,
-                "the stop's checkpoint or harvest has not finished",
-                false,
-              );
-              return "kept" as const;
-            }
-            const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
-            if (terminated.ended) {
-              yield* endDrain(sessionId);
-              // sealant ended it on the seal Mend attested and it accepted: saved (e2e run 6).
-              if (terminated.saved !== null) {
-                yield* restateSettled(sessionId, {
-                  outcome: "stopped",
-                  words: executorSavedWords(terminated.saved),
-                });
-                if (endedOutsideMend.delete(workspaceId)) {
-                  yield* sayEndedOutsideMend(
-                    sessionId,
-                    `stopped outside Mend · ${executorSavedWords(terminated.saved)}`,
-                  );
-                }
-              }
-              yield* removeIfRequested(sessionId);
-              return "gone" as const;
-            }
-            yield* recordKept(
-              sessionId,
-              workspaceId,
-              terminated.retained?.reason ?? `the platform reports it ${lookup.status}`,
-            );
-            return "kept" as const;
-          }
-          // A runtime that is not ready yet (a launch still starting, or one whose worker died
-          // after it started — sealant adopts it as retained once its launch lease lapses) has no
-          // daemon to flush: kept for now, looked at again on the kept drain's backoff, never
-          // asked every poll.
-          if (capture !== null && lookup.kind === "found" && lookup.status !== "ready") {
-            yield* recordKept(
-              sessionId,
-              workspaceId,
-              `executor not ready · ${lookup.status}`,
-              false,
-            );
-            return "kept" as const;
-          }
-          // A claimed standby whose re-plan never took is discarded, never flushed: its final
-          // flush cannot save (SLNT-1053). Looked at once per drain; the reaper taking a kept
-          // drain up again looks again.
-          if (capture !== null && lookup.kind === "found" && !standbyLooked) {
-            standbyLooked = true;
-            const discarded = yield* discardStandbyNeverClaimed(session, lookup.workspace, reason);
-            if (discarded !== null) return discarded;
-          }
-          // Recorded before it is sent: from here on this executor is ending, whatever the
-          // answer, and nothing is started in it again.
-          if (lookup.kind === "found") yield* sessions.markFinalFlush(sessionId, workspaceId);
-          // A FINAL answered a moment ago (the harvest right before this drain) stands for this
-          // round's when it did not complete: one FINAL per kept round, not two. A completed one
-          // is asked again — complete means current (cross-repo decision 7): the disk may have
-          // changed since, and sealantd says so (`changed`) only when asked.
-          const recent: { readonly reading: CaptureReading; readonly atMs: number } | undefined =
-            previous === null ? recentFinals.get(workspaceId) : undefined;
-          const reused: CaptureReading | null =
-            recent !== undefined &&
-            clock.currentTimeMillisUnsafe() - recent.atMs <= FINAL_ANSWER_REUSE_MS &&
-            !captureSaved(recent.reading)
-              ? recent.reading
-              : null;
-          if (reused !== null) recentFinals.delete(workspaceId);
-          const askedAs = reused !== null ? 0 : nextAsk();
-          const reading: CaptureReading | null =
-            lookup.kind !== "found"
-              ? null
-              : reused !== null
-                ? reused
-                : yield* observeCaptureFlush(
-                    session,
-                    lookup.workspace,
-                    `drain · ${reason}`,
-                    drainPolicy.flushTimeout,
-                    "final",
-                  ).pipe(
-                    // The drain's own answer stands for nobody's later round: every kept round
-                    // asks (the harvest it once stood beside is put off until it, decision 50).
-                    Effect.tap(() => Effect.sync(() => recentFinals.delete(workspaceId))),
-                  );
-          const nowMs = clock.currentTimeMillisUnsafe();
-          const receivedAt = new Date(
-            reused !== null && recent !== undefined ? recent.atMs : nowMs,
-          );
-          // A completed answer is what the executor said; saved is the one decision a seal and an
-          // end are read by (cross-repo decision 31, review 2026-09-28 (10) #7): the executor's
-          // kept evidence, bound to this executor and its epoch, with every answer asked of it
-          // published and a save made after every unsaved answer it keeps — a delayed complete
-          // never reads saved over a failure the executor answered after it, or one nothing
-          // orders against it. Read from the session as it is now, confirmed against the
-          // evidence version it was read at.
-          const readDirectEnd = Effect.gen(function* () {
-            const current = yield* sessions
-              .byId(sessionId)
-              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(session)));
-            return yield* confirmedExecutorEnd(
-              current,
-              yield* executorEndOfSession(current, workspaceId),
-            );
-          });
-          let directEnd =
-            reading !== null && captureSaved(reading) && lookup.kind === "found"
-              ? yield* readDirectEnd
-              : null;
-          // An answer asked of this executor before the final flush, and not published yet, leaves
-          // its end undecided (cross-repo decision 18): typically a status read a client's view
-          // asked just before the Stop, which the executor answered while the final flush ran and
-          // which arrives after it. Its answer is waited for and the end read again; asking for
-          // another final flush instead cost a Stop on the box 5.1 s (2026-10-05).
-          if (
-            directEnd !== null &&
-            directEnd.outcome !== "stopped" &&
-            directEnd.evidence?.settled === false
-          ) {
-            yield* Effect.logInfo(
-              "session engine: capture drain · the final flush answered complete · an answer asked before it is still on its way · waiting for it",
-            ).pipe(Effect.annotateLogs({ sessionId, workspaceId, reason }));
-            if (yield* awaitEvidenceSettled(workspaceId, EVIDENCE_SETTLE_WAIT)) {
-              directEnd = yield* readDirectEnd;
-            }
-          }
-          if (directEnd !== null && directEnd.outcome !== "stopped") {
+        const sessionId = session.id;
+        if (discards.has(workspaceId)) return "discarded" as const;
+        const lookup = yield* lookupWorkspace(workspaceId);
+        if (lookup.kind === "gone") {
+          if (state.begun) {
             yield* Effect.logWarning(
-              "session engine: capture drain · the final flush answered complete, but the executor's evidence does not read saved · not saved yet",
+              "session engine: capture drain · the workspace went while draining",
             ).pipe(
               Effect.annotateLogs({
                 sessionId,
                 workspaceId,
                 reason,
-                headN: reading?.headN ?? null,
-                // The executor's end in its own words names how it ended; a Stop made in Mend
-                // never reads `stopped outside Mend`.
-                evidence: endedOutsideMend.has(workspaceId)
-                  ? directEnd.summary
-                  : directEnd.summary.replace(/^stopped outside Mend · /, ""),
+                status: lookup.status,
+                pending: state.previous?.pending ?? null,
               }),
             );
           }
-          const answered = captureDrainStep({
-            previous,
-            reading,
-            progressAtMs,
-            nowMs,
-            stallSeconds: drainPolicy.stallSeconds,
-            evidenceSaved: directEnd !== null && directEnd.outcome === "stopped",
-          });
-          // The store's sealed record of this executor's completed final flush stands for an
-          // answer that was lost on the way (a relay that closed, a timeout, an SDK that drops
-          // the `complete` field): it is the same fact, made durable by the register. Never for
-          // an answer received that says otherwise (cross-repo decision 10, review 2026-09-28 (4)
-          // #1): an incomplete, changed, unreadable or pending answer is newer evidence than any
-          // seal, and a lost answer and a received failure are different facts.
-          const answerLost =
-            reading === null ||
-            (reading.complete === null && captureUnsavedWordsOf(reading) === null);
-          const sealed =
-            answered.kind !== "saved" &&
-            lookup.kind === "found" &&
-            answerLost &&
-            (yield* executorSealOf(session, workspaceId)) !== null;
-          const step: CaptureDrainStep = sealed ? { kind: "saved" } : answered;
-          // What saved it: the executor's own completed final flush, or the seal standing for a
-          // lost answer.
-          const savedBy =
-            answered.kind === "saved"
-              ? { at: new Date(nowMs), n: reading?.headN ?? null }
-              : sealed
-                ? yield* executorSealOf(session, workspaceId).pipe(
-                    Effect.map((seal) => (seal === null ? null : { at: seal.sealedAt, n: seal.n })),
-                  )
-                : null;
-          if (reading !== null) {
-            previous = reading;
-            lastReadings.set(workspaceId, reading);
-            lastReadingAsks.set(workspaceId, { ask: askedAs, at: receivedAt });
-            if (harvestReadyOf(reading) === true) deferredEvidence.set(workspaceId, reading);
-          }
-          if (step.kind === "saved" && lookup.kind === "found") {
-            yield* Effect.logInfo("session engine: capture drain · saved · terminating").pipe(
-              Effect.annotateLogs({ sessionId, workspaceId, reason }),
-            );
-            // What the end put off reads the final head now, before the executor goes and its
-            // lease with it: a checkpoint and a harvest read the store, never the workspace, but
-            // a successor launched after the release could register a newer head under them
-            // (Astra review, 2026-10-03). Saved on the store's seal with no answer from the
-            // executor: the head is sealed.
-            const word: DrainWord = reading ?? "sealed";
-            drainSaved.set(workspaceId, {
-              word,
-              captureN: reading?.headN ?? savedBy?.n ?? null,
-              at: reading === null ? (savedBy?.at ?? receivedAt) : receivedAt,
+          // Ended without Mend: how it ended, as observed (read while its lease still names
+          // it), is what a settled session reads.
+          const current = yield* sessions
+            .byId(sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          const end =
+            current !== null && current.sealantWorkspaceId === workspaceId
+              ? yield* executorEndOfSession(current, workspaceId)
+              : null;
+          // What the Stop put off runs before the lease goes with the tidy, on the drain's
+          // last reading of the executor: a FINAL that registered the head before it went
+          // leaves a readable head (`flushed`, the harvest reads it); none leaves an unflushed
+          // checkpoint and no harvest (`refused`). There is no later round: every piece is
+          // waited for.
+          yield* runDeferred(
+            workspaceId,
+            deferredEvidence.get(workspaceId) ?? lastReadings.get(workspaceId) ?? "refused",
+            null,
+            true,
+          );
+          yield* tidyAfterGone(sessionId, workspaceId);
+          if (end !== null && current !== null) {
+            const confirmed = yield* confirmedExecutorEnd(current, end);
+            yield* restateSettled(sessionId, {
+              outcome: confirmed.outcome,
+              words: confirmed.summary,
             });
-            if (harvestReadyOf(word) === true) deferredEvidence.set(workspaceId, word);
-            if (!(yield* runDeferred(workspaceId, word, drainPolicy.deferredWorkLimit, true))) {
-              // A piece ran past its limit (a writer lock held, a store not answering): it runs
-              // on, the executor stays, saved, and the next round waits for it and runs what is
-              // left after its FINAL (which snaps nothing). Nothing a Stop asked for is dropped,
-              // and no lease goes under it.
-              yield* recordKept(
-                sessionId,
-                workspaceId,
-                "saved · the stop's checkpoint or harvest has not finished",
-                false,
-              );
-              return "kept" as const;
+            if (endedOutsideMend.delete(workspaceId) && confirmed.outcome === "stopped") {
+              yield* sayEndedOutsideMend(sessionId, confirmed.summary);
             }
-            const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
-            if (terminated.retained !== null) {
-              // Mend read it saved; the platform does not confirm it and keeps the executor for
-              // recovery. That is its word to keep: the drain stays, kept, and asks again.
-              yield* recordKept(sessionId, workspaceId, terminated.retained.reason);
-              return "kept" as const;
-            }
-            const ended = terminated.ended;
-            // Saved, but its end not observed: the session stays `stopping` and the row stays
-            // until it is (the reaper looks again), so nothing the executor registers under goes
-            // early and nothing reads settled while its container may still run.
-            if (ended) {
+          }
+          yield* removeIfRequested(sessionId);
+          return "gone" as const;
+        }
+        if (!state.begun) {
+          state.begun = true;
+          // Durable first, then the in-use look: a join reads the intent and stays out
+          // (`leaseHolderWorkspace`), and whatever started before it is seen here.
+          yield* sessions.beginCaptureDrain(sessionId, reason, new Date(state.progressAtMs));
+          // With the intent durable, a next round is owed: from here the drain holds what the
+          // Stop put off (a round that saves runs it before the executor goes; a kept round
+          // leaves it for the next), and nothing holds it without an intent to come back.
+          queueHeld.add(workspaceId);
+          // An executor already sent a final flush ended whatever ran in it and admits nothing
+          // new: whatever reads live there is stale, and the drain goes on.
+          const ending = yield* workspaceFinalFlushed(session.worktreeId, workspaceId);
+          if (!force && !ending && lookup.kind === "found") {
+            const inUse = yield* workspaceInUse(workspaceId);
+            if (inUse > 0) {
+              // Not flushed at all: what the Stop put off flushes for itself, as it did
+              // (`none`), detached, and before the intent goes, so a request that gives up here
+              // leaves nothing queued without a consumer (Astra reviews, 2026-10-03).
+              yield* runDeferredDetached(workspaceId, "none");
               yield* endDrain(sessionId);
-              if (savedBy !== null) {
-                yield* restateSettled(sessionId, {
-                  outcome: "stopped",
-                  words: executorSavedWords(savedBy),
-                });
-                if (endedOutsideMend.delete(workspaceId)) {
-                  yield* sayEndedOutsideMend(
-                    sessionId,
-                    `stopped outside Mend · ${executorSavedWords(savedBy)}`,
-                  );
-                }
-              }
-              yield* removeIfRequested(sessionId);
-            } else {
-              yield* sessions.endCaptureDrain(sessionId);
+              yield* Effect.logInfo(
+                "session engine: capture drain · the workspace is in use · nothing stopped",
+              ).pipe(Effect.annotateLogs({ sessionId, workspaceId, leases: inUse }));
+              return "in-use" as const;
             }
-            // Only an observed end is `terminated`; a stop the platform took and has not been seen
-            // to finish is said as such (review 2026-09-28 (19) #2).
-            return ended ? ("terminated" as const) : ("stop-requested" as const);
           }
-          if (step.kind !== "saved" && step.progressAtMs !== progressAtMs) {
-            progressAtMs = step.progressAtMs;
-            yield* sessions.recordCaptureDrainProgress(sessionId, new Date(progressAtMs));
-          }
-          if (step.kind === "not-saved") {
-            const first = yield* sessions.markCaptureNotSaved(sessionId, new Date(nowMs));
-            if (first) {
-              yield* Effect.logWarning(
-                "session engine: capture drain · not saved · workspace kept",
-              ).pipe(
-                Effect.annotateLogs({
-                  sessionId,
-                  workspaceId,
-                  reason,
-                  pending: previous?.pending ?? null,
-                  pendingBytes: previous?.pendingBytes ?? null,
-                  refused: previous?.refused ?? null,
-                  fenced: previous?.fenced ?? null,
-                  stallSeconds: drainPolicy.stallSeconds,
-                }),
-              );
-            }
+        }
+        // Ended on its runtime and kept by the platform (e2e run 5): no daemon answers a final
+        // flush. sealant's own stop says what it is — ended, or retained for recovery — and only
+        // an end it confirms releases the lease and the executor's token; kept, both stay for
+        // the recovery boot, and the drain reads `not saved · executor kept for recovery`.
+        if (lookup.kind === "kept") {
+          // sealant's stop below may confirm an end and release the lease: what the Stop put off
+          // runs first, on whatever the drain last read of the executor.
+          if (
+            !(yield* runDeferred(
+              workspaceId,
+              deferredEvidence.get(workspaceId) ?? lastReadings.get(workspaceId) ?? "refused",
+              drainPolicy.deferredWorkLimit,
+              true,
+            ))
+          ) {
+            yield* recordKept(
+              sessionId,
+              workspaceId,
+              "the stop's checkpoint or harvest has not finished",
+              false,
+            );
             return "kept" as const;
           }
-          yield* Effect.sleep(drainPolicy.pollInterval);
+          const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
+          if (terminated.ended) {
+            yield* endDrain(sessionId);
+            // sealant ended it on the seal Mend attested and it accepted: saved (e2e run 6).
+            if (terminated.saved !== null) {
+              yield* restateSettled(sessionId, {
+                outcome: "stopped",
+                words: executorSavedWords(terminated.saved),
+              });
+              if (endedOutsideMend.delete(workspaceId)) {
+                yield* sayEndedOutsideMend(
+                  sessionId,
+                  `stopped outside Mend · ${executorSavedWords(terminated.saved)}`,
+                );
+              }
+            }
+            yield* removeIfRequested(sessionId);
+            return "gone" as const;
+          }
+          yield* recordKept(
+            sessionId,
+            workspaceId,
+            terminated.retained?.reason ?? `the platform reports it ${lookup.status}`,
+          );
+          return "kept" as const;
         }
+        // A runtime that is not ready yet (a launch still starting, or one whose worker died
+        // after it started — sealant adopts it as retained once its launch lease lapses) has no
+        // daemon to flush: kept for now, looked at again on the kept drain's backoff, never
+        // asked every poll.
+        if (capture !== null && lookup.kind === "found" && lookup.status !== "ready") {
+          yield* recordKept(sessionId, workspaceId, `executor not ready · ${lookup.status}`, false);
+          return "kept" as const;
+        }
+        // A claimed standby whose re-plan never took is discarded, never flushed: its final
+        // flush cannot save (SLNT-1053). Looked at once per drain; the reaper taking a kept
+        // drain up again looks again.
+        if (capture !== null && lookup.kind === "found" && !state.standbyLooked) {
+          state.standbyLooked = true;
+          const discarded = yield* discardStandbyNeverClaimed(session, lookup.workspace, reason);
+          if (discarded !== null) return discarded;
+        }
+        // Recorded before it is sent: from here on this executor is ending, whatever the
+        // answer, and nothing is started in it again.
+        if (lookup.kind === "found") yield* sessions.markFinalFlush(sessionId, workspaceId);
+        // A FINAL answered a moment ago (the harvest right before this drain) stands for this
+        // round's when it did not complete: one FINAL per kept round, not two. A completed one
+        // is asked again — complete means current (cross-repo decision 7): the disk may have
+        // changed since, and sealantd says so (`changed`) only when asked.
+        const recent: { readonly reading: CaptureReading; readonly atMs: number } | undefined =
+          state.previous === null ? recentFinals.get(workspaceId) : undefined;
+        const reused: CaptureReading | null =
+          recent !== undefined &&
+          clock.currentTimeMillisUnsafe() - recent.atMs <= FINAL_ANSWER_REUSE_MS &&
+          !captureSaved(recent.reading)
+            ? recent.reading
+            : null;
+        if (reused !== null) recentFinals.delete(workspaceId);
+        const askedAs = reused !== null ? 0 : nextAsk();
+        const reading: CaptureReading | null =
+          lookup.kind !== "found"
+            ? null
+            : reused !== null
+              ? reused
+              : yield* observeCaptureFlush(
+                  session,
+                  lookup.workspace,
+                  `drain · ${reason}`,
+                  drainPolicy.flushTimeout,
+                  "final",
+                ).pipe(
+                  // The drain's own answer stands for nobody's later round: every kept round
+                  // asks (the harvest it once stood beside is put off until it, decision 50).
+                  Effect.tap(() => Effect.sync(() => recentFinals.delete(workspaceId))),
+                );
+        const nowMs = clock.currentTimeMillisUnsafe();
+        const receivedAt = new Date(reused !== null && recent !== undefined ? recent.atMs : nowMs);
+        // A completed answer is what the executor said; saved is the one decision a seal and an
+        // end are read by (cross-repo decision 31, review 2026-09-28 (10) #7): the executor's
+        // kept evidence, bound to this executor and its epoch, with every answer asked of it
+        // published and a save made after every unsaved answer it keeps — a delayed complete
+        // never reads saved over a failure the executor answered after it, or one nothing
+        // orders against it. Read from the session as it is now, confirmed against the
+        // evidence version it was read at.
+        const readDirectEnd = Effect.gen(function* () {
+          const current = yield* sessions
+            .byId(sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(session)));
+          return yield* confirmedExecutorEnd(
+            current,
+            yield* executorEndOfSession(current, workspaceId),
+          );
+        });
+        let directEnd =
+          reading !== null && captureSaved(reading) && lookup.kind === "found"
+            ? yield* readDirectEnd
+            : null;
+        // An answer asked of this executor before the final flush, and not published yet, leaves
+        // its end undecided (cross-repo decision 18): typically a status read a client's view
+        // asked just before the Stop, which the executor answered while the final flush ran and
+        // which arrives after it. Its answer is waited for and the end read again; asking for
+        // another final flush instead cost a Stop on the box 5.1 s (2026-10-05).
+        if (
+          directEnd !== null &&
+          directEnd.outcome !== "stopped" &&
+          directEnd.evidence?.settled === false
+        ) {
+          yield* Effect.logInfo(
+            "session engine: capture drain · the final flush answered complete · an answer asked before it is still on its way · waiting for it",
+          ).pipe(Effect.annotateLogs({ sessionId, workspaceId, reason }));
+          if (yield* awaitEvidenceSettled(workspaceId, EVIDENCE_SETTLE_WAIT)) {
+            directEnd = yield* readDirectEnd;
+          }
+        }
+        if (directEnd !== null && directEnd.outcome !== "stopped") {
+          yield* Effect.logWarning(
+            "session engine: capture drain · the final flush answered complete, but the executor's evidence does not read saved · not saved yet",
+          ).pipe(
+            Effect.annotateLogs({
+              sessionId,
+              workspaceId,
+              reason,
+              headN: reading?.headN ?? null,
+              // The executor's end in its own words names how it ended; a Stop made in Mend
+              // never reads `stopped outside Mend`.
+              evidence: endedOutsideMend.has(workspaceId)
+                ? directEnd.summary
+                : directEnd.summary.replace(/^stopped outside Mend · /, ""),
+            }),
+          );
+        }
+        const answered = captureDrainStep({
+          previous: state.previous,
+          reading,
+          progressAtMs: state.progressAtMs,
+          nowMs,
+          stallSeconds: drainPolicy.stallSeconds,
+          evidenceSaved: directEnd !== null && directEnd.outcome === "stopped",
+        });
+        // The store's sealed record of this executor's completed final flush stands for an
+        // answer that was lost on the way (a relay that closed, a timeout, an SDK that drops
+        // the `complete` field): it is the same fact, made durable by the register. Never for
+        // an answer received that says otherwise (cross-repo decision 10, review 2026-09-28 (4)
+        // #1): an incomplete, changed, unreadable or pending answer is newer evidence than any
+        // seal, and a lost answer and a received failure are different facts.
+        const answerLost =
+          reading === null ||
+          (reading.complete === null && captureUnsavedWordsOf(reading) === null);
+        const sealed =
+          answered.kind !== "saved" &&
+          lookup.kind === "found" &&
+          answerLost &&
+          (yield* executorSealOf(session, workspaceId)) !== null;
+        const step: CaptureDrainStep = sealed ? { kind: "saved" } : answered;
+        // What saved it: the executor's own completed final flush, or the seal standing for a
+        // lost answer.
+        const savedBy =
+          answered.kind === "saved"
+            ? { at: new Date(nowMs), n: reading?.headN ?? null }
+            : sealed
+              ? yield* executorSealOf(session, workspaceId).pipe(
+                  Effect.map((seal) => (seal === null ? null : { at: seal.sealedAt, n: seal.n })),
+                )
+              : null;
+        if (reading !== null) {
+          state.previous = reading;
+          lastReadings.set(workspaceId, reading);
+          lastReadingAsks.set(workspaceId, { ask: askedAs, at: receivedAt });
+          if (harvestReadyOf(reading) === true) deferredEvidence.set(workspaceId, reading);
+        }
+        if (step.kind === "saved" && lookup.kind === "found") {
+          yield* Effect.logInfo("session engine: capture drain · saved · terminating").pipe(
+            Effect.annotateLogs({ sessionId, workspaceId, reason }),
+          );
+          // What the end put off reads the final head now, before the executor goes and its
+          // lease with it: a checkpoint and a harvest read the store, never the workspace, but
+          // a successor launched after the release could register a newer head under them
+          // (Astra review, 2026-10-03). Saved on the store's seal with no answer from the
+          // executor: the head is sealed.
+          const word: DrainWord = reading ?? "sealed";
+          drainSaved.set(workspaceId, {
+            word,
+            captureN: reading?.headN ?? savedBy?.n ?? null,
+            at: reading === null ? (savedBy?.at ?? receivedAt) : receivedAt,
+          });
+          if (harvestReadyOf(word) === true) deferredEvidence.set(workspaceId, word);
+          if (!(yield* runDeferred(workspaceId, word, drainPolicy.deferredWorkLimit, true))) {
+            // A piece ran past its limit (a writer lock held, a store not answering): it runs
+            // on, the executor stays, saved, and the next round waits for it and runs what is
+            // left after its FINAL (which snaps nothing). Nothing a Stop asked for is dropped,
+            // and no lease goes under it.
+            yield* recordKept(
+              sessionId,
+              workspaceId,
+              "saved · the stop's checkpoint or harvest has not finished",
+              false,
+            );
+            return "kept" as const;
+          }
+          const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
+          if (terminated.retained !== null) {
+            // Mend read it saved; the platform does not confirm it and keeps the executor for
+            // recovery. That is its word to keep: the drain stays, kept, and asks again.
+            yield* recordKept(sessionId, workspaceId, terminated.retained.reason);
+            return "kept" as const;
+          }
+          const ended = terminated.ended;
+          // Saved, but its end not observed: the session stays `stopping` and the row stays
+          // until it is (the reaper looks again), so nothing the executor registers under goes
+          // early and nothing reads settled while its container may still run.
+          if (ended) {
+            yield* endDrain(sessionId);
+            if (savedBy !== null) {
+              yield* restateSettled(sessionId, {
+                outcome: "stopped",
+                words: executorSavedWords(savedBy),
+              });
+              if (endedOutsideMend.delete(workspaceId)) {
+                yield* sayEndedOutsideMend(
+                  sessionId,
+                  `stopped outside Mend · ${executorSavedWords(savedBy)}`,
+                );
+              }
+            }
+            yield* removeIfRequested(sessionId);
+          } else {
+            yield* sessions.endCaptureDrain(sessionId);
+          }
+          // Only an observed end is `terminated`; a stop the platform took and has not been seen
+          // to finish is said as such (review 2026-09-28 (19) #2).
+          return ended ? ("terminated" as const) : ("stop-requested" as const);
+        }
+        if (step.kind !== "saved" && step.progressAtMs !== state.progressAtMs) {
+          state.progressAtMs = step.progressAtMs;
+          yield* sessions.recordCaptureDrainProgress(sessionId, new Date(state.progressAtMs));
+        }
+        if (step.kind === "not-saved") {
+          const first = yield* sessions.markCaptureNotSaved(sessionId, new Date(nowMs));
+          if (first) {
+            yield* Effect.logWarning(
+              "session engine: capture drain · not saved · workspace kept",
+            ).pipe(
+              Effect.annotateLogs({
+                sessionId,
+                workspaceId,
+                reason,
+                pending: state.previous?.pending ?? null,
+                pendingBytes: state.previous?.pendingBytes ?? null,
+                refused: state.previous?.refused ?? null,
+                fenced: state.previous?.fenced ?? null,
+                stallSeconds: drainPolicy.stallSeconds,
+              }),
+            );
+          }
+          return "kept" as const;
+        }
+        return null;
+      });
+
+      /**
+       * Drain `workspaceId`'s executor, pass after pass, until it is saved and terminated, kept, or
+       * gone. Its span (`mend.session.run_drain`) covers the passes of its first five minutes, the
+       * whole drain of a session that saves; a drain that stalls runs its later passes as traces of
+       * their own, linked to it, so no span waits out the stall (SLNT-1404).
+       */
+      const runDrain = Effect.fnUntraced(function* (
+        sessionId: SessionId,
+        workspaceId: SealantWorkspaceId,
+        reason: CaptureDrainReason,
+        force: boolean,
+      ) {
+        const attributes = { "mend.session_id": sessionId, "sealant.workspace_id": workspaceId };
+        const span = yield* Effect.makeSpan("SessionEngine.runDrain", { attributes });
+        const startedAtMs = clock.currentTimeMillisUnsafe();
+        let spanOpen = true;
+        const endSpan = (exit: Exit.Exit<unknown, unknown>) =>
+          Effect.sync(() => {
+            if (!spanOpen) return;
+            spanOpen = false;
+            span.end(clock.currentTimeNanosUnsafe(), exit);
+          });
+        return yield* Effect.gen(function* () {
+          const session = yield* sessions.byId(sessionId).pipe(Effect.withParentSpan(span));
+          const state: DrainState = {
+            previous: null,
+            progressAtMs: clock.currentTimeMillisUnsafe(),
+            begun: false,
+            standbyLooked: false,
+          };
+          while (true) {
+            if (spanOpen && clock.currentTimeMillisUnsafe() - startedAtMs >= DRAIN_SPAN_BUDGET_MS) {
+              span.attribute("mend.drain.passes_after", "own traces");
+              yield* endSpan(Exit.void);
+            }
+            const outcome = yield* drainPass(session, workspaceId, reason, force, state).pipe(
+              spanOpen
+                ? Effect.withParentSpan(span)
+                : inOwnTrace("mend.session.drain_pass", { origin: span, attributes }),
+            );
+            if (outcome !== null) return outcome;
+            yield* Effect.sleep(drainPolicy.pollInterval);
+          }
+        }).pipe(Effect.onExit((exit) => endSpan(exit)));
       });
 
       /**
@@ -10227,11 +10281,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
-      const supervise = Effect.fn("SessionEngine.supervise")(function* (
+      /**
+       * Follow a session's run for as long as it lives, then settle it (SLNT-1393). No span covers
+       * it: it runs for the session's whole life, detached from the launch that forked it
+       * (`forkSealantBackground`). Following the record is untraced, one write per entry; the
+       * first output and the run's end are each a trace of their own, linked to the launch.
+       */
+      const supervise = Effect.fnUntraced(function* (
         session: Session,
         sessionRun: SessionRun,
         sdkRun: SdkRun,
       ) {
+        const attributes = {
+          "mend.session_id": session.id,
+          "sealant.run_id": sessionRun.sealantRunId,
+        };
         // The first output the record carries is when the agent drew its first screen: its
         // process row says so and the session line stops saying it is starting. Stamped before
         // the cursor moves past it, so a restart that resumes after it has nothing to miss.
@@ -10241,7 +10305,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.gen(function* () {
               if (!firstOutputSeen && isOutputEntry(entry)) {
                 firstOutputSeen = true;
-                yield* noteFirstOutput(session.id, sessionRun.sealantRunId, entry.occurredAt);
+                yield* noteFirstOutput(session.id, sessionRun.sealantRunId, entry.occurredAt).pipe(
+                  inOwnTrace("mend.session.record_first_output", { attributes }),
+                  traced,
+                );
               }
               yield* sessionRuns.saveLastSeenSequence(sessionRun.sealantRunId, entry.sequence);
               // Denormalized latest-run progress for existing list/UI contracts only. Supervision
@@ -10257,9 +10324,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.annotateLogs({ sessionId: session.id, error: error.message }),
             ),
           ),
+          untraced,
         );
 
-        const settled = yield* sealant.waitRun(sdkRun);
+        // Polls the run until it ends, which can be hours: untraced.
+        const settled = yield* sealant.waitRun(sdkRun).pipe(untraced);
+        yield* settleSupervisedRun(session, sessionRun, settled).pipe(
+          inOwnTrace("mend.session.settle_run", { attributes }),
+        );
+      });
+
+      /** The supervised run ended as `settled`: record its agent's end, or settle the bare run. */
+      const settleSupervisedRun = Effect.fnUntraced(function* (
+        session: Session,
+        sessionRun: SessionRun,
+        settled: SdkRun,
+      ) {
         // The run ended, so the agent process recording it ended too. The PTY watcher races
         // this path; whichever observes the end first records it, and the other finds the row
         // already ended.
@@ -13609,8 +13689,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           yield* endProcess(shellProcess, "exited", exitCode);
         });
-      const watchProcess = (shellProcess: SessionProcess) =>
-        Effect.gen(function* () {
+      /**
+       * Watch a process until it ends: a poll every two seconds for the process's whole life,
+       * untraced (SLNT-1404). Its end, once seen, is a trace of its own, linked to the launch.
+       */
+      const watchProcess = (shellProcess: SessionProcess) => {
+        const endSeen = (exitCode: number | null) =>
+          endSeenProcess(shellProcess, exitCode).pipe(
+            inOwnTrace("mend.session.record_process_end", {
+              attributes: {
+                "mend.session_id": shellProcess.sessionId,
+                "mend.process_id": shellProcess.id,
+              },
+            }),
+            traced,
+          );
+        return Effect.gen(function* () {
           // Rows without a PTY (adopted Services) have their own supervisor.
           const ptyId = shellProcess.sealantSessionId;
           if (ptyId === null) {
@@ -13644,7 +13738,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   workspaceStatus !== "running" &&
                   workspaceStatus !== "ready"
                 ) {
-                  yield* endSeenProcess(shellProcess, null);
+                  yield* endSeen(null);
                   return;
                 }
                 yield* Effect.logWarning("session engine: process status unreachable").pipe(
@@ -13659,10 +13753,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             blindPolls = 0;
             if (status.status === "running" || status.status === "starting") continue;
-            yield* endSeenProcess(shellProcess, status.exitCode ?? null);
+            yield* endSeen(status.exitCode ?? null);
             return;
           }
         }).pipe(
+          untraced,
           // A control-plane outage is blindness, not exit evidence. Retry until the platform
           // authoritatively says the workspace or PTY is gone.
           Effect.retry({
@@ -13671,12 +13766,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }),
           Effect.catchTag("SealantPlatformError", (error) =>
             runIsGone(error)
-              ? endSeenProcess(shellProcess, null)
+              ? endSeen(null)
               : Effect.logWarning(
                   "session engine: process watcher stopped without exit evidence",
                 ).pipe(Effect.annotateLogs({ processId: shellProcess.id, error: error.message })),
           ),
         );
+      };
 
       /**
        * Read the harness's files on a fresh executor once, in the background, while the rest of
@@ -33162,6 +33258,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ),
           Effect.repeat(Schedule.spaced(Duration.minutes(10))),
+          quietWhenIdle,
         ),
         scope,
       );
@@ -33175,6 +33272,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ),
           Effect.repeat(Schedule.spaced(Duration.minutes(10))),
+          quietWhenIdle,
         ),
         scope,
       );
@@ -33221,6 +33319,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 Effect.repeat(Schedule.spaced(Duration.seconds(LEASE_REAPER_INTERVAL_SECONDS))),
               ),
             ),
+            // A pass that retired nothing leaves no trace (SLNT-1404).
+            quietWhenIdle,
           ),
           scope,
         );
@@ -33253,6 +33353,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             ),
             Effect.repeat(Schedule.spaced(drainPolicy.reaperInterval)),
+            // A pass that reaped nothing leaves no trace (SLNT-1404).
+            quietWhenIdle,
           ),
           scope,
         );
@@ -33268,6 +33370,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ),
           Effect.repeat(Schedule.spaced(Duration.seconds(20))),
+          // A look that saw no new agent leaves no trace (SLNT-1404).
+          quietWhenIdle,
         ),
         scope,
       );

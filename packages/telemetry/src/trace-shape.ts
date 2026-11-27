@@ -1,5 +1,7 @@
-import { Context, Effect, Layer, Option, References, Tracer } from "effect";
+import { Context, Effect, Fiber, Layer, Option, References, Tracer } from "effect";
 import { HttpClient } from "effect/http";
+
+import { QuietWhenIdle } from "./quiet-passes.ts";
 
 /**
  * The shape of a trace (SLNT-1404): a trace covers one thing a person or a timer asked for, and
@@ -30,7 +32,10 @@ export const tracingOff: Layer.Layer<never> = Layer.mergeAll(
  * no trace header on a request it makes, which a disabled span would otherwise fill with `noop`.
  */
 export const untraced = <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-  self.pipe(Effect.withTracerEnabled(false), Effect.provideService(Tracer.DisablePropagation, true));
+  self.pipe(
+    Effect.withTracerEnabled(false),
+    Effect.provideService(Tracer.DisablePropagation, true),
+  );
 
 /**
  * `self` traced again inside an `untraced` region, as this process traces: a turn's stages are
@@ -63,8 +68,33 @@ export const currentOrigin: Effect.Effect<Tracer.AnySpan | undefined> = Effect.m
 export const linksTo = (origin: Tracer.AnySpan | undefined): Array<Tracer.SpanLink> =>
   origin === undefined || !isTraceable(origin) ? [] : [{ span: origin, attributes: {} }];
 
+/**
+ * The span the detached work around here serves (`detachTrace`): every trace that work starts is
+ * linked to it (`linkingRoots`), so a supervisor's or a poller's traces still lead back to the
+ * request or the launch that started it.
+ */
+export const TraceOrigin = Context.Reference<Tracer.AnySpan | undefined>(
+  "@mend/telemetry/TraceOrigin",
+  { defaultValue: () => undefined },
+);
+
+/**
+ * `tracer`, linking each root span it makes inside detached work to that work's origin
+ * (`TraceOrigin`). A root made with links of its own keeps them.
+ */
+export const linkingRoots = (tracer: Tracer.Tracer): Tracer.Tracer =>
+  Tracer.make({
+    span: (options) => {
+      if (Option.isSome(options.parent) || options.links.length > 0) return tracer.span(options);
+      const origin = Fiber.getCurrent()?.getRef(TraceOrigin);
+      const links = linksTo(origin);
+      return tracer.span(links.length === 0 ? options : { ...options, links });
+    },
+    ...(tracer.context === undefined ? {} : { context: tracer.context }),
+  });
+
 export interface OwnTraceOptions {
-  /** The span this work serves: linked, never its parent. */
+  /** The span this work serves: linked, never its parent. The detached work's origin otherwise. */
   readonly origin?: Tracer.AnySpan | undefined;
   /** IDs and enums only (`mend.session_id`), never content. */
   readonly attributes?: Record<string, unknown>;
@@ -72,29 +102,38 @@ export interface OwnTraceOptions {
 }
 
 /**
- * `self` as the first span of a trace of its own, `name`, linked to `options.origin`: one unit of
- * long-lived work (one poll, one sweep pass, one delivered batch), so the trace ends when the unit
- * does.
+ * `self` as the first span of a trace of its own, `name`, linked to `options.origin` (or to the
+ * origin of the detached work it runs in): one unit of long-lived work (one poll, one sweep pass,
+ * one delivered batch), so the trace ends when the unit does.
  */
 export const inOwnTrace =
   (name: string, options: OwnTraceOptions = {}) =>
   <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-    Effect.withSpan(self, name, {
-      root: true,
-      links: linksTo(options.origin),
-      ...(options.attributes === undefined ? {} : { attributes: options.attributes }),
-      ...(options.kind === undefined ? {} : { kind: options.kind }),
+    Effect.gen(function* () {
+      const detachedFrom = yield* TraceOrigin;
+      return yield* Effect.withSpan(self, name, {
+        root: true,
+        links: linksTo(options.origin ?? detachedFrom),
+        ...(options.attributes === undefined ? {} : { attributes: options.attributes }),
+        ...(options.kind === undefined ? {} : { kind: options.kind }),
+      });
     });
 
 /**
- * `self` cut loose from the trace it was started in: a span it opens starts a trace of its own.
- * For a fiber that lives on after the request that forked it (a stream, a poller, a supervisor),
- * whose units of work each open their own trace (`inOwnTrace`). Without it, every request such a
- * fiber makes joins the trace that forked it, for as long as the fiber lives.
+ * `self` cut loose from the trace it was started in: a span it opens starts a trace of its own,
+ * linked to the span it was started from (`TraceOrigin`). For a fiber that lives on after the
+ * request that forked it (a stream, a poller, a supervisor), whose units of work each open their
+ * own trace. Without it, every request such a fiber makes joins the trace that forked it, for as
+ * long as the fiber lives.
  */
 export const detachTrace = <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-  Effect.updateContext(self, (context: Context.Context<R>) => {
-    const services = new Map(context.mapUnsafe);
-    services.delete(Tracer.ParentSpan.key);
-    return Context.makeUnsafe<R>(services);
-  });
+  Effect.flatMap(currentOrigin, (current) =>
+    Effect.updateContext(self, (context: Context.Context<R>) => {
+      const services = new Map(context.mapUnsafe);
+      services.delete(Tracer.ParentSpan.key);
+      // Work forked from a timer's pass is work, sent whatever it does (`quietWhenIdle`).
+      services.delete(QuietWhenIdle.key);
+      if (current !== undefined) services.set(TraceOrigin.key, current);
+      return Context.makeUnsafe<R>(services);
+    }),
+  );

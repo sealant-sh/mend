@@ -4,9 +4,10 @@ import { OtlpExporter, OtlpLogger, OtlpSerialization, OtlpTracer } from "effect/
 
 import { enrichingSerialization } from "./enrich.ts";
 import { ErrorReporter, makeSentryReporter, type SentryReporterOptions } from "./errors.ts";
+import { quietIdlePasses } from "./quiet-passes.ts";
 import { scrubbingSerialization } from "./scrub.ts";
 import { type TelemetrySettings, TelemetrySettingsError, telemetrySettings } from "./settings.ts";
-import { tracingOff } from "./trace-shape.ts";
+import { linkingRoots, tracingOff } from "./trace-shape.ts";
 
 export interface TelemetryService {
   /** `service.name` on every span and log, and the `service` tag on every error. */
@@ -165,7 +166,9 @@ export const enabledTelemetryLayer = (
   const tracer = Layer.effect(
     Tracer.Tracer,
     Effect.map(OtlpTracer.make({ ...shared, url: `${settings.otlp.baseUrl}/v1/traces` }), (otlp) =>
-      withoutWrapperSpans(sampledRoots(settings.tracesSampleRate)(otlp)),
+      withoutWrapperSpans(
+        linkingRoots(quietIdlePasses(sampledRoots(settings.tracesSampleRate)(otlp))),
+      ),
     ),
   );
   const logger = Logger.layer(

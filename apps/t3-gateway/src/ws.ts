@@ -1,3 +1,4 @@
+import { requestOpened } from "@mend/network/http-observation";
 import {
   type EnvironmentAuthInvalidError,
   type EnvironmentInternalError,
@@ -5,7 +6,6 @@ import {
   ORCHESTRATION_PROTOCOL_VERSION,
   WsRpcGroup,
 } from "@mend/t3-contracts";
-import { requestOpened } from "@mend/network/http-observation";
 import { detachTrace } from "@mend/telemetry";
 import * as Effect from "effect/Effect";
 import * as HttpRouter from "effect/http/HttpRouter";

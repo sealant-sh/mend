@@ -20,7 +20,9 @@ interface Seen {
  * A real Node server (SLNT-1404): it writes a stream's body inside the request's fiber, so a span
  * that ended with the handler would still be the parent of everything the body does.
  */
-const serve = Effect.fnUntraced(function* (routes: Layer.Layer<never, never, HttpRouter.HttpRouter>) {
+const serve = Effect.fnUntraced(function* (
+  routes: Layer.Layer<never, never, HttpRouter.HttpRouter>,
+) {
   const seen: Array<Seen> = [];
   const ended: Array<string> = [];
   const tracer = Tracer.make({

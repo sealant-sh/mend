@@ -78,6 +78,7 @@ import {
 } from "@mend/slack";
 import { SlackApi, type SlackApiError, updateRefusalOf } from "@mend/slack/client";
 import { SecretCipher } from "@mend/store";
+import { quietWhenIdle } from "@mend/telemetry";
 import { Cause, Clock, Deferred, Effect, Layer, Queue, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -1082,7 +1083,8 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         );
         for (const waiter of entry?.waiters ?? []) yield* Deferred.succeed(waiter, undefined);
       }
-    }).pipe(Effect.forkIn(scope));
+      // A look that reports nothing leaves no trace (SLNT-1404).
+    }).pipe(quietWhenIdle, Effect.forkIn(scope));
 
     /**
      * The threads a report reaches. A project's threads are looked at again only when its

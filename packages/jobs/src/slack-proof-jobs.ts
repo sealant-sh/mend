@@ -9,6 +9,7 @@ import { AgentTurnId, SessionId } from "@mend/domain";
 import type { ProofArtifact } from "@mend/domain/workbench";
 import { SlackApi, SlackApiError } from "@mend/slack/client";
 import { BlobStore, SecretCipher } from "@mend/store";
+import { quietWhenIdle } from "@mend/telemetry";
 import { Clock, Effect, Layer, Schedule, Schema } from "effect";
 
 import { JobRunner, type JobSpec } from "./job-runner.ts";
@@ -181,6 +182,8 @@ export const SlackProofWorkerLive: Layer.Layer<never, never, DeliveryServices | 
         Effect.provideContext(context),
         Effect.catchCause(() => Effect.logWarning("slack proof: reconciliation failed")),
         Effect.repeat(Schedule.spaced("30 seconds")),
+        // A pass that delivers nothing leaves no trace (SLNT-1404).
+        quietWhenIdle,
         Effect.forkScoped,
       );
     }),

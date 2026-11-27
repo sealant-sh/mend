@@ -29,15 +29,18 @@ export {
   TelemetrySettingsError,
   telemetrySettings,
 } from "./settings.ts";
+export { QuietWhenIdle, quietIdlePasses, quietWhenIdle } from "./quiet-passes.ts";
 export { carrierOf, currentTraceCarrier, spanOfCarrier, TraceCarrier } from "./trace-carrier.ts";
 export {
   currentOrigin,
   detachTrace,
   inOwnTrace,
   isTraceable,
+  linkingRoots,
   linksTo,
   type OwnTraceOptions,
   traced,
+  TraceOrigin,
   Tracing,
   tracingOff,
   untraced,

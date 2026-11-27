@@ -10,6 +10,7 @@ import {
   type Run,
 } from "@mend/domain";
 import { asSealantUser, SealantClient } from "@mend/sealant";
+import { untraced } from "@mend/telemetry";
 import type { Run as SdkRun } from "@sealant/sdk";
 import { opencode } from "@sealant/sdk";
 import { Effect, Layer, Option, Stream } from "effect";
@@ -302,9 +303,12 @@ export const runStarterLayer = Layer.effect(
             Effect.annotateLogs({ runId: run.id, error: error.message }),
           ),
         ),
+        // One write per entry for the run's whole life: untraced (SLNT-1404).
+        untraced,
       );
 
-      const settled = yield* sealant.waitRun(sdkRun);
+      // Polls the run until it ends: untraced.
+      const settled = yield* sealant.waitRun(sdkRun).pipe(untraced);
       if (settled.result.outcome === "completed") {
         yield* runs.settle(run.id, "completed", settled.result.summary ?? null);
         yield* issues.markReview(issue.id).pipe(Effect.ignore);

@@ -4,6 +4,7 @@ import type { Duplex } from "node:stream";
 import type { PreviewId, SealantWorkspaceId } from "@mend/domain";
 import { asSealantUser } from "@mend/sealant";
 import { type ForwardAdapter, WorkspaceCaller } from "@mend/sessions";
+import { quietWhenIdle } from "@mend/telemetry";
 import {
   Cause,
   Clock,
@@ -557,6 +558,8 @@ export const makePreviewGatewayLayer = (
 
       yield* supervised("preview gateway: idle sweep failed", activity.sweep).pipe(
         Effect.repeat(Schedule.spaced("10 seconds")),
+        // A pass that changes nothing leaves no trace (SLNT-1404).
+        quietWhenIdle,
         Effect.forkScoped,
       );
       const subscription = yield* bus.subscribe;
@@ -564,14 +567,17 @@ export const makePreviewGatewayLayer = (
         Stream.runForEach((signal) =>
           supervised("preview gateway: a refresh failed", pools.onSignal(signal)),
         ),
+        quietWhenIdle,
         Effect.forkScoped,
       );
       yield* supervised("preview gateway: a refresh failed", pools.refreshAll).pipe(
         Effect.repeat(Schedule.spaced(REFRESH_EVERY)),
+        quietWhenIdle,
         Effect.forkScoped,
       );
       yield* supervised("preview gateway: a lending sweep failed", pools.recheckAllLending).pipe(
         Effect.repeat(Schedule.spaced(LENDING_SWEEP_EVERY)),
+        quietWhenIdle,
         Effect.forkScoped,
       );
       yield* Effect.logInfo("preview gateway listening").pipe(
