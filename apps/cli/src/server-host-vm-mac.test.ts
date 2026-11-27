@@ -94,6 +94,14 @@ describe("macOS host-vm overlay and LaunchAgent plist", () => {
     expect(plist).toContain("<key>ProcessType</key>\n  <string>Interactive</string>");
     expect(plist).toContain("<string>127.0.0.1:7422</string>");
     expect(plist).toContain(`<string>${paths.tokenPath}</string>`);
+    expect(plist).toContain("<string>--vm-root</string>");
+    expect(plist).toContain(`<string>${paths.vmInstallDir}</string>`);
+    expect(plist).toContain("<string>--worker</string>");
+    expect(plist).toContain(
+      `<string>${path.join(paths.vmdCurrentLink, "sealant-vz-worker")}</string>`,
+    );
+    expect(plist).toContain("<string>--kernel</string>");
+    expect(plist).toContain(`<string>${path.join(paths.vmdCurrentLink, "Image")}</string>`);
   });
 });
 
