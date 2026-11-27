@@ -11,6 +11,7 @@
     "./handed-links": "./src/handed-links.ts",
     "./http-observation": "./src/http-observation.ts",
     "./secret-segments": "./src/secret-segments.ts",
+    "./url-template": "./src/url-template.ts",
     "./tunnel-client": "./src/tunnel-client.ts"
   },
   "scripts": {

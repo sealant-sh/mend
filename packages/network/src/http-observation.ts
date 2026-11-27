@@ -13,6 +13,7 @@ import {
 import { INVITATION_HEADER } from "./handed-links.ts";
 import { PAGE_VIEW_TOKEN_PARAM } from "./page-view.ts";
 import { CREDENTIAL_QUERY_PARAMETERS } from "./redact.ts";
+import { templatePath } from "./url-template.ts";
 
 /** The route of a request no route answered: none matched, or a middleware refused it first. */
 export const UNROUTED = "unrouted";
@@ -111,9 +112,9 @@ const failureOf = (outcome: Outcome): string | null => {
 };
 
 /**
- * A request no route matched has only its path to be named by: it goes on the span as `url.path`,
- * which the exporter templates into the span's name and never sends as it came
- * (`@mend/telemetry`'s `enrich.ts`).
+ * A request no route matched has only its path to be named by: the span takes it templated, as
+ * `url.template` (`/api/devices/:secret`, `/nowhere/:id`), never as it came, and the exporter names
+ * the span by it (`@mend/telemetry`'s `enrich.ts`).
  */
 const endSpan = (
   span: Tracer.Span,
@@ -123,7 +124,7 @@ const endSpan = (
 ) => {
   span.attribute("http.request.method", observation.method);
   span.attribute("http.route", observation.route);
-  if (observation.route === UNROUTED) span.attribute("url.path", path);
+  if (observation.route === UNROUTED) span.attribute("url.template", templatePath(path));
   if (observation.outcome.kind === "response")
     span.attribute("http.response.status_code", observation.outcome.status);
   const failure = failureOf(observation.outcome);

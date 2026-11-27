@@ -167,7 +167,7 @@ describe("what telemetry may send", () => {
       ),
     );
     expect((await handler(new Request("http://mend.internal/approve"))).status).toBe(204);
-    // No route of this server: the request is named by its path, templated.
+    // No route of this server: the request is named by its path, templated where it is observed.
     expect(
       (await handler(new Request(`http://mend.internal/api/me/cli-auth/${CODE}`))).status,
     ).toBe(404);
@@ -183,6 +183,7 @@ describe("what telemetry may send", () => {
     expect(names).toEqual(
       expect.arrayContaining([
         "GET /approve",
+        "GET /api/me/cli-auth/:secret",
         "GET /api/me/cli-auth/:code",
         "POST /api/me/cli-auth/:code/approve",
       ]),

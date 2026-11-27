@@ -1,10 +1,10 @@
 import { MEND_API_ROUTE_TEMPLATES } from "@mend/api-contracts/route-templates";
 import { UNROUTED } from "@mend/network/http-observation";
+import { pathOf, routeTemplates, templatePath } from "@mend/network/url-template";
 import type { OtlpResource, OtlpSerialization, OtlpTracer } from "effect/observability";
 
 import { SPAN_NAMES } from "./span-names.ts";
 import { summarizeSql } from "./sql-summary.ts";
-import { pathOf, routeTemplates, templatePath } from "./url-template.ts";
 
 /**
  * How Mend's spans read in Sentry (SLNT-1375). Sentry files an OTLP span under the operation in
@@ -181,23 +181,19 @@ interface Enriched {
 const API_ROUTES = routeTemplates(MEND_API_ROUTE_TEMPLATES);
 
 /**
- * A request no route matched (`UNROUTED`) is named by its path, templated: the observation records
- * the path only then, as `url.path`, and it never leaves here as it came.
+ * A request no route matched (`UNROUTED`) is named by its path, which the observation records only
+ * then, and only templated (`url.template`).
  */
 const httpServer = (span: Span, method: string): Enriched => {
   const route = stringOf(span.attributes, "http.route");
-  const path = stringOf(span.attributes, "url.path");
   const template =
     route !== undefined && route !== UNROUTED
       ? route
-      : path === undefined
-        ? "/*"
-        : templatePath(pathOf(path) ?? "/", API_ROUTES);
+      : (stringOf(span.attributes, "url.template") ?? "/*");
   const description = `${method} ${template}`;
   return {
     name: description,
     set: { "sentry.op": "http.server", "sentry.description": description, "http.route": template },
-    drop: ["url.path"],
   };
 };
 

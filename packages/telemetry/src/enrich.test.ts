@@ -128,22 +128,21 @@ describe("an HTTP span", () => {
     });
   });
 
-  it("names a server span no route matched for its path, templated, and drops the path", () => {
+  it("names a server span no route matched for the template of its path", () => {
     const span = read(
       enrichSpan(
         spanOf("GET", 2, {
           "http.request.method": "GET",
           "http.route": "unrouted",
-          "url.path": "/api/me/cli-auth/57TX-M9HG",
+          "url.template": "/api/me/cli-auth/:secret",
         }),
       ),
     );
     expect(span).toMatchObject({
-      name: "GET /api/me/cli-auth/:code",
-      "sentry.description": "GET /api/me/cli-auth/:code",
-      "http.route": "/api/me/cli-auth/:code",
+      name: "GET /api/me/cli-auth/:secret",
+      "sentry.description": "GET /api/me/cli-auth/:secret",
+      "http.route": "/api/me/cli-auth/:secret",
     });
-    expect(span).not.toHaveProperty("url.path");
     expect(
       read(
         enrichSpan(spanOf("POST", 2, { "http.request.method": "POST", "http.route": "unrouted" })),
