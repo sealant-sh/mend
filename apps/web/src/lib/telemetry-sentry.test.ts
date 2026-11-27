@@ -19,7 +19,6 @@ import {
   aside,
   backgroundRead,
   currentAction,
-  elementPath,
   firstVisibleOutput,
   procedureSpanName,
   reportCaught,
@@ -142,7 +141,9 @@ describe("the browser's Sentry client", () => {
       name: `button[aria-label="${CANARY}"]`,
       op: "ui.interaction.click",
       attributes: {
-        "browser.web_vital.inp.target": `SessionRow > button.flex[aria-label="${CANARY}"]`,
+        "ui.component_name": "SessionRow",
+        // Sentry writes a label's value as it is: one holding ` > ` must not split into names.
+        "browser.web_vital.inp.target": `SessionRow > button.flex[aria-label="Stop auth > ${CANARY} now"]`,
       },
     }).end();
     await answered(`/trpc/sessions.sendMessage?batch=1&input=${CANARY}`, { method: "POST" });
@@ -154,7 +155,7 @@ describe("the browser's Sentry client", () => {
     expect(everything).toContain("clone failed");
     expect(everything).toContain("/sessions/s1");
     expect(everything).toContain("GET /api/resources/r1");
-    expect(everything).toContain("SessionRow > button");
+    expect(everything).toContain("click in SessionRow");
     expect(everything).toContain("trpc sessions.send_message");
     expect(everything).not.toContain(CANARY);
     expect(everything).not.toContain("canary0secret");
@@ -406,13 +407,16 @@ describe("each trace covers one thing the page did", () => {
         'SessionRow > div.flex.gap-2 > button.group/button.inline-flex[aria-label="Stop Fix the login bug"]',
     });
     expect(click?.name).toBe("SessionRow");
-    expect(click?.attributes["sentry.description"]).toBe("SessionRow");
-    expect(click?.attributes["browser.web_vital.inp.target"]).toBe("SessionRow > div > button");
-    const bare = vital("ui.interaction.click", "Click", {
+    expect(click?.attributes["sentry.description"]).toBe("click in SessionRow");
+    // The element's selector carries classes and labels: none of it leaves.
+    expect(click?.attributes).not.toHaveProperty("browser.web_vital.inp.target");
+    const bare = vital("ui.interaction.click", "body > div#root.flex > button.inline-flex", {
       "browser.web_vital.inp.target": "body > div#root.flex > button.inline-flex",
     });
     expect(bare?.name).toBe("Click");
-    expect(bare?.attributes["sentry.description"]).toBe("click on body > div > button");
+    expect(bare?.attributes["sentry.description"]).toBe("click");
+    const press = vital("ui.interaction.press", "Key press", {});
+    expect(press?.attributes["sentry.description"]).toBe("key press");
     // A page whose layout never moved still reports its CLS, with no element to name.
     const still = vital("ui.webvital.cls", "Layout shift", {});
     expect(still?.attributes["sentry.description"]).toBe("no layout shift");
@@ -420,16 +424,12 @@ describe("each trace covers one thing the page did", () => {
       "ui.component_name": "InboxGroups",
       "browser.web_vital.cls.source.1": "InboxGroups > div.flex.flex-col.gap-0.5.border-t",
     });
-    expect(shifted?.attributes["sentry.description"]).toBe("InboxGroups");
-    expect(shifted?.attributes["browser.web_vital.cls.source.1"]).toBe("InboxGroups > div");
-  });
-
-  it("writes an element's path as tags and components only", () => {
-    expect(elementPath("a.block.truncate.hover:underline")).toBe("a");
-    expect(elementPath('Composer > button#base-ui-_R_1mm_[type="submit"]')).toBe(
-      "Composer > button",
-    );
-    expect(elementPath("<unknown>")).toBe("?");
+    expect(shifted?.attributes["sentry.description"]).toBe("layout shift in InboxGroups");
+    expect(shifted?.attributes).not.toHaveProperty("browser.web_vital.cls.source.1");
+    const moved = vital("ui.webvital.cls", "Layout shift", {
+      "browser.web_vital.cls.source.1": "div.flex",
+    });
+    expect(moved?.attributes["sentry.description"]).toBe("layout shift");
   });
 
   it("names a procedure's span by router and procedure in snake case", () => {

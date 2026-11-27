@@ -82,7 +82,7 @@ const TRPC_REQUEST = "/trpc/:procedures";
 
 /**
  * A procedure's span, `trpc sessions.inbox_row`: its router and procedure, each part in snake
- * case, as Mend's server names it (`mend.web.sessions.inbox_row`).
+ * case, the shape the server's procedure spans take (`mend.web.<router>.<procedure>`, SLNT-1407).
  */
 export const procedureSpanName = (procedure: string): string =>
   `trpc ${procedure
@@ -114,64 +114,52 @@ const mapString = (value: unknown, change: (text: string) => string): unknown =>
 const scrubbed = (value: unknown): unknown => mapString(value, withoutQueries);
 
 /**
- * A web vital's or an interaction's name when Sentry found no component around it, and what it
- * measured, for its description.
+ * A web vital's or an interaction's name when Sentry found no component around it (the SDK's own),
+ * and what it measured, for its description.
  */
-const UNNAMED_VITALS: Readonly<Record<string, readonly [name: string, measured: string]>> = {
+const VITALS: Readonly<Record<string, readonly [name: string, measured: string]>> = {
   "ui.webvital.cls": ["Layout shift", "layout shift"],
   "ui.webvital.lcp": ["Largest contentful paint", "largest contentful paint"],
   "ui.interaction.click": ["Click", "click"],
-  "ui.interaction.press": ["Press", "key press"],
+  "ui.interaction.press": ["Key press", "key press"],
   "ui.interaction.hover": ["Hover", "hover"],
   "ui.interaction.drag": ["Drag", "drag"],
 };
 
 /**
- * The element a vital or an interaction measured, as Sentry wrote it (`SessionRow > div.flex.gap-2
- * > button[aria-label="Stop"]`), down to its tags and the components they belong to
- * (`SessionRow > div > button`): a class list says nothing a reader needs, and an `aria-label`,
- * a `title` or an `alt` can hold a session's or a file's name.
+ * The attributes in which Sentry writes the element a vital or an interaction measured, as a
+ * selector: its classes, and its `aria-label`, `title`, `alt` and `name` with their values as they
+ * are, which can hold a session's or a file's name. No split of that text is safe (a value can hold
+ * ` > ` or a quote), so none of it leaves: the component names where it happened.
  */
-export const elementPath = (selector: string): string =>
-  selector
-    .split(" > ")
-    .map((part) => /^[A-Za-z][\w$-]*/.exec(part)?.[0] ?? "?")
-    .join(" > ");
+const ELEMENT_ATTRIBUTE = /^browser\.web_vital\.(?:inp\.target|lcp\.element|cls\.source\.\d+)$/;
 
 /**
  * A web vital's or an interaction's span, named for the Mend component it happened in
- * (`ui.component_name`, from `data-sentry-component`): `SessionRow` for a click on a session's
- * row. With no component around it, it is named for what it measured (`Click`), never for an
- * element, and says where: `click on div > button`, or `no layout shift` for a page whose layout
- * never moved.
+ * (`ui.component_name`, from `data-sentry-component`): `SessionRow`, described `click in
+ * SessionRow`. With no component around it, it keeps the SDK's name (`Click`) and says what it
+ * measured; `no layout shift` for a page whose layout never moved.
  */
 const vitalNamed = (
   op: string,
   attributes: Record<string, unknown>,
 ): { readonly name: string; readonly attributes: Record<string, unknown> } => {
   const kept = Object.fromEntries(
-    Object.entries(attributes).map(([key, value]) =>
-      /^browser\.web_vital\.(?:inp\.target|lcp\.element|cls\.source\.\d+)$/.test(key)
-        ? [key, mapString(value, elementPath)]
-        : [key, value],
-    ),
+    Object.entries(attributes).filter(([key]) => !ELEMENT_ATTRIBUTE.test(key)),
   );
+  const [fallback, measured] = VITALS[op] ?? [op, op];
   const component = stringAttribute(attributes, "ui.component_name");
   if (component !== undefined) {
-    return { name: component, attributes: { ...kept, "sentry.description": component } };
+    return {
+      name: component,
+      attributes: { ...kept, "sentry.description": `${measured} in ${component}` },
+    };
   }
-  const element =
-    stringAttribute(kept, "browser.web_vital.inp.target") ??
-    stringAttribute(kept, "browser.web_vital.lcp.element") ??
-    stringAttribute(kept, "browser.web_vital.cls.source.1");
-  const [name, measured] = UNNAMED_VITALS[op] ?? [op, op];
-  const description =
-    element !== undefined
-      ? `${measured} on ${element}`
-      : op === "ui.webvital.cls"
-        ? "no layout shift"
-        : measured;
-  return { name, attributes: { ...kept, "sentry.description": description } };
+  const still = op === "ui.webvital.cls" && !("browser.web_vital.cls.source.1" in attributes);
+  return {
+    name: fallback,
+    attributes: { ...kept, "sentry.description": still ? "no layout shift" : measured },
+  };
 };
 
 /**
@@ -318,6 +306,8 @@ const traceShape = (): Integration => ({
   setup: (client) => {
     let endedParent: Span | undefined;
     client.on("prepareSpanScope", (spanScope) => {
+      // Every span passes here before it starts: a link meant for one never reaches the next.
+      endedParent = undefined;
       const { parentSpan, scope } = spanScope;
       // A span not ended yet has no end timestamp (`browserTracingIntegration` reads it so too).
       if (parentSpan !== undefined && !spanToJSON(parentSpan).end_timestamp) return;

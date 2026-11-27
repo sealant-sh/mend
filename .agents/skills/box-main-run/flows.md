@@ -3491,15 +3491,16 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   copy's environment (SLNT-1408): every tRPC request named `POST /trpc/:procedures`, never a
   procedure list or a `+N` count, with one `rpc.client` child per procedure it carried
   (`trpc sessions.inbox_row`); clicks (`ui.interaction.click`) named for a Mend component
-  (`SessionRow`, `Composer`) or `Click`, never a class list, and no `aria-label` or class in any
-  `browser.web_vital.*` element attribute; every `ui.webvital.cls` span with a description
-  (`no layout shift` for a page that never moved); page loads and navigations named by URL template,
-  a splat as `/settings/*` or `/*`, never `/$`; each five-second `executor.calls` read a trace of
-  its own (`POST /trpc/:procedures` over `trpc executor.calls`), never under a page load; and no
-  trace that lasts more than a few seconds past its root span's end, however long the run's tab
-  stayed open (a web vital reported later is a trace of its own, linked to its page). Across both
-  projects (SLNT-1375): no span with operation `default` or an empty description; no database span
-  whose description is `[Filtered]`, each reading as a short query naming its table
+  (`SessionRow`, described `click in SessionRow`) or `Click`, never a class list, and no
+  `browser.web_vital.inp.target`, `…lcp.element` or `…cls.source.N` selector on any span (a label
+  can hold a session's name); every `ui.webvital.cls` span with a description (`no layout shift` for
+  a page that never moved); page loads and navigations named by URL template, a splat as
+  `/settings/*` or `/*`, never `/$`; each five-second `executor.calls` read a trace of its own
+  (`POST /trpc/:procedures` over `trpc executor.calls`), never under a page load; and no trace that
+  lasts more than a few seconds past its root span's end, however long the run's tab stayed open (a
+  web vital reported later is a trace of its own, linked to its page). Across both projects
+  (SLNT-1375): no span with operation `default` or an empty description; no database span whose
+  description is `[Filtered]`, each reading as a short query naming its table
   (`select .. from projects where …`, op `db.sql.query`); every `http.client` named for a route
   template (`GET /v1/sessions/:sessionId/output`, `POST /trpc/:procedures`), never a host, port, ID,
   query or count; Mend's own spans named `mend.<area>.<operation>`; and no `drizzle.operation` span.
