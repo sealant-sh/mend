@@ -220,10 +220,16 @@ export default async ({ page, web, capture, note, registerSecret }) => {
   const dialog = (name) => visible(page.getByRole("dialog", { name }));
   const closed = (name, timeout = 30_000) =>
     page.getByRole("dialog", { name }).waitFor({ state: "detached", timeout });
-  const commands = async (name) =>
-    (await dialog(name).locator('[data-slot="copy-field-value"]').allTextContents()).filter(
+  // Until the dialog's own devices.list answers (under 500 ms), its command line block shows the
+  // install and login lines; the commands are read once it says where the stack's CLI is signed in.
+  const commands = async (name) => {
+    await dialog(name)
+      .getByText(/^Mend's command line is signed in on /)
+      .waitFor();
+    return (await dialog(name).locator('[data-slot="copy-field-value"]').allTextContents()).filter(
       Boolean,
     );
+  };
 
   // --- Before: a Mend key, no agent login, and what the run will put back ---------------------
   await page.setViewportSize(DESKTOP);

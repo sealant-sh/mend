@@ -4,11 +4,13 @@
 //
 //   pnpm verify drive web --recipe settings-org-projects
 //
-// Real on the stack: the empty page; a member who joins, sees no Projects entry and is sent to
-// Profile by address; the project that member creates, left without a creator when the owner
-// removes them; the owner taking it over (the confirmation, the toast, the row gone, the project
-// now the owner's). Recorded answers (tRPC answers the recipe writes): kept volumes, since a stack
-// has no removed project with resources, a take-over the server refuses, and a read that fails.
+// Real on the stack: the empty page when the stack's lists are empty; a member who joins, sees no
+// Projects entry and is sent to Profile by address; the project that member creates, left without
+// a creator when the owner removes them; the owner taking it over (the confirmation, the toast, the
+// row gone, the project now the owner's). Recorded answers (tRPC answers the recipe writes): the
+// empty page on a server that has removed projects (each is listed under Kept resources), kept
+// volumes, since a stack has no removed project with resources, a take-over the server refuses,
+// and a read that fails.
 // The recipe removes the member and the project it made.
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
@@ -202,14 +204,37 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       entries.indexOf("Projects") + 1 === entries.indexOf("Audit log"),
     entries,
   );
-  if (before.body.length === 0) {
-    await visible(page.getByText(/^No projects without a creator\./)).waitFor();
-    await visible(page.getByText(/^No kept resources\./)).waitFor();
+  // A fresh stack has nothing on either list. A server that has run a while has removed
+  // projects, and every one of them is listed under Kept resources, so there the empty page is
+  // drawn from recorded empty answers.
+  const noOrphans = visible(page.getByText(/^No projects without a creator\./));
+  const orphanTable = visible(page.getByRole("table", { name: "Projects without a creator" }));
+  const noKept = visible(page.getByText(/^No kept resources\./));
+  const keptTable = visible(page.getByRole("table", { name: "Kept resources" }));
+  await noOrphans.or(orphanTable).waitFor();
+  await noKept.or(keptTable).waitFor();
+  const keptRows =
+    (await keptTable.count()) === 0 ? 0 : (await keptTable.getByRole("row").count()) - 1;
+  if (before.body.length === 0 && keptRows === 0) {
+    await noOrphans.waitFor();
+    await noKept.waitFor();
     note("as the stack is: no project without a creator, no kept resources; both say so");
-    await shot("projects-empty-desktop-light");
   } else {
-    note(`the stack already has ${before.body.length} projects without a creator`);
+    note(
+      `as the stack is: ${before.body.length} projects without a creator and ${keptRows} kept-resource rows`,
+    );
+    stubs.set("organization.orphanedProjects", { json: [] });
+    stubs.set("organization.resourceArchives", { json: [] });
+    await reopen();
+    await heading("Projects");
+    await noOrphans.waitFor();
+    await noKept.waitFor();
+    stubs.clear();
+    note(
+      "with nothing to show (recorded empty lists): no project without a creator, no kept resources; both say so",
+    );
   }
+  await shot("projects-empty-desktop-light");
 
   // --- A member joins, makes a project, and is removed ------------------------------------------
   const invitation = await owner("POST", "/api/organization/invitations", { role: "member" });

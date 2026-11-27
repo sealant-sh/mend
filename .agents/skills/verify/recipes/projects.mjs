@@ -344,8 +344,11 @@ export default async ({ page, web, capture, note }) => {
   await removedRow.waitFor();
   await both("removed-list-desktop");
   await removedRow.getByRole("button", { name: "Restore" }).click();
-  await row(small).waitFor({ timeout: 20_000 });
-  await text(`Restored ${small}.`).waitFor();
+  // The toast shows for about 5.6 s from the click, so it is awaited beside the row, not after it.
+  await Promise.all([
+    row(small).waitFor({ timeout: 20_000 }),
+    text(`Restored ${small}.`).waitFor(),
+  ]);
   note(`settings-retention: Restore brought ${small} back to the list`);
   // Restore when the name was taken since: it asks for another name.
   const idOf = async (name) => (await call("projects.list")).find((p) => p.name === name).id;
@@ -366,8 +369,11 @@ export default async ({ page, web, capture, note }) => {
   const purged = `${small}-back`;
   await restoreAs.fill(purged);
   await removedRow.getByRole("button", { name: "Restore" }).click();
-  await row(purged).waitFor({ timeout: 20_000 });
-  await text(`Restored ${purged}.`).waitFor();
+  // The toast shows for about 5.6 s from the click, so it is awaited beside the row, not after it.
+  await Promise.all([
+    row(purged).waitFor({ timeout: 20_000 }),
+    text(`Restored ${purged}.`).waitFor(),
+  ]);
   note(
     `settings-retention: with ${small} taken again, Restore asked for another name and brought it back as ${purged}`,
   );
@@ -535,7 +541,10 @@ export default async ({ page, web, capture, note }) => {
     await both("purge-held-desktop");
     note(`the server held the purge: ${words.replace(/\s+/g, " ").slice(0, 300)}`);
     const wait = Math.max(0, Date.parse(until) - Date.now()) + 5_000;
-    if (wait > 12 * 60_000) throw new Error(`the purge is held for ${wait} ms`);
+    // The blob store holds every purge for 20 minutes after the API starts (its longest upload
+    // URL, 15 minutes, and 5 minutes of clock margin), so a copy booted or deployed just before
+    // waits that long.
+    if (wait > 21 * 60_000) throw new Error(`the purge is held for ${wait} ms`);
     await page.waitForTimeout(wait);
   }
   made.splice(made.indexOf(purged), 1);
@@ -550,10 +559,11 @@ export default async ({ page, web, capture, note }) => {
       await call("projects.remove", { id: project.id }, "mutate").catch(() => undefined);
   }
   // A clone's purge is held while an upload its session started may still land (minutes on a real
-  // server, where the queued session uploads): wait out the time the refusal names, then again.
+  // server, where the queued session uploads), and for 20 minutes after the API starts: wait out
+  // the time the refusal names, then again.
   const ours = async () =>
     (await call("projects.removed")).filter((entry) => entry.name.includes(`-${suffix}`));
-  const deadline = Date.now() + 15 * 60_000;
+  const deadline = Date.now() + 21 * 60_000;
   for (let left = await ours(); left.length > 0; left = await ours()) {
     let holdUntil = 0;
     for (const project of left) {

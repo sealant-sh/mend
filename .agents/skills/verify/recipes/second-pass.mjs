@@ -106,8 +106,10 @@ export default async ({ page, web, capture, note }) => {
 
   await page.setViewportSize(DESKTOP);
   await open("/");
-  const [project] = await call("projects.list");
-  if (!project) throw new Error("the stack has no project");
+  // second-pass-sessions.json starts its sessions in verify-fixture; a box lists other projects
+  // too, in no order the recipe can lean on.
+  const project = (await call("projects.list")).find((each) => each.name === "verify-fixture");
+  if (!project) throw new Error("the stack has no verify-fixture project");
   const rows = await call("sessions.inbox");
   const idOf = (name) =>
     rows.find((row) => row.session.branch === `mend/${name}` && row.session.status === "running")
