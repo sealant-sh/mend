@@ -17,6 +17,7 @@ import {
   captureSaved,
   captureUnsavedWordsOf,
   captureSnapDetailOf,
+  captureSealUnfinishedDetail,
   captureStatusLine,
   type CapturePosition,
   type CaptureReading,
@@ -310,6 +311,30 @@ describe("captureDrainStep while the completed flush is being sealed", () => {
     // e2e8: the sealing capture registered and its seal recorded, withheld for 20 minutes on
     // Garage while the line said `not registered`.
     expect(captureIncompleteWords("sealing")).toBe("final seal not confirmed");
+  });
+});
+
+describe("captureSealUnfinishedDetail (SLNT-1381)", () => {
+  it("says what Mend could not check beside `final seal not confirmed`, clipped to one line", () => {
+    const unfinished =
+      "the git section could not be verified: the listed packs could not be isolated: EEXIST: file already exists";
+    const detail = captureSealUnfinishedDetail(unfinished);
+    expect(detail).toBe(`Mend could not finish checking the save: ${unfinished}`);
+    expect(
+      captureStatusLine({
+        capturePending: 0,
+        capturePendingBytes: 0,
+        captureRefused: 0,
+        captureDrain: "stop",
+        captureNotSavedAt: new Date("2026-11-27T03:37:48Z"),
+        captureIncompleteReason: "sealing",
+        captureIncompleteDetail: detail,
+      }),
+    ).toBe(
+      `not saved · final seal not confirmed · Mend could not finish checking the save: ${unfinished} · 0 B pending · workspace kept`,
+    );
+    expect(captureSealUnfinishedDetail("x".repeat(400))?.length).toBe(200);
+    expect(captureSealUnfinishedDetail("  ")).toBeNull();
   });
 });
 

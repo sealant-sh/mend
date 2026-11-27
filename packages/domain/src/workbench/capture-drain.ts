@@ -433,6 +433,17 @@ export const captureSnapDetailOf = (reading: CaptureReading): string | null => {
 };
 
 /**
+ * Why a final flush waiting on its seal (`sealing`) is not confirmed, when the registrar withheld
+ * that seal because its checks could not finish (`unavailable`): what Mend could not check, in
+ * the checks' own words, as one clause beside `final seal not confirmed` (SLNT-1381). The work is
+ * not judged by it: nothing was observed wrong with the save, and each ask checks again.
+ */
+export const captureSealUnfinishedDetail = (unfinished: string): string | null =>
+  unfinished.trim() === ""
+    ? null
+    : clipped(`Mend could not finish checking the save: ${unfinished}`);
+
+/**
  * Whether a harvest or a mode switch may read the chain head: the small captures are in. Once
  * sealantd reports `pendingBulk`, bulk still uploading no longer holds a mode switch up; until then
  * every pending capture does. A stop still waits for all of them (`captureSaved`).

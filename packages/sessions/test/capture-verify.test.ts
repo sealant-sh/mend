@@ -4475,6 +4475,10 @@ describeSeals(
           epoch: at.epoch,
           outcome: { state: "withheld", reason: "unavailable" },
           gitSectionFailed: false,
+          // SLNT-1381: what could not be checked, in the verifier's words, for the session's line.
+          unfinished: expect.stringMatching(
+            /^the git section could not be verified: the runner cache could not be prepared: index-pack --verify of .+ did not finish/,
+          ),
         });
         const recovered = await run(register);
         expect(recovered.seal).toEqual({ state: "recorded" });
@@ -4702,6 +4706,58 @@ describeSeals(
       // A key of unknown size: the cap, as before.
       const unsized = await authorityAfter({ ["5".repeat(64)]: undefined });
       expect(Math.abs(unsized - withheldFor(PRESIGN_TTL_SECONDS))).toBeLessThanOrEqual(2);
+    });
+  },
+);
+
+// SLNT-1381: a worktree that comes back to a tree an earlier capture packed (going back to a
+// checkpoint, or a session writing the same files again) packs the same objects, byte for byte,
+// and sealantd stores that pack under its own epoch's or generation's prefix: the manifest lists
+// one digest under two keys. Linking each key into the isolated repository named one file twice,
+// so every check failed `EEXIST`, read as the Mend host not finishing it, and the Stop's seal was
+// withheld on every ask for as long as the server ran.
+describeSeals(
+  "SLNT-1381 a git section that lists one pack's bytes under two keys",
+  {},
+  ({ world, run, claimed, notices }) => {
+    it("verifies, and the final seal over it is recorded on the first ask", async () => {
+      const at = await claimed();
+      const edited = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, (dir) => {
+        fs.writeFileSync(path.join(dir, "a.txt"), "back to how it was\n");
+      });
+      const pack = edited.objects.get(edited.key);
+      const idx = edited.objects.get(packIdxKeyOf(edited.key));
+      if (pack === undefined || idx === undefined)
+        throw new Error("the edited tree packed nothing");
+      // The same bytes, stored again under the next generation's prefix.
+      const again = captureKeys(at.worktreeId, at.epoch, 1).pack(sha256Hex(pack));
+      expect(again).not.toBe(edited.key);
+      const git = {
+        ...at.git,
+        packs: [...packsOf({ git: at.git }), edited.key, again],
+        refs: {
+          ...refsOf({ git: at.git }),
+          [WORKTREE_TREE_REF]: edited.tree,
+          [INDEX_TREE_REF]: edited.tree,
+        },
+      };
+      const capture = sealedFile({ ...at, git }, "saved after going back\n");
+      await run(
+        uploadObjects(
+          new Map([
+            ...edited.objects,
+            [again, pack],
+            [packIdxKeyOf(again), idx],
+            ...capture.snapshot.objects,
+            [capture.cap.key, capture.cap.bytes],
+          ]),
+        ),
+      );
+      const answer = await run(registerOn(at.worktreeId, at.epoch, at.api)(capture.cap));
+      // Before: `withheld` (`unavailable`) on this and every later ask, the row `unverified`.
+      expect(answer.seal).toEqual({ state: "recorded" });
+      expect(world.memory.captures.get(capture.cap.id)?.gitFsck).toBe("verified");
+      expect(notices.at(-1)?.outcome).toEqual({ state: "recorded" });
     });
   },
 );

@@ -191,7 +191,14 @@
 # whitespace, capture-channel.ts is main's and engine.ts differs only there, which touches no
 # hot-pool, claim, retire, drain or discard call, so no action changes. --quick tlx run at
 # bebfb06a70: every row as expected.
-sync bebfb06a70d1f192ac93f50755e0e11e6139a0ae
+# d893050f8a (SLNT-1381) changes capture-channel.ts and engine.ts only outside the covered
+# functions: the git verification links each pack digest once, a final seal withheld because its
+# checks could not finish tells the session what they could not check (`CaptureSealNotice`'s
+# `unfinished`), and `persistReading` keeps that as the final flush's incomplete detail. No
+# hot-pool, claim, retire, drain or discard call changes, and `standbyApiFor` and `captureApiFor`
+# still upload nothing for a workspace with no session, so no action changes. --quick tlx run at
+# d893050f8a: every row as expected.
+sync d893050f8aaedf9d666ecadc044dfd060f1ff0b9
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
