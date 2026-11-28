@@ -64,6 +64,29 @@ export const AREAS: ReadonlySet<string> = new Set([
 
 /** By the name the code gives a span: the name and description Sentry shows. */
 export const SPAN_NAMES: Readonly<Record<string, readonly [name: string, description: string]>> = {
+  // A session's own work after its launch, each a trace of its own linked to it (SLNT-1404)
+  "mend.session.record_first_output": ["mend.session.record_first_output", "record first output"],
+  "mend.session.settle_run": ["mend.session.settle_run", "settle finished run"],
+  "mend.session.record_process_end": ["mend.session.record_process_end", "record process end"],
+  "mend.session.recheck_drain": ["mend.session.recheck_drain", "recheck stalled drain"],
+  "mend.session.read_capture_status": ["mend.session.read_capture_status", "read capture status"],
+  "mend.session.read_runtime_deadline": [
+    "mend.session.read_runtime_deadline",
+    "read runtime deadline",
+  ],
+  "mend.session.flush_deferred": ["mend.session.flush_deferred", "flush deferred work"],
+  "mend.session.open_output": ["mend.session.open_output", "open agent output"],
+  // A page's live updates, after the request that opened them (SLNT-1404)
+  "mend.page.open_updates": ["mend.page.open_updates", "open page updates"],
+  "mend.page.refresh_view": ["mend.page.refresh_view", "refresh page view"],
+  // The T3 gateway's own work, each a trace of its own (SLNT-1404)
+  "mend.gateway.read_native_history": ["mend.gateway.read_native_history", "read native history"],
+  "mend.gateway.refresh_pull_requests": [
+    "mend.gateway.refresh_pull_requests",
+    "refresh linked pull requests",
+  ],
+  "mend.gateway.restore_queue": ["mend.gateway.restore_queue", "restore queued messages"],
+  "mend.gateway.check_device": ["mend.gateway.check_device", "check paired device"],
   // auth
   "Auth.accessKeySession": ["mend.auth.authenticate_access_key", "authenticate access key"],
   "Auth.getSession": ["mend.auth.authenticate_request", "authenticate request"],
@@ -130,7 +153,6 @@ export const SPAN_NAMES: Readonly<Record<string, readonly [name: string, descrip
   "SessionEngine.stopSession": ["mend.session.stop_and_release", "stop session and workspace"],
   "ProtocolIdleStop.stopIfIdle": ["mend.session.stop_idle_conversation", "stop idle conversation"],
   "TerminalIdleStop.stopIfIdle": ["mend.session.stop_idle_terminal", "stop idle terminal"],
-  "SessionEngine.supervise": ["mend.session.supervise", "supervise session run"],
   "ProtocolIdleStop.sweep": [
     "mend.session.sweep_idle_conversations",
     "sweep idle conversation sessions",
@@ -262,10 +284,6 @@ export const SPAN_NAMES: Readonly<Record<string, readonly [name: string, descrip
   "SessionEngine.retainedWorkspaceSweep": [
     "mend.workspace.renew_ttl",
     "renew leased workspace ttls",
-  ],
-  "SessionEngine.replaceExecutor": [
-    "mend.workspace.replace_capped",
-    "replace or resume capped workspace",
   ],
   "SessionEngine.replaceWorkspaceNow": [
     "mend.workspace.replace_on_request",
@@ -595,7 +613,6 @@ export const SPAN_NAMES: Readonly<Record<string, readonly [name: string, descrip
   "mend.job.process": ["mend.job.process", "process queued job"],
   "JobRunner.work": ["mend.job.register_worker", "register queue worker"],
   // run
-  "Dispatcher.run": ["mend.run.dispatch_issues", "run issue dispatcher"],
   "Dispatcher.tick": ["mend.run.poll_queued_issues", "poll queued issues"],
   "RunStarter.resume": ["mend.run.resume", "resume unsettled issue runs"],
   "RunStarter.startOnChange": ["mend.run.start_follow_up", "start follow-up issue run"],

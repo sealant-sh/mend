@@ -146,7 +146,7 @@ export const EventsRoutes = HttpRouter.use((router) =>
           yield* Ref.set(view, next);
           return next;
         });
-        const refresh = reread.pipe(inOwnTrace("mend.events.refresh_view", { origin }), traced);
+        const refresh = reread.pipe(inOwnTrace("mend.page.refresh_view", { origin }), traced);
 
         const ends = (signal: BusSignal | { readonly kind: "tick" }) =>
           Effect.gen(function* () {
@@ -211,7 +211,7 @@ export const EventsRoutes = HttpRouter.use((router) =>
             if (Option.isNone(yield* auth.getSession(headers))) yield* end;
             const subscription = yield* bus.subscribe;
             return Stream.fromSubscription(subscription);
-          }).pipe(inOwnTrace("mend.events.open_subscription", { origin })),
+          }).pipe(inOwnTrace("mend.page.open_updates", { origin })),
         );
         const ticks = Stream.fromSchedule(Schedule.spaced(VIEW_REFRESH)).pipe(
           Stream.map(() => ({ kind: "tick" as const })),

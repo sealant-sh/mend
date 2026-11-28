@@ -83,7 +83,7 @@ const read = (span: Span): Readonly<Record<string, string | undefined>> => ({
 /** Every span name the repo's server code writes as a literal: `Effect.fn("…")`, `withSpan("…")`. */
 const sourceSpanNames = (): ReadonlySet<string> => {
   const SPAN_CALL =
-    /(?:Effect\.fn|withSpan|makeSpan|useSpan)\(\s*"([^"]+)"|\.span\(\{\s*name:\s*"([^"]+)"/g;
+    /(?:Effect\.fn|withSpan|makeSpan|useSpan|inOwnTrace)\(\s*"([^"]+)"|\.span\(\{\s*name:\s*"([^"]+)"/g;
   const names = new Set<string>();
   for (const project of [
     ...readdirSync(join(import.meta.dirname, "../../../apps")).map((name) => `apps/${name}`),

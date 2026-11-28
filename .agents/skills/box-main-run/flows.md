@@ -3539,7 +3539,7 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   over the run's window in project 3: no trace holds more than 2,000 spans or lasts more than 30
   minutes, and no span lasts more than 10 minutes; the page's `GET /api/events` server span lasts
   under a second though the page stayed open, and the stream's later work reads as short
-  `mend.events — refresh view` traces linked to it; a terminal's `GET /api/tty` span ends with
+  `mend.page — refresh page view` traces linked to it; a terminal's `GET /api/tty` span ends with
   status 101 as it connects; no root trace from a timer's pass that did nothing (no
   `sweep retirements`, `capture reaper` or `observe external agents` root whose only children are
   `SELECT` queries); and the session's own background work (`settle run`, `record first output`,
