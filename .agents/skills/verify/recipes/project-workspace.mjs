@@ -111,6 +111,17 @@ export default async ({ page, web, capture, note }) => {
   };
   const detail = (id) => call("projects.detail", { id });
   /**
+   * The project's ready-workspace count once the server holds `want`, polled for up to 5 s: the
+   * status line can change before the stepper's save lands (SLNT-1415).
+   */
+  const countHeld = async (id, want) => {
+    let held;
+    for (const until = Date.now() + 5_000; ; await page.waitForTimeout(200)) {
+      held = (await detail(id)).project.hotSessions;
+      if (held === want || Date.now() >= until) return held;
+    }
+  };
+  /**
    * Save image, and wait until the server answers: the editor closes on a save, and stays open
    * naming the packages it refused. Resolving packages against Sealant can take a minute.
    */
@@ -356,7 +367,8 @@ export default async ({ page, web, capture, note }) => {
     await visible(
       page.getByRole("status").filter({ hasText: /None ready yet|ready for you|starting/ }),
     ).waitFor();
-    expect("the count saved", (await detail(project.id)).project.hotSessions === 1, "");
+    const raised = await countHeld(project.id, 1);
+    expect("the count saved", raised === 1, raised);
     note(
       `hot-count: raised to 1; the server reports "${(await visible(page.getByRole("status").filter({ hasText: /ready|starting|failed/ })).innerText()).trim()}"`,
     );
@@ -408,7 +420,8 @@ export default async ({ page, web, capture, note }) => {
     await heading("Workspace");
     await button("One fewer ready workspace").click();
     await visible(page.getByRole("status").filter({ hasText: "Off" })).waitFor();
-    expect("the count back to 0", (await detail(project.id)).project.hotSessions === 0, "");
+    const lowered = await countHeld(project.id, 0);
+    expect("the count back to 0", lowered === 0, lowered);
     note("hot-count: lowered to 0, Off");
 
     // --- hot-rewarm, real (the box) -------------------------------------------------------------
@@ -620,14 +633,33 @@ export default async ({ page, web, capture, note }) => {
   } finally {
     stubs.clear();
     // The step above removes the project; on any earlier failure, this tidies it, and says
-    // whether the server let it go instead of claiming it did.
+    // whether the server let it go instead of claiming it did. A stop partway can leave the
+    // ready count raised and the saves' automatic installs live, and a live session refuses the
+    // removal: lower the count, stop the project's sessions, and try the removal for up to a
+    // minute while they end. Removing the project drains its ready workspaces.
     const left = (await call("projects.list")).some((entry) => entry.id === project.id);
-    const removal = left
-      ? await call("projects.remove", { id: project.id }, "mutate").then(
+    let removal = "already removed";
+    if (left) {
+      await call(
+        "projects.setHotSessions",
+        { id: project.id, request: { hotSessions: 0 } },
+        "mutate",
+      ).catch(() => undefined);
+      const LIVE = new Set(["starting", "running", "waiting", "idle"]);
+      for (const until = Date.now() + 60_000; ; await page.waitForTimeout(3_000)) {
+        const sessions = await detail(project.id).then(
+          (read) => read.sessions,
+          () => [],
+        );
+        for (const each of sessions.filter((session) => LIVE.has(session.status)))
+          await call("sessions.stop", { id: each.id }, "mutate").catch(() => undefined);
+        removal = await call("projects.remove", { id: project.id }, "mutate").then(
           () => "removed",
           (error) => `not removed · ${String(error?.message ?? error).split("\n")[0]}`,
-        )
-      : "already removed";
+        );
+        if (removal === "removed" || Date.now() >= until) break;
+      }
+    }
     const purged = await call(
       "projects.purge",
       { id: project.id, confirm: project.name },
