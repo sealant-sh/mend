@@ -3,7 +3,7 @@ import { UNROUTED } from "@mend/network/http-observation";
 import { pathOf, routeTemplates, templatePath } from "@mend/network/url-template";
 import type { OtlpResource, OtlpSerialization, OtlpTracer } from "effect/observability";
 
-import { SPAN_NAMES } from "./span-names.ts";
+import { LIBRARY_SPAN_NAMES, SPAN_NAMES } from "./span-names.ts";
 import { summarizeSql } from "./sql-summary.ts";
 
 /**
@@ -143,7 +143,7 @@ const renamed = (name: string, codeName: string, description?: string): Named =>
  * `mend.gateway.orchestration.get_snapshot`, an MCP call `mend.mcp.call_tool`.
  */
 const nameOf = (name: string): Named => {
-  const entry = SPAN_NAMES[name];
+  const entry = SPAN_NAMES[name] ?? LIBRARY_SPAN_NAMES[name];
   if (entry !== undefined) {
     const [named, description] = entry;
     return { ...renamed(named, name, description), codeName: named === name ? undefined : name };

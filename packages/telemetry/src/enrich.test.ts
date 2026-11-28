@@ -199,6 +199,7 @@ describe("an HTTP span", () => {
     ["/join/Zq8mJx2vNc4tPr6s", "/join/:secret"],
     ["/v1/projects/p/resources/vdb3jti/start", "/v1/projects/p/resources/:resourceId/start"],
     ["/v2/hosts/10.0.0.4/health", "/v2/hosts/:hostId/health"],
+    ["/api/nope/abc/QZXW-PLMK", "/api/nope/abc/:abcId"],
   ])("templates %s", (path, template) => {
     expect(templatePath(path)).toBe(template);
   });

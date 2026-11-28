@@ -18,6 +18,11 @@ const HEX = /^[0-9a-f]{12,}$/i;
 const OPAQUE = /^(?=[^/]*\d)[A-Za-z0-9_-]{16,}$/;
 /** Letters and digits mixed (`vdb3jti`, `57TX-M9HG`): a key, a code, a name. */
 const MIXED = /^(?=.*[A-Za-z])(?=.*\d)/;
+/**
+ * A capital letter (`QZXW-PLMK`, a CLI sign-in's code): no route of Mend's or sealant's spells a
+ * segment with one, so it is a value.
+ */
+const CAPITAL = /[A-Z]/;
 /** An API's version (`v1`) or a protocol's (`oauth2`) is part of the route. */
 const VERSION = /^(?:v\d+|oauth2)$/;
 
@@ -28,6 +33,7 @@ const isIdSegment = (segment: string): boolean =>
   HEX.test(segment) ||
   OPAQUE.test(segment) ||
   (MIXED.test(segment) && !VERSION.test(segment)) ||
+  CAPITAL.test(segment) ||
   segment.includes("%") ||
   segment.includes("@");
 

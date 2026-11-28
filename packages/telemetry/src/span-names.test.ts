@@ -5,7 +5,10 @@ import type { OtlpTracer } from "effect/observability";
 import { describe, expect, it } from "vitest";
 
 import { enrichSpan } from "./enrich.ts";
-import { AREAS, SPAN_NAMES } from "./span-names.ts";
+import { AREAS, LIBRARY_SPAN_NAMES, SPAN_NAMES } from "./span-names.ts";
+
+/** Every entry, Mend's own and the libraries'. */
+const ALL = { ...SPAN_NAMES, ...LIBRARY_SPAN_NAMES };
 
 type Span = OtlpTracer.TraceData["resourceSpans"][number]["scopeSpans"][number]["spans"][number];
 
@@ -104,16 +107,14 @@ const sourceSpanNames = (): ReadonlyMap<string, string> => {
 
 describe("the span catalog", () => {
   it("names every span by the convention", () => {
-    const found = Object.values(SPAN_NAMES).flatMap(([name, description]) =>
-      breaches(name, description),
-    );
+    const found = Object.values(ALL).flatMap(([name, description]) => breaches(name, description));
     expect(found).toEqual([]);
   });
 
   it("gives no two names one description, and each name one description", () => {
     const byName = new Map<string, Set<string>>();
     const byDescription = new Map<string, Set<string>>();
-    for (const [name, description] of Object.values(SPAN_NAMES)) {
+    for (const [name, description] of Object.values(ALL)) {
       byName.set(name, (byName.get(name) ?? new Set()).add(description));
       byDescription.set(description, (byDescription.get(description) ?? new Set()).add(name));
     }
@@ -131,7 +132,7 @@ describe("the span catalog", () => {
   });
 
   it("is what reaches Sentry: each span's name, operation and words", () => {
-    for (const [codeName, [name, description]] of Object.entries(SPAN_NAMES)) {
+    for (const [codeName, [name, description]] of Object.entries(ALL)) {
       if (name === "mend.job.process") continue;
       const span = read(enrichSpan(spanOf(codeName)));
       expect(span).toMatchObject({

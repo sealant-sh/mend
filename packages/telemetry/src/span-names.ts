@@ -601,3 +601,14 @@ export const SPAN_NAMES: Readonly<Record<string, readonly [name: string, descrip
   "RunStarter.startOnChange": ["mend.run.start_follow_up", "start follow-up issue run"],
   "RunStarter.startVerification": ["mend.run.start_verification", "start verification run"],
 };
+
+/**
+ * Spans a library names inside Mend's processes, by the library's name for them: the same
+ * convention, kept apart because no source of Mend's names them.
+ */
+export const LIBRARY_SPAN_NAMES: Readonly<
+  Record<string, readonly [name: string, description: string]>
+> = {
+  // drizzle-orm's Effect driver, once as a process opens its database.
+  "PgDrizzle.make": ["mend.db.open_client", "open database client"],
+};
