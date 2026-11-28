@@ -204,19 +204,20 @@
 # tlx run at 7afbb270c4: every row as expected.
 # 22d65f1603 (SLNT-1404) changes engine.ts's tracing only. `runDrain`'s loop body moved, statement for
 # dd69d78ae1 (SLNT-1404) changes engine.ts's tracing only. `runDrain`'s loop body moved, statement for
+# aa55d4b2f1 (SLNT-1404) changes engine.ts's tracing only. `runDrain`'s loop body moved, statement for
 # statement and in the same order, into `drainPass`, its locals into a `DrainState` the loop hands
 # each pass (so a stalled drain's later passes can be traces of their own); `discardStandbyNeverClaimed`
 # is called as before, once per drain (`standbyLooked`). Background forks leave the trace that forked
 # them (`forkSealantBackground`), supervision and process watchers are untraced but for their
 # ends, and the timer loops (the hot-pool sweep among them) send a pass only when it did
 # something. No hot-pool, claim, retire, drain or discard call changes, so no action changes.
-# --quick tlx run at dd69d78ae1: every row as expected.
-# d517b0f210 (SLNT-1404, the same branch) wraps three detached reads in traces of their own: the
+# --quick tlx run at aa55d4b2f1: every row as expected.
+# d24463b90f (SLNT-1404, the same branch) wraps three detached reads in traces of their own: the
 # capture status read (`refreshCaptureStatus`, the reaper's status pass), the runtime deadline
 # read and a deferred flush nobody waits for (`runDeferredDetached`). Tracing only; no action
-# changes. --quick tlx run at d517b0f210: every row as expected.
-# 8da516148e is the same branch later: engine.ts has not changed since d517b0f210.
-sync 8da516148e22a3a04fe2acd826e8f4ebf3cbb39c
+# changes. --quick tlx run at d24463b90f: every row as expected.
+# b152c65e5d is the same branch later: engine.ts has not changed since d24463b90f.
+sync b152c65e5dc167feb82cb6b63e9237a97d4efcc6
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
