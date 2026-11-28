@@ -3521,25 +3521,36 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   (spans from the pre-upgrade master do not count). On a copy also started with
   `MEND_VERIFY_SEALANTD_SENTRY_DSN` (the `telemetry · …` line reads
   `sealantd's to sentry.mend.run project 10`; on any other this part is
-  `not run · no sealantd DSN on this copy`), read the trace of web-write's session start once that
-  session has stopped and a minute has passed: sentry.mend.run keeps a trace's mend-server spans
-  back until none has joined it for 60 s, and Mend's reads of a running session join its start's
-  trace (SLNT-1393). Across projects 4, 3, 2 and 10 (SLNT-1358), that one trace holds
-  `mend.web.session.start` over `rpc.server — sessions.start`, `create and launch session`,
-  `launch session`, `provision workspace`, sealant's `create workspace` and, when the image was
-  built for it, `queue.process — workspace-image-builds` with `build workspace` and
-  `launch workspace` under it, and under that in project 10
-  `sealantd.boot — boot workspace in a container` with its `sealantd.boot.stage` spans
-  (`restore capture`, `runtime healthy`, `control server ready`, `start harness`). A message's trace
-  reaches project 10's `sealantd.control/writeStdin`, and project 10 has no span with operation
-  `default` or an empty description. Until SLNT-1392, `sealantd.control/openSession`
-  (`create session journal`, `spawn PTY session`) is a trace of its own under sealant's
-  `POST /v1/sessions/as-user`, not under `mend.sealant — open session`.
+  `not run · no sealantd DSN on this copy`), read the trace of web-write's session start while that
+  session still runs, a minute after its launch (SLNT-1393: what the running session does is in
+  traces of its own, linked to the start, so the start's spans reach Sentry once the launch ends).
+  Across projects 4, 3, 2 and 10 (SLNT-1358), that one trace holds `mend.web.session.start` over
+  `rpc.server — sessions.start`, `create and launch session`, `launch session`,
+  `provision workspace`, sealant's `create workspace` and, when the image was built for it,
+  `queue.process — workspace-image-builds` with `build workspace` and `launch workspace` under it,
+  and under that in project 10 `sealantd.boot — boot workspace in a container` with its
+  `sealantd.boot.stage` spans (`restore capture`, `runtime healthy`, `control server ready`,
+  `start harness`). A message's trace reaches project 10's `sealantd.control/writeStdin`, and
+  project 10 has no span with operation `default` or an empty description. Until SLNT-1392,
+  `sealantd.control/openSession` (`create session journal`, `spawn PTY session`) is a trace of its
+  own under sealant's `POST /v1/sessions/as-user`, not under `mend.sealant — open session`. The
+  start's trace holds under a few hundred mend-server spans, and none from after the launch: no
+  `GET /v1/runs/:runId` polling, no `observe capture flush`, no naming job. Traces end (SLNT-1404),
+  over the run's window in project 3: no trace holds more than 2,000 spans or lasts more than 30
+  minutes, and no span lasts more than 10 minutes; the page's `GET /api/events` server span lasts
+  under a second though the page stayed open, and the stream's later work reads as short
+  `mend.events — refresh view` traces linked to it; a terminal's `GET /api/tty` span ends with
+  status 101 as it connects; no root trace from a timer's pass that did nothing (no
+  `sweep retirements`, `capture reaper` or `observe external agents` root whose only children are
+  `SELECT` queries); and the session's own background work (`settle run`, `record first output`,
+  `record process end`, `mend.job.process` for `name-session`) shows as roots carrying a link to the
+  start's launch.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/server/`, `apps/web/src/lib/telemetry.ts`,
   `apps/web/src/lib/telemetry-sentry.ts`, `apps/web/src/lib/telemetry-config.ts`,
-  `apps/web/src/lib/trpc.ts`, `packages/telemetry/`
+  `apps/web/src/lib/trpc.ts`, `packages/telemetry/`, `packages/network/src/http-observation.ts`,
+  `packages/sealant/src/request-priority.ts`, `packages/jobs/src/job-trace.ts`
 
 ### doctor.checklist
 
