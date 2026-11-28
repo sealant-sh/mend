@@ -97,14 +97,14 @@ export const makeTurnTraces = <Id extends string>(
         ...parent,
         attributes: attributesOf(turn),
       }).pipe(traced);
-      const run: Run = { span, firstOutput: false };
-      runs.set(providerTurnId, run);
-      run.timer = yield* Effect.sleep(RUN_SPAN_LIMIT).pipe(
+      const begun: Run = { span, firstOutput: false };
+      runs.set(providerTurnId, begun);
+      begun.timer = yield* Effect.sleep(RUN_SPAN_LIMIT).pipe(
         Effect.andThen(
           Effect.suspend(() => {
-            if (runs.get(providerTurnId) !== run) return Effect.void;
+            if (runs.get(providerTurnId) !== begun) return Effect.void;
             runs.delete(providerTurnId);
-            return endRun(run, { "mend.turn.status": "running" });
+            return endRun(begun, { "mend.turn.status": "running" });
           }),
         ),
         Effect.forkDetach,
