@@ -80,25 +80,26 @@ const read = (span: Span): Readonly<Record<string, string | undefined>> => ({
   ...Object.fromEntries(span.attributes.map(({ key, value }) => [key, value.stringValue])),
 });
 
-const ROOT = join(import.meta.dirname, "../../..");
-
 /** Every span name the repo's server code writes as a literal: `Effect.fn("…")`, `withSpan("…")`. */
-const sourceSpanNames = (): ReadonlyMap<string, string> => {
+const sourceSpanNames = (): ReadonlySet<string> => {
   const SPAN_CALL =
     /(?:Effect\.fn|withSpan|makeSpan|useSpan)\(\s*"([^"]+)"|\.span\(\{\s*name:\s*"([^"]+)"/g;
-  const names = new Map<string, string>();
-  for (const top of ["apps", "packages"]) {
-    for (const project of readdirSync(join(ROOT, top))) {
-      const src = join(ROOT, top, project, "src");
-      if (!existsSync(src)) continue;
-      for (const entry of readdirSync(src, { recursive: true, withFileTypes: true })) {
-        const path = join(entry.parentPath, entry.name);
-        if (!entry.isFile() || !/\.tsx?$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name))
-          continue;
-        for (const match of readFileSync(path, "utf8").matchAll(SPAN_CALL)) {
-          const name = match[1] ?? match[2];
-          if (name !== undefined) names.set(name, path.slice(ROOT.length + 1));
-        }
+  const names = new Set<string>();
+  for (const project of [
+    ...readdirSync(join(import.meta.dirname, "../../../apps")).map((name) => `apps/${name}`),
+    ...readdirSync(join(import.meta.dirname, "../../../packages")).map(
+      (name) => `packages/${name}`,
+    ),
+  ]) {
+    const src = join(import.meta.dirname, "../../..", project, "src");
+    if (!existsSync(src)) continue;
+    for (const entry of readdirSync(src, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile() || !/\.tsx?$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name))
+        continue;
+      const text = readFileSync(join(entry.parentPath, entry.name), "utf8");
+      for (const match of text.matchAll(SPAN_CALL)) {
+        const name = match[1] ?? match[2];
+        if (name !== undefined) names.add(name);
       }
     }
   }
@@ -125,7 +126,7 @@ describe("the span catalog", () => {
   it("holds every span the source names, and no span it no longer does", () => {
     const source = sourceSpanNames();
     expect(source.size).toBeGreaterThan(250);
-    const missing = [...source].filter(([name]) => SPAN_NAMES[name] === undefined);
+    const missing = [...source].filter((name) => !Object.hasOwn(SPAN_NAMES, name));
     expect(missing, "add each to SPAN_NAMES in span-names.ts").toEqual([]);
     const stale = Object.keys(SPAN_NAMES).filter((name) => !source.has(name));
     expect(stale, "remove each from SPAN_NAMES in span-names.ts").toEqual([]);
