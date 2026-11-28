@@ -243,8 +243,6 @@ export const makeScreenSocketRoutes = (timing: ScreenSocketTiming) =>
               const held = yield* reserveScreenViewer(budgets, connections, caller, sessionId);
               if (held._tag === "Refused") return held.response;
               const socket = yield* request.upgrade;
-              // Open: the request's span ends, and the socket's life is not its trace (SLNT-1404).
-              yield* requestOpened(101);
               const { write } = yield* socket.writer;
               // Reading opens the socket for writing too, so the reader comes before any frame.
               const { pull } = yield* socket.reader;
@@ -256,6 +254,9 @@ export const makeScreenSocketRoutes = (timing: ScreenSocketTiming) =>
                 });
               // Leaving the organization closes it; shared control going off does not (D2).
               yield* held.opened(closeWith, caller.stillAdmitted);
+              // Registered and checked: the socket is open, its request's span ends, and its life is
+              // not that request's trace (SLNT-1404).
+              yield* requestOpened(101);
               const guard = held;
               const frames = makeFrameGuard(budgets.limits.frameBytes, closeWith);
               const connection = ViewerConnectionId.make(

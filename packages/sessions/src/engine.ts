@@ -5291,6 +5291,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const refreshCaptureStatus = (sessionId: SessionId): Effect.Effect<void> =>
         forkSealantBackground(
           readCaptureStatusOf(sessionId, Duration.toMillis(drainPolicy.statusMinInterval)).pipe(
+            // One trace for the read and the fence it opens first (SLNT-1404).
+            inOwnTrace("mend.session.read_capture_status", {
+              attributes: { "mend.session_id": sessionId },
+            }),
             Effect.catchCause((cause) =>
               Effect.logWarning("session engine: capture status read failed").pipe(
                 Effect.annotateLogs({ sessionId, cause: String(cause) }),
@@ -6638,10 +6642,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) =>
         Effect.uninterruptible(
           // Awaited: the caller's own work, in its trace; left alone: a trace of its own.
-          (wait ? forkSealantAwaited : forkSealantBackground)(
-            runDeferred(workspaceId, reading, null),
-            scope,
-          ),
+          wait
+            ? forkSealantAwaited(runDeferred(workspaceId, reading, null), scope)
+            : forkSealantBackground(
+                runDeferred(workspaceId, reading, null).pipe(
+                  inOwnTrace("mend.session.flush_deferred", {
+                    attributes: { "sealant.workspace_id": workspaceId },
+                  }),
+                ),
+                scope,
+              ),
         ).pipe(
           Effect.flatMap((fiber) =>
             wait
@@ -9040,6 +9050,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               statusReading.add(session.id);
               yield* forkSealantBackground(
                 readCaptureStatusOf(session.id, Duration.toMillis(drainPolicy.statusInterval)).pipe(
+                  inOwnTrace("mend.session.read_capture_status", {
+                    attributes: { "mend.session_id": session.id },
+                  }),
                   Effect.catchCause((cause) =>
                     Effect.logWarning("session engine: capture status read failed").pipe(
                       Effect.annotateLogs({ sessionId: session.id, cause: String(cause) }),
@@ -9063,6 +9076,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               deadlineReading.add(session.sealantWorkspaceId);
               yield* forkSealantBackground(
                 readRuntimeDeadline(session, session.sealantWorkspaceId).pipe(
+                  inOwnTrace("mend.session.read_runtime_deadline", {
+                    attributes: { "mend.session_id": session.id },
+                  }),
                   asSealantUser(session.ownerUserId),
                 ),
                 scope,

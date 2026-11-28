@@ -326,8 +326,6 @@ export const TtyRoutes = HttpRouter.use((router) =>
           Effect.gen(function* () {
             yield* Effect.addFinalizer(() => Effect.sync(() => attachment.close()));
             const socket = yield* request.upgrade;
-            // Open: the request's span ends, and the socket's life is not its trace (SLNT-1404).
-            yield* requestOpened(101);
             const { write } = yield* socket.writer;
             // Anyone but the owner watches: output streams, their keys and resizes are dropped.
             const typing = resolved.typing;
@@ -346,6 +344,9 @@ export const TtyRoutes = HttpRouter.use((router) =>
               sessionId,
               "terminal",
             );
+            // Registered and checked: the socket is open, its request's span ends, and its life is
+            // not that request's trace (SLNT-1404).
+            yield* requestOpened(101);
             const frames = makeFrameGuard(budgets.limits.frameBytes, write);
             const agentProcessId = target.terminalAgentId;
             // The owner's terminal open on a terminal agent (SLNT-1235): once the last one
