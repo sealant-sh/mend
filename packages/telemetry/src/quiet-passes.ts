@@ -39,15 +39,16 @@ const MAX_HELD = 2_000;
 /** Passes dropped lately, so a span of one that ends late is dropped too. */
 const MAX_DROPPED = 1_000;
 
+/** Sends what a pass held: it did something, and from now on its spans go as they end. */
+const release = (pass: HeldPass) => {
+  pass.busy = true;
+  for (const end of pass.ended.splice(0)) end();
+};
+
 /** `tracer`, holding each timer's pass (`QuietWhenIdle`) until it ends, and dropping it if idle. */
 export const quietIdlePasses = (tracer: Tracer.Tracer): Tracer.Tracer => {
   const held = new Map<string, HeldPass>();
   const dropped = new Set<string>();
-
-  const release = (pass: HeldPass) => {
-    pass.busy = true;
-    for (const end of pass.ended.splice(0)) end();
-  };
 
   return Tracer.make({
     span: (options) => {
