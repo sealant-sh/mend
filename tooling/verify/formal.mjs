@@ -41,6 +41,35 @@ const hasCommit = (root, sha) => {
   }
 };
 
+// Why a sync commit can be missing. CI's checkout holds branches and tags, no pull request ref, and
+// a squash merge puts none of a pull request's own commits on main.
+const WHY_SYNC_VANISHES =
+  "A squash merge puts none of a pull request's own commits on main. Once its branch is deleted, only GitHub's pull request ref holds its last pushed head and the commits under it, and verify formal fetches those by SHA. A commit that a rebase or force-push replaced before the merge, or one never pushed, is held by nothing";
+
+/** Whether this clone has `sha`, fetching it from origin by SHA when it does not. */
+export const fetchCommit = (root, sha) => {
+  if (hasCommit(root, sha)) return true;
+  try {
+    execFileSync("git", ["fetch", "--quiet", "--no-tags", "origin", sha], {
+      cwd: root,
+      stdio: "ignore",
+      timeout: 120_000,
+    });
+  } catch {
+    return false;
+  }
+  return hasCommit(root, sha);
+};
+
+const reaches = (root, head, sha) => {
+  try {
+    git(root, ["merge-base", "--is-ancestor", sha, head]);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 /** The sync commit COVERAGE named at `ref`, or null where it did not exist yet. */
 const syncAt = (root, coverage, ref) => {
   try {
@@ -51,14 +80,23 @@ const syncAt = (root, coverage, ref) => {
   }
 };
 
-/** The guard for one area over a diff's files; `base` is where the diff starts. */
-export const guard = (root, coverage, { files, base }) => {
+/**
+ * The guard for one area over a diff's files; `base` is where the diff starts and `head` where it
+ * ends. A sync commit the diff moves must be one `head` reaches, so that main or the pull
+ * request's last pushed head still holds it after the squash merge.
+ */
+export const guard = (root, coverage, { files, base, head = "HEAD" }) => {
+  const before = base ? syncAt(root, coverage, base) : null;
+  if (before !== null && before !== coverage.sync && !reaches(root, head, coverage.sync))
+    return {
+      status: "failed",
+      detail: `${coverageFile(coverage)} moves sync to ${coverage.sync.slice(0, 10)}, which this branch does not reach: a commit that a rebase or force-push replaced, one from another branch, or one never pushed. After the squash merge GitHub keeps only main and this pull request's last pushed head, so the commit would vanish. Name a commit on main, or this branch's commit that holds the code you checked, as pushed, and re-point it after every rebase`,
+    };
   const code = files.filter((path) => coverage.paths.includes(path));
   if (code.length === 0) return { status: "passed", detail: "no covered code changed" };
   const model = files.filter((path) => coverage.model.includes(path));
   if (model.length > 0)
     return { status: "passed", detail: `covered code and the model changed (${model.join(", ")})` };
-  const before = base ? syncAt(root, coverage, base) : null;
   if (before !== null && before !== coverage.sync)
     return {
       status: "passed",
@@ -70,9 +108,12 @@ export const guard = (root, coverage, { files, base }) => {
   };
 };
 
-/** Covered files that changed since the sync commit, at `head`. */
-export const drift = (root, coverage, head) => {
-  if (!hasCommit(root, coverage.sync)) return { known: false, files: [] };
+/**
+ * Covered files that changed since the sync commit, at `head`. A sync commit this clone lacks is
+ * fetched from origin; `known` is false when origin does not serve it either.
+ */
+export const drift = (root, coverage, head, fetch = fetchCommit) => {
+  if (!fetch(root, coverage.sync)) return { known: false, files: [] };
   const files = git(root, ["diff", "--name-only", coverage.sync, head, "--", ...coverage.paths])
     .split("\n")
     .filter(Boolean);
@@ -204,8 +245,15 @@ export const formalSteps = async (
     const verdict =
       base === null
         ? { status: "passed", detail: "no base: the guard needs a diff" }
-        : guard(root, coverage, { files, base });
+        : guard(root, coverage, { files, base, head });
     const moved = drift(root, coverage, head);
+    if (!moved.known)
+      steps.push({
+        id: `${coverage.area}-sync`,
+        title: `${coverage.area}: the sync commit in COVERAGE can be read`,
+        status: "failed",
+        detail: `${coverage.area}'s sync commit ${coverage.sync} is not in this clone, and origin does not serve it. ${WHY_SYNC_VANISHES}. Point the sync line in ${coverageFile(coverage)} at the commit on main that holds the code the model was last checked against (usually the squash commit of the pull request that set it: git log origin/main --format=%H -- ${coverageFile(coverage)}), and account for any covered hunk between the two as .agents/skills/${coverage.area} step 1 says`,
+      });
     steps.push({
       id: `${coverage.area}-guard`,
       title: `${coverage.area}: covered code changes move the model or its sync commit`,
@@ -215,7 +263,7 @@ export const formalSteps = async (
           ? moved.files.length === 0
             ? "none"
             : moved.files.join(", ")
-          : "the sync commit is not in this clone"
+          : "unknown, the sync commit cannot be read"
       }`,
     });
     const missing = checkerMissing(env, undefined, () => {

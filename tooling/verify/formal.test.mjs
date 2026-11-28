@@ -7,7 +7,15 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseCoverage, readCoverages, touches } from "../../scripts/formal-coverage.mjs";
-import { checkerMissing, drift, formalSteps, guard, runBudgeted, tlxPath } from "./formal.mjs";
+import {
+  checkerMissing,
+  drift,
+  fetchCommit,
+  formalSteps,
+  guard,
+  runBudgeted,
+  tlxPath,
+} from "./formal.mjs";
 
 // A repository with one model, `demo`, that covers src/covered.ts, synced at its first commit.
 const repo = (t) => {
@@ -111,6 +119,69 @@ test("drift names the covered files changed since the sync commit, or says it ca
   assert.deepEqual(drift(r.root, r.demo(), "HEAD"), { known: true, files: ["src/covered.ts"] });
   r.coverage("f".repeat(40));
   assert.equal(drift(r.root, r.demo(), "HEAD").known, false);
+});
+
+test("a moved sync commit must be one the branch reaches, or the squash merge loses it", (t) => {
+  const r = repo(t);
+  r.write("src/covered.ts", "two\n");
+  const changed = r.commit("code");
+  const files = ["src/covered.ts", "docs/formal/demo/COVERAGE"];
+  r.coverage(changed);
+  assert.equal(guard(r.root, r.demo(), { files, base: r.base }).status, "passed", "this branch");
+  r.coverage(r.base);
+  assert.equal(guard(r.root, r.demo(), { files, base: r.base }).status, "passed", "main");
+  // A rebase replaces the commit the sync line named: nothing the merge leaves will hold it.
+  r.git("commit", "-q", "--amend", "-m", "code, rebased");
+  r.coverage(changed);
+  const replaced = guard(r.root, r.demo(), { files, base: r.base });
+  assert.equal(replaced.status, "failed");
+  assert.match(replaced.detail, /does not reach/);
+  assert.match(replaced.detail, /re-point it after every rebase/);
+  assert.equal(
+    guard(r.root, r.demo(), { files: [...files, "docs/formal/demo/Demo.tla"], base: r.base })
+      .status,
+    "failed",
+    "even with the model changed",
+  );
+});
+
+test("a sync commit no ref here holds is fetched from origin, and one origin lacks fails in words", async (t) => {
+  const r = repo(t);
+  // A merged pull request's head, its branch deleted: only refs/pull/1/head reaches it.
+  r.git("checkout", "-qb", "feature");
+  r.write("src/covered.ts", "two\n");
+  const head = r.commit("feature");
+  r.git("update-ref", "refs/pull/1/head", head);
+  r.git("checkout", "-q", "main");
+  r.git("branch", "-qD", "feature");
+  const clone = mkdtempSync(join(tmpdir(), "mend-verify-formal-clone-"));
+  t.after(() => rmSync(clone, { recursive: true, force: true }));
+  execFileSync("git", ["clone", "-q", "--no-local", r.root, clone]);
+  assert.equal(fetchCommit(clone, head), true);
+  writeFileSync(
+    join(clone, "docs/formal/demo/COVERAGE"),
+    `sync ${head}\nmodel Demo.tla\nmodel check.sh\npath src/covered.ts\n`,
+  );
+  assert.deepEqual(drift(clone, readCoverages(clone)[0], "HEAD"), {
+    known: true,
+    files: ["src/covered.ts"],
+  });
+
+  const gone = "f".repeat(40);
+  r.coverage(gone);
+  const steps = await formalSteps(r.root, {
+    files: [],
+    base: null,
+    head: "HEAD",
+    all: true,
+    env: { MEND_TLX: "/tlx" },
+    run: async () => 0,
+    logs: r.root,
+  });
+  const sync = steps.find((step) => step.id === "demo-sync");
+  assert.equal(sync?.status, "failed");
+  assert.match(sync.detail, new RegExp(`^demo's sync commit ${gone} is not in this clone`));
+  assert.match(sync.detail, /squash merge/);
 });
 
 test("a touched model is checked at quick bounds, or full with --full; untouched ones are not run", async (t) => {
