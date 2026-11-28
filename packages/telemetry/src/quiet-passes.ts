@@ -76,7 +76,8 @@ export const quietIdlePasses = (tracer: Tracer.Tracer): Tracer.Tracer => {
           return;
         }
         if (!isRoot) {
-          pass.ended.push(() => end(endTime, exit));
+          // Held spans all succeeded (a failure sends the pass): keep no result in memory.
+          pass.ended.push(() => end(endTime, Exit.void));
           if (pass.ended.length >= MAX_HELD) release(pass);
           return;
         }

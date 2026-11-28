@@ -112,8 +112,8 @@ export const makeTurnTraces = <Id extends string>(
       for (const [id, run] of runs) {
         if (runs.size <= MAX_OPEN_RUNS) break;
         runs.delete(id);
-        if (run.timer !== undefined) yield* Fiber.interrupt(run.timer);
         yield* endRun(run, { "mend.turn.status": "unobserved" });
+        run.timer?.interruptUnsafe();
       }
     });
 
@@ -145,8 +145,10 @@ export const makeTurnTraces = <Id extends string>(
       const run = runs.get(providerTurnId);
       if (run !== undefined) {
         runs.delete(providerTurnId);
-        if (run.timer !== undefined) yield* Fiber.interrupt(run.timer);
-        return yield* endRun(run, { "mend.turn.status": turn.status });
+        yield* endRun(run, { "mend.turn.status": turn.status });
+        // The span is ended first: an interrupt now cannot leave it open.
+        run.timer?.interruptUnsafe();
+        return;
       }
       // Ended after a restart, or by a run this process never began: its trace still ends.
       const parent = yield* parentOf(turn);

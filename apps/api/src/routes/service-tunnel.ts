@@ -7,6 +7,7 @@ import {
   UpgradeTicketsRepo,
 } from "@mend/db";
 import { ServiceId } from "@mend/domain";
+import { requestOpened } from "@mend/network/http-observation";
 import { asSealantUser, withSealantRequestPriority, type ForwardIssueReason } from "@mend/sealant";
 import { ForwardAdapter, portTarget, ServiceHost } from "@mend/sessions";
 import { type Cause, Effect, Option, Queue, Semaphore } from "effect";
@@ -185,6 +186,8 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
         yield* Effect.scoped(
           Effect.gen(function* () {
             const socket = yield* request.upgrade;
+            // Open: the request's span ends, and the socket's life is not its trace (SLNT-1404).
+            yield* requestOpened(101);
             const { write } = yield* socket.writer;
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
             const guard = yield* guardSocket(

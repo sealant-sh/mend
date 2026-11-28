@@ -1,5 +1,6 @@
 import { Auth } from "@mend/auth";
 import { OrganizationsRepo, UpgradeTicketsRepo } from "@mend/db";
+import { requestOpened } from "@mend/network/http-observation";
 import { AgentBridge } from "@mend/store";
 import { Effect } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
@@ -63,6 +64,8 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
         yield* Effect.scoped(
           Effect.gen(function* () {
             const socket = yield* request.upgrade;
+            // Open: the request's span ends, and the socket's life is not its trace (SLNT-1404).
+            yield* requestOpened(101);
             const { write } = yield* socket.writer;
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
             const guard = yield* guardSocket(

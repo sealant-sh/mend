@@ -353,6 +353,7 @@ import {
 import { makeWindowLimiter, NetworkConfig } from "@mend/network";
 import {
   asSealantUser,
+  forkSealantAwaited,
   forkSealantBackground,
   withInteractiveSealant,
   withSealantRequestPriority,
@@ -6636,7 +6637,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         wait = true,
       ) =>
         Effect.uninterruptible(
-          forkSealantBackground(runDeferred(workspaceId, reading, null), scope),
+          // Awaited: the caller's own work, in its trace; left alone: a trace of its own.
+          (wait ? forkSealantAwaited : forkSealantBackground)(
+            runDeferred(workspaceId, reading, null),
+            scope,
+          ),
         ).pipe(
           Effect.flatMap((fiber) =>
             wait
@@ -7734,13 +7739,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           };
           while (true) {
             if (spanOpen && clock.currentTimeMillisUnsafe() - startedAtMs >= DRAIN_SPAN_BUDGET_MS) {
-              span.attribute("mend.drain.passes_after", "own traces");
+              span.attribute("mend.drain.continued_in_own_traces", true);
               yield* endSpan(Exit.void);
             }
             const outcome = yield* drainPass(session, workspaceId, reason, force, state).pipe(
               spanOpen
                 ? Effect.withParentSpan(span)
-                : inOwnTrace("mend.session.drain_pass", { origin: span, attributes }),
+                : inOwnTrace("mend.session.recheck_drain", { origin: span, attributes }),
             );
             if (outcome !== null) return outcome;
             yield* Effect.sleep(drainPolicy.pollInterval);
@@ -8666,9 +8671,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * platform moves are one path. A drain that does not save postpones the replacement: the
        * workspace is kept and the next sweep tries again.
        */
-      const replaceExecutor = Effect.fn("SessionEngine.replaceExecutor")(function* (
-        session: Session,
-      ) {
+      // Untraced: it waits out a drain, which a stalled executor holds for ten minutes; the
+      // drain and the launch after it are traces of their own (SLNT-1404).
+      const replaceExecutor = Effect.fnUntraced(function* (session: Session) {
         if (capture === null || replacing.has(session.id)) return;
         replacing.add(session.id);
         const attempt = Effect.gen(function* () {

@@ -1401,6 +1401,13 @@ const mergeItems = (watch: Watch, read: ReadonlyArray<MendItem>) => {
   }
 };
 
+/** Whether `key` names a refresh `refreshOf` makes; any other does nothing. */
+const isRefreshKey = (key: string): boolean =>
+  key === "all" ||
+  key === "devices" ||
+  key.startsWith("project:") ||
+  key.startsWith("conversation:");
+
 /** The span a refresh of `key` runs in (`refreshKeyOf`'s keys): one name per kind, never an ID. */
 const refreshSpanOf = (key: string): string =>
   key === "all"
@@ -1409,9 +1416,7 @@ const refreshSpanOf = (key: string): string =>
       ? "mend.gateway.check_devices"
       : key.startsWith("project:")
         ? "mend.gateway.refresh_project"
-        : key.startsWith("conversation:")
-          ? "mend.gateway.refresh_conversation"
-          : "mend.gateway.refresh";
+        : "mend.gateway.refresh_conversation";
 
 export const makePersonHub = (input: {
   /** The only way the hub reaches Mend (`device-gate.ts`). */
@@ -3456,7 +3461,7 @@ export const makePersonHub = (input: {
      * opened it (`Projections`), and each of its traces is linked to that request.
      */
     const refreshTraced = (key: string): Effect.Effect<void, HubReadError> =>
-      refreshOf(key).pipe(inOwnTrace(refreshSpanOf(key)));
+      isRefreshKey(key) ? refreshOf(key).pipe(inOwnTrace(refreshSpanOf(key))) : Effect.void;
     const refreshOf = (key: string): Effect.Effect<void, HubReadError> => {
       if (key === "all") {
         return loadLock.withPermits(1)(refreshAll.pipe(Effect.tap(() => markLoaded)));

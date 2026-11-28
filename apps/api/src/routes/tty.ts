@@ -8,6 +8,7 @@ import {
 } from "@mend/db";
 import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
 import { currentAgentProcess, TERMINAL_CLIENT_TOUCH_EVERY_MS } from "@mend/domain/workbench";
+import { requestOpened } from "@mend/network/http-observation";
 import { withSealantRequestPriority } from "@mend/sealant";
 import { asSealantUser, SealantClient, SealantPlatformError } from "@mend/sealant";
 import { SessionEngine, WorkspaceCaller } from "@mend/sessions";
@@ -325,6 +326,8 @@ export const TtyRoutes = HttpRouter.use((router) =>
           Effect.gen(function* () {
             yield* Effect.addFinalizer(() => Effect.sync(() => attachment.close()));
             const socket = yield* request.upgrade;
+            // Open: the request's span ends, and the socket's life is not its trace (SLNT-1404).
+            yield* requestOpened(101);
             const { write } = yield* socket.writer;
             // Anyone but the owner watches: output streams, their keys and resizes are dropped.
             const typing = resolved.typing;

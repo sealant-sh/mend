@@ -75,10 +75,10 @@ describe("a request that lives on once it is open", () => {
     const seen = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const { seen, url } = yield* serve(routes);
-          const response = yield* Effect.promise(() => fetch(url("/api/events")));
+          const served = yield* serve(routes);
+          const response = yield* Effect.promise(() => fetch(served.url("/api/events")));
           yield* Effect.promise(() => response.text());
-          return seen;
+          return served.seen;
         }),
       ),
     );
@@ -109,10 +109,10 @@ describe("a request that lives on once it is open", () => {
     const seen = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const { seen, url } = yield* serve(routes);
-          yield* Effect.promise(() => fetch(url("/ws")));
+          const served = yield* serve(routes);
+          yield* Effect.promise(() => fetch(served.url("/ws")));
           yield* Deferred.await(opened);
-          return seen;
+          return served.seen;
         }),
       ),
     );

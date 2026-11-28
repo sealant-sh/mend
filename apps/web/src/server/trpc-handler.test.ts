@@ -2,7 +2,7 @@ import { once } from "node:events";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 
 import { makePublicNetwork, PublicOrigin, sessionCookieName } from "@mend/network";
-import { Effect } from "effect";
+import { Effect, Tracer } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -131,25 +131,48 @@ describe("tRPC source-request trust and API forwarding", () => {
     },
   );
   it("continues the caller's trace to the API as a child, with Sentry's baggage only", async () => {
-    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
     const traceId = "0af7651916cd43dd8448eb211c80319c";
     const callerSpan = "b7ad6b7169203331";
-    const response = await handle(
-      request({
-        origin: "http://localhost:3105",
-        cookie: "test-cookie=credential",
-        traceparent: `00-${traceId}-${callerSpan}-01`,
-        tracestate: "vendor=opaque",
-        baggage: `sentry-trace_id=${traceId},sentry-environment=test,user.email=person@example.test`,
-      }),
+    const headers = new Headers({
+      origin: "http://localhost:3105",
+      cookie: "test-cookie=credential",
+      tracestate: "vendor=opaque",
+      baggage: `sentry-trace_id=${traceId},sentry-environment=test,user.email=person@example.test`,
+    });
+    // A web tier that traces: the procedure's span hangs off the caller's (`routers/trpc.ts`).
+    await Effect.runPromise(
+      Effect.flatMap(apiClientFor({ headers, apiUrl: api.apiUrl }), (client) =>
+        client.gitKeys.init(),
+      ).pipe(
+        Effect.withSpan("mend.web.git.init_key", {
+          parent: Tracer.externalSpan({ traceId, spanId: callerSpan, sampled: true }),
+        }),
+        Effect.provide(FetchHttpClient.layer),
+      ),
     );
-    expect(response.status).toBe(200);
     const sent = api.requests[0]?.headers;
     // The same trace, from a span of the web tier's own: never the caller's span id passed through.
     expect(sent?.["traceparent"]).toMatch(new RegExp(`^00-${traceId}-[0-9a-f]{16}-01$`));
     expect(sent?.["traceparent"]).not.toContain(callerSpan);
     expect(sent?.["tracestate"]).toBe("vendor=opaque");
     expect(sent?.["baggage"]).toBe(`sentry-trace_id=${traceId},sentry-environment=test`);
+  });
+  it("sends the API no trace header of any kind when its telemetry is off (SLNT-1404)", async () => {
+    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+    const traceId = "0af7651916cd43dd8448eb211c80319c";
+    const response = await handle(
+      request({
+        origin: "http://localhost:3105",
+        cookie: "test-cookie=credential",
+        traceparent: `00-${traceId}-b7ad6b7169203331-01`,
+        tracestate: "vendor=opaque",
+        baggage: `sentry-trace_id=${traceId},sentry-environment=test`,
+      }),
+    );
+    expect(response.status).toBe(200);
+    const sent = api.requests[0]?.headers;
+    for (const name of ["traceparent", "tracestate", "baggage", "b3", "sentry-trace"])
+      expect(sent?.[name]).toBeUndefined();
   });
   it("preserves no-Origin bearer clients without manufacturing a trusted Origin", async () => {
     const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });

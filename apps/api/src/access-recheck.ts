@@ -1,7 +1,7 @@
 import { accessKeyIdOf, deviceIdOf } from "@mend/api-contracts";
 import type { TicketCredential } from "@mend/db";
 import type { OrganizationId } from "@mend/domain";
-import { forkSealantBackground } from "@mend/sealant";
+import { forkSealantAwaited } from "@mend/sealant";
 import { quietWhenIdle } from "@mend/telemetry";
 import {
   Array as Arr,
@@ -98,7 +98,7 @@ export const withinDeadline = <A, E>(
 ): Effect.Effect<Option.Option<A>, E> =>
   Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
-      const work = yield* forkSealantBackground(effect, scope);
+      const work = yield* forkSealantAwaited(effect, scope);
       return yield* restore(Effect.timeoutOption(Fiber.join(work), deadline)).pipe(
         Effect.ensuring(Effect.sync(() => work.interruptUnsafe())),
       );

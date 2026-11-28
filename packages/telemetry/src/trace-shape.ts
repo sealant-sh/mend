@@ -1,7 +1,10 @@
+import { TraceOrigin } from "@mend/network/trace-origin";
 import { Context, Effect, Fiber, Layer, Option, References, Tracer } from "effect";
 import { HttpClient } from "effect/http";
 
 import { QuietWhenIdle } from "./quiet-passes.ts";
+
+export { TraceOrigin };
 
 /**
  * The shape of a trace (SLNT-1404): a trace covers one thing a person or a timer asked for, and
@@ -67,16 +70,6 @@ export const currentOrigin: Effect.Effect<Tracer.AnySpan | undefined> = Effect.m
 /** The link to `origin`, the span a trace of its own serves; none without one. */
 export const linksTo = (origin: Tracer.AnySpan | undefined): Array<Tracer.SpanLink> =>
   origin === undefined || !isTraceable(origin) ? [] : [{ span: origin, attributes: {} }];
-
-/**
- * The span the detached work around here serves (`detachTrace`): every trace that work starts is
- * linked to it (`linkingRoots`), so a supervisor's or a poller's traces still lead back to the
- * request or the launch that started it.
- */
-export const TraceOrigin = Context.Reference<Tracer.AnySpan | undefined>(
-  "@mend/telemetry/TraceOrigin",
-  { defaultValue: () => undefined },
-);
 
 /**
  * `tracer`, linking each root span it makes inside detached work to that work's origin

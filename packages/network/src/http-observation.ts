@@ -16,6 +16,7 @@ import { INVITATION_HEADER } from "./handed-links.ts";
 import { PAGE_VIEW_TOKEN_PARAM } from "./page-view.ts";
 import { CREDENTIAL_QUERY_PARAMETERS } from "./redact.ts";
 import { templatePath } from "./url-template.ts";
+import { TraceOrigin } from "./trace-origin.ts";
 
 /** The route of a request no route answered: none matched, or a middleware refused it first. */
 export const UNROUTED = "unrouted";
@@ -220,8 +221,9 @@ class OpenedRequest extends Context.Service<
 
 /**
  * The request being served is open, and what it does from now on is not the request: its span
- * ends now, with `status` (101 for a socket). A socket handler calls it once it has upgraded what
- * it needs, and runs the rest detached from the request's trace. An event stream needs no call:
+ * ends now, with `status` (101 for a socket), and the handler's fiber leaves its trace (each trace
+ * it starts from here links to the request). A socket handler calls it right after the upgrade.
+ * An event stream needs no call:
  * its span ends when its headers go out, and its body runs outside the request's trace.
  */
 export const requestOpened = (status = 101): Effect.Effect<void> =>
@@ -234,7 +236,7 @@ const EVENT_STREAM = "text/event-stream";
 const withoutParentSpanOf = (context: Context.Context<never>): Context.Context<never> => {
   const services = new Map(context.mapUnsafe);
   services.delete(Tracer.ParentSpan.key);
-  return Context.makeUnsafe<never>(services);
+  return Context.makeUnsafe(services);
 };
 
 /**
@@ -327,7 +329,22 @@ const observed = <E, R>(
         },
         route: () => route,
       }),
-      Effect.provideService(OpenedRequest, { opened: endOpened }),
+      Effect.provideService(OpenedRequest, {
+        opened: (status) =>
+          endOpened(status).pipe(
+            Effect.andThen(
+              Effect.withFiber((fiber) => {
+                // From here the handler is the socket, not the request: nothing it does joins the
+                // request's trace, and each trace it starts links to the request.
+                const services = new Map(fiber.context.mapUnsafe);
+                services.delete(Tracer.ParentSpan.key);
+                if (span !== undefined) services.set(TraceOrigin.key, span);
+                fiber.setContext(Context.makeUnsafe(services));
+                return Effect.void;
+              }),
+            ),
+          ),
+      }),
     );
   });
 
