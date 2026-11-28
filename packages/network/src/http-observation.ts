@@ -15,8 +15,8 @@ import {
 import { INVITATION_HEADER } from "./handed-links.ts";
 import { PAGE_VIEW_TOKEN_PARAM } from "./page-view.ts";
 import { CREDENTIAL_QUERY_PARAMETERS } from "./redact.ts";
-import { templatePath } from "./url-template.ts";
 import { TraceOrigin } from "./trace-origin.ts";
+import { templatePath } from "./url-template.ts";
 
 /** The route of a request no route answered: none matched, or a middleware refused it first. */
 export const UNROUTED = "unrouted";
@@ -222,7 +222,10 @@ class OpenedRequest extends Context.Service<
 /**
  * The request being served is open, and what it does from now on is not the request: its span
  * ends now, with `status` (101 for a socket), and the handler's fiber leaves its trace (each trace
- * it starts from here links to the request). A socket handler calls it right after the upgrade.
+ * it starts from here links to the request). A socket handler calls it once the socket is
+ * registered, at the top level of the region the connection lives in: a context frame entered
+ * before the call (`provideService`, a nested `Effect.scoped`) puts the request's span back when
+ * it exits.
  * An event stream needs no call:
  * its span ends when its headers go out, and its body runs outside the request's trace.
  */
