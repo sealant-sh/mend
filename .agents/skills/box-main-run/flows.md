@@ -2246,7 +2246,10 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `install-detected`, `install-custom`, `install-switch`, `install-colocated`; hot-sessions.md
   `hot-count`, `hot-status`, `hot-rewarm` (route PR 53); project-settings.md `settings-remove` after
   the project's automatic installs (SLNT-1243)
-- **Needs:** no session; no turn; web; Sealant's package catalog
+- **Needs:** no session; no turn; web; Sealant's package catalog. On the box its `hot-rewarm (real)`
+  step needs a session of the checker's in verify-fixture from the last 7 days, since the pool warms
+  only for recent owners; when there is none from the last 6, the recipe starts and stops a shell
+  session there itself (SLNT-1421), so no earlier flow is needed
 - **Do:** Drive the recipe `project-workspace`: it makes a project with no repository and opens
   `/projects/<id>/settings/workspace` from the settings sidebar; Edit image… with a package Sealant
   can't find, then bash and the Docker switch saved; Start again from the organization's image and
@@ -3580,9 +3583,17 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   (`stat -c %a`); extract it into `$E/doctor.bundle-web/x` and run
   `node .agents/skills/verify/scripts/scan-evidence.mjs --dir $E/doctor.bundle-web/x --secrets $P`,
   which looks for every credential shape without anyone reading the CLI's token (the run may not);
-  `M doctor --bundle --tail 0`; on Settings, `Sealant connection` and `Check again`.
+  `M doctor --bundle --tail 0`. Then wait out the request budget before the web: the bundle reads
+  every session, which on the run's data spends the server's 1200 requests a minute from one
+  address, and the browser shares that address, so a page opened inside the minute is refused with
+  429 and reads `This didn't load.` (SLNT-1417, SLNT-1421). The window slides and a refusal isn't
+  counted, so one 200 is not enough: wait until 60 s have passed since the first bundle returned,
+  then `curl -s -o /dev/null -w '%{http_code}' $WEB/api/health` must read `200` (on `429`, wait the
+  `retry-after` seconds and read again). Only then, on Settings, `Sealant connection` and
+  `Check again`.
 - **See:** the archive path and one line per file; mode `600`; the scan exits `0`, no hit;
-  `mend: --tail is 1..2000`, exit `1`; the panel reads connected after `Check again`.
+  `mend: --tail is 1..2000`, exit `1`; the wait and the `200` noted; Settings → Server loads on its
+  first open, and the panel reads connected after `Check again`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/doctor-bundle.ts`, `apps/cli/src/doctor-bundle-collectors.ts`,
