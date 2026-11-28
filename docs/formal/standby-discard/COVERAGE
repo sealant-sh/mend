@@ -215,7 +215,8 @@
 # capture status read (`refreshCaptureStatus`, the reaper's status pass), the runtime deadline
 # read and a deferred flush nobody waits for (`runDeferredDetached`). Tracing only; no action
 # changes. --quick tlx run at d517b0f210: every row as expected.
-sync d517b0f210d5cc4f048bd52628e51fe1af9adfbe
+# 8da516148e is the same branch later: engine.ts has not changed since d517b0f210.
+sync 8da516148e22a3a04fe2acd826e8f4ebf3cbb39c
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
