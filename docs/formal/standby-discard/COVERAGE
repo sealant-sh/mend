@@ -203,14 +203,15 @@
 # Normalised for that wrapper and whitespace, engine.ts is main's, so no action changes. --quick
 # tlx run at 7afbb270c4: every row as expected.
 # 22d65f1603 (SLNT-1404) changes engine.ts's tracing only. `runDrain`'s loop body moved, statement for
+# dd69d78ae1 (SLNT-1404) changes engine.ts's tracing only. `runDrain`'s loop body moved, statement for
 # statement and in the same order, into `drainPass`, its locals into a `DrainState` the loop hands
 # each pass (so a stalled drain's later passes can be traces of their own); `discardStandbyNeverClaimed`
 # is called as before, once per drain (`standbyLooked`). Background forks leave the trace that forked
 # them (`forkSealantBackground`), supervision and process watchers are untraced but for their
 # ends, and the timer loops (the hot-pool sweep among them) send a pass only when it did
 # something. No hot-pool, claim, retire, drain or discard call changes, so no action changes.
-# --quick tlx run at 22d65f1603: every row as expected.
-sync 22d65f1603035a5ebf6a5b7b6b6e69e43305b926
+# --quick tlx run at dd69d78ae1: every row as expected.
+sync dd69d78ae137bd97eb71e020d9bf75707c1f8d3f
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
