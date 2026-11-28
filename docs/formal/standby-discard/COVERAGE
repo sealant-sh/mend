@@ -198,11 +198,11 @@
 # hot-pool, claim, retire, drain or discard call changes, and `standbyApiFor` and `captureApiFor`
 # still upload nothing for a workspace with no session, so no action changes. --quick tlx run at
 # d893050f8a: every row as expected.
-# 782ec270a8 (SLNT-1407) turns engine.ts's launchUnresolved and opencodeFromSharedHome from
+# 259fb1b90a (SLNT-1407) turns engine.ts's launchUnresolved and opencodeFromSharedHome from
 # Effect.fn("…") into Effect.fnUntraced: each runs the same statements without a span of its own.
 # Normalised for that wrapper and whitespace, engine.ts is main's, so no action changes. --quick
-# tlx run at 782ec270a8: every row as expected.
-sync 782ec270a8e239bb4b3c0d082a965288ec8791c9
+# tlx run at 259fb1b90a: every row as expected.
+sync 259fb1b901021d99397aa26dea3f3f7c284eb5ec
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
