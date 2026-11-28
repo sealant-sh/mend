@@ -301,9 +301,7 @@ export default async ({ page, web, capture, note }) => {
   // A start that fails says so, and the task comes back into the field (the start's page opened
   // first, and the refusal brought the person back here: SLNT-1196).
   await page.route("**/trpc/**", (route) => {
-    // The composer starts through `sessions.start` (SLNT-1239), never `worktrees.createSession`.
-    if (!/\/trpc\/(?:[^?]*,)?sessions\.start(?:[,?]|$)/.test(route.request().url()))
-      return route.continue();
+    if (!route.request().url().includes("worktrees.createSession")) return route.continue();
     return route.fulfill({
       status: 500,
       contentType: "application/json",
