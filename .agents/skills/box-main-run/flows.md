@@ -1356,11 +1356,14 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   and the session's sidebar row is under `Waiting on you`; after `Approve` the card goes, the
   conversation reads `You approved the command once`, the row leaves `Waiting on you` with no
   reload, and the turn replies `deleted`; after `Deny` it reads `You denied` and Codex replies
-  `kept`.
+  `kept`. The second message asks with no second tick: `Ask before acting` holds for the session. It
+  fails (SLNT-1416) on a build whose composer sent the menu's choice only when it differed from the
+  newest turn's: the second message runs with no card while the menu still reads ticked.
 - **Mode:** `agent`
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/components/session/request-card.tsx`,
-  `apps/web/src/lib/agent-requests.ts`, `apps/web/src/lib/answered-here.ts`
+  `apps/web/src/lib/agent-requests.ts`, `apps/web/src/lib/answered-here.ts`,
+  `apps/web/src/lib/session-composer.ts`
 
 ### start-session.boat-run
 

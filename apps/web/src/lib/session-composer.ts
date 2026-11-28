@@ -142,7 +142,14 @@ export const currentSelection = (
   const { harness } = session;
   if (!isSelectableHarness(harness)) return null;
   const newest = turns.findLast((turn) => turn.selection != null)?.selection;
-  if (newest != null && newest.harness === harness) return newest;
+  // A turn recorded with no permission ran in its agent's launch mode, and the menu has no Plan:
+  // what the menu reads is what the next turn, sent with it, runs with.
+  if (newest != null && newest.harness === harness)
+    return {
+      ...newest,
+      interactionMode: "default",
+      permissionMode: newest.permissionMode ?? launched?.permissionMode ?? "bypass",
+    };
   return {
     harness,
     model: launched?.model ?? session.model,
@@ -151,6 +158,20 @@ export const currentSelection = (
     permissionMode: launched?.permissionMode ?? "bypass",
   };
 };
+
+/**
+ * The choice a message goes with: what the menu reads, once the person picked something or a turn
+ * recorded one. Mend runs a turn sent with none on the agent's launch choice (a fork's first, on
+ * its source's), not on the newest turn's, so a choice that holds for the session goes with every
+ * message (SLNT-1416). Nothing, before either, when the menu reads that launch choice too.
+ */
+export const selectionToSend = (
+  turns: ReadonlyArray<TurnView>,
+  picked: TurnSelection | null,
+  current: TurnSelection | null,
+): TurnSelection | undefined =>
+  picked ??
+  (current !== null && turns.some((turn) => turn.selection != null) ? current : undefined);
 
 /** Whether two choices run a turn the same way: what a message needs to send at all. */
 export const sameSelection = (a: TurnSelection, b: TurnSelection): boolean =>
