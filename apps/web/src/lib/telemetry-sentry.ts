@@ -137,8 +137,9 @@ const ELEMENT_ATTRIBUTE = /^browser\.web_vital\.(?:inp\.target|lcp\.element|cls\
 /**
  * A web vital's or an interaction's span, named for the Mend component it happened in
  * (`ui.component_name`, from `data-sentry-component`): `SessionRow`, described `click in
- * SessionRow`. With no component around it, it keeps the SDK's name (`Click`) and says what it
- * measured; `no layout shift` for a page whose layout never moved.
+ * SessionRow`. With no component around it (the SDK names an element only for an interaction slow
+ * enough to time), it keeps the SDK's name (`Click`) and says what it measured on which page:
+ * `click on /sessions/$sessionId`, or `no layout shift on /login` for a page that never moved.
  */
 const vitalNamed = (
   op: string,
@@ -155,10 +156,16 @@ const vitalNamed = (
       attributes: { ...kept, "sentry.description": `${measured} in ${component}` },
     };
   }
+  // The page it was measured on, as the SDK names it on the span: its route's template.
+  const page = stringAttribute(attributes, "sentry.transaction");
   const still = op === "ui.webvital.cls" && !("browser.web_vital.cls.source.1" in attributes);
+  const what = still ? "no layout shift" : measured;
   return {
     name: fallback,
-    attributes: { ...kept, "sentry.description": still ? "no layout shift" : measured },
+    attributes: {
+      ...kept,
+      "sentry.description": page?.startsWith("/") === true ? `${what} on ${page}` : what,
+    },
   };
 };
 

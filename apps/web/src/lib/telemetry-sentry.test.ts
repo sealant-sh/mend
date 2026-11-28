@@ -415,6 +415,15 @@ describe("each trace covers one thing the page did", () => {
     });
     expect(bare?.name).toBe("Click");
     expect(bare?.attributes["sentry.description"]).toBe("click");
+    // The page it happened on, when the SDK names it: the route's template.
+    const onPage = vital("ui.interaction.click", "Click", {
+      "sentry.transaction": "/sessions/$sessionId",
+    });
+    expect(onPage?.attributes["sentry.description"]).toBe("click on /sessions/$sessionId");
+    const stillOnPage = vital("ui.webvital.cls", "Layout shift", {
+      "sentry.transaction": "/login",
+    });
+    expect(stillOnPage?.attributes["sentry.description"]).toBe("no layout shift on /login");
     const press = vital("ui.interaction.press", "Key press", {});
     expect(press?.attributes["sentry.description"]).toBe("key press");
     // A page whose layout never moved still reports its CLS, with no element to name.
