@@ -3534,12 +3534,14 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `rpc.server — sessions.start`, `create and launch session`, `launch session`,
   `provision workspace`, sealant's `create workspace` and, when the image was built for it,
   `queue.process — workspace-image-builds` with `build workspace` and `launch workspace` under it,
-  and under that in project 10 `sealantd.boot — boot workspace in a container` with its
-  `sealantd.boot.stage` spans (`restore capture`, `runtime healthy`, `control server ready`,
-  `start harness`). A message's trace reaches project 10's `sealantd.control/writeStdin`, and
-  project 10 has no span with operation `default` or an empty description. Until SLNT-1392,
-  `sealantd.control/openSession` (`create session journal`, `spawn PTY session`) is a trace of its
-  own under sealant's `POST /v1/sessions/as-user`, not under `mend.sealant — open session`. The
+  and under that in project 10 `sealantd.workspace.boot` (operation `sealantd.workspace`) with its
+  stages, operation `sealantd.boot` (`sealantd.boot.restore_capture`, `start_runtime`,
+  `start_control_server`, `start_harness`). A message's trace reaches project 10's
+  `sealantd.control.write_stdin` ("write to stdin", operation `sealantd.control`, `rpc.method`
+  `writeStdin`), and project 10 has no span with operation `default` or an empty description.
+  `sealantd.control.open_session` ("open session", with `sealantd.session.create_journal` and
+  `sealantd.session.spawn` "spawn PTY session" under it) sits in the session start's trace under
+  `mend.sealant — open sealant session` and sealant's `POST /v1/sessions/as-user` (SLNT-1405). The
   start's trace holds under a few hundred mend-server spans, and none from after the launch: no
   `GET /v1/runs/:runId` polling, no `observe capture flush`, no naming job. Traces end (SLNT-1404),
   over the run's window in project 3: no trace holds more than 2,000 spans or lasts more than 30

@@ -393,14 +393,48 @@ const isOrphanQuery = (span: Span): boolean =>
   (span.parentSpanId === undefined || span.parentSpanId === "") &&
   has(span.attributes, "db.system.name");
 
+/**
+ * The attributes Sentry reads only off a span, never off its resource (SLNT-1403): a resource's
+ * `sentry.release` is stored as `resource.sentry.release` and fills no span's `release`.
+ */
+const PER_SPAN = ["sentry.release", "sentry.environment"] as const;
+
+/** The resource's `sentry.release` and `sentry.environment`, to put on each of its spans. */
+const perSpanOf = (resource: OtlpResource.Resource): Record<string, string> =>
+  Object.fromEntries(
+    PER_SPAN.flatMap((key) => {
+      const value = stringOf(resource.attributes, key);
+      return value === undefined ? [] : [[key, value]];
+    }),
+  );
+
+/** `span` with the resource's release and environment, where it names none of its own. */
+const withPerSpan = (span: Span, perSpan: Record<string, string>): Span => {
+  const missing = Object.entries(perSpan).filter(([key]) => !has(span.attributes, key));
+  return missing.length === 0
+    ? span
+    : {
+        ...span,
+        attributes: [
+          ...span.attributes,
+          ...missing.map(([key, value]) => ({ key, value: { stringValue: value } })),
+        ],
+      };
+};
+
 export const enrichTraces = (data: OtlpTracer.TraceData): OtlpTracer.TraceData => ({
-  resourceSpans: data.resourceSpans.map((resource) => ({
-    ...resource,
-    scopeSpans: resource.scopeSpans.map((scope) => ({
-      ...scope,
-      spans: scope.spans.filter((span) => !isOrphanQuery(span) && !isDropped(span)).map(enrichSpan),
-    })),
-  })),
+  resourceSpans: data.resourceSpans.map((resource) => {
+    const perSpan = perSpanOf(resource.resource);
+    return {
+      ...resource,
+      scopeSpans: resource.scopeSpans.map((scope) => ({
+        ...scope,
+        spans: scope.spans
+          .filter((span) => !isOrphanQuery(span) && !isDropped(span))
+          .map((span) => withPerSpan(enrichSpan(span), perSpan)),
+      })),
+    };
+  }),
 });
 
 /** `inner`, handed traces with the operation, description and name each span reads by. */

@@ -133,6 +133,12 @@ describe("what telemetry may send", () => {
     expect(attribute(server, "sentry.description")).toBe("GET /things/:id");
     expect(attribute(workSpan, "sentry.op")).toBe("mend.test");
     expect(attribute(workSpan, "mend.session_id")).toBe("ses_01J9Z");
+    // Sentry fills a span's release only from the span's own attribute (SLNT-1403).
+    expect(spans.length).toBeGreaterThan(1);
+    for (const span of spans) {
+      expect(attribute(span, "sentry.release")).toBe("mend-server@1.2.3");
+      expect(attribute(span, "sentry.environment")).toBe("development");
+    }
 
     // One envelope, one event: its header line, the item header, the event.
     const event = JSON.parse(sentry[0]?.split("\n")[2] ?? "{}");
