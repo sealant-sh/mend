@@ -70,6 +70,13 @@ export default async ({ page, web, capture, note }) => {
         }),
     ]);
   const menu = () => visible(page.getByRole("button", { name: /^Model for the next turn: / }));
+  /** The page's buttons answer clicks: React has hydrated them. */
+  const hydrated = () =>
+    page.waitForFunction(() =>
+      [...document.querySelectorAll("button")].some((button) =>
+        Object.keys(button).some((key) => key.startsWith("__reactProps")),
+      ),
+    );
   const checkbox = (name) => page.getByRole("menuitemcheckbox", { name, exact: true });
   /** What the session menu reads now: Ask before acting and Fast, each ticked or not. */
   const menuReads = async (shot) => {
@@ -123,11 +130,7 @@ export default async ({ page, web, capture, note }) => {
   await page.setViewportSize(DESKTOP);
   await page.goto(`${web}/`);
   await visible(page.getByRole("heading", { name: "New session", exact: true })).waitFor();
-  await page.waitForFunction(() =>
-    [...document.querySelectorAll("button")].some((button) =>
-      Object.keys(button).some((key) => key.startsWith("__reactProps")),
-    ),
-  );
+  await hydrated();
   const pick = (name) => visible(page.getByRole("button", { name }));
   await pick(/^Project: /).click();
   await page.getByPlaceholder("Find a project").fill("verify-fixture");
@@ -171,6 +174,9 @@ export default async ({ page, web, capture, note }) => {
   // 4. Opened afresh: the menu reads ticked, and a third message asks.
   await page.reload();
   await field().waitFor({ timeout: 60_000 });
+  await hydrated();
+  await menu().waitFor({ timeout: 60_000 });
+  await page.waitForTimeout(2_000);
   const reloaded = await menuReads("menu-after-reload");
   const third = await turn("reload-check.txt", "Approve");
   note(
