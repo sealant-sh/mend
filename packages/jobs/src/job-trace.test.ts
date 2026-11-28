@@ -20,9 +20,12 @@ describe("a job's trace", () => {
   it("runs an attempt inside the trace that queued it", async () => {
     const { request, attempt } = await Effect.runPromise(
       Effect.gen(function* () {
-        const request = yield* Effect.currentSpan;
-        const data = yield* withTraceEnvelope({ sessionId: "ses_1" });
-        return { request, attempt: yield* attemptOf(data).pipe(Effect.withSpan("unrelated")) };
+        const queuedIn = yield* Effect.currentSpan;
+        const envelope = yield* withTraceEnvelope({ sessionId: "ses_1" });
+        return {
+          request: queuedIn,
+          attempt: yield* attemptOf(envelope).pipe(Effect.withSpan("unrelated")),
+        };
       }).pipe(Effect.withSpan("mend.test.request")),
     );
     expect(attempt.span.traceId).toBe(request.traceId);
@@ -33,9 +36,9 @@ describe("a job's trace", () => {
   it("runs an attempt of a job queued to link as a trace of its own, linked to the request", async () => {
     const { request, data, attempt } = await Effect.runPromise(
       Effect.gen(function* () {
-        const request = yield* Effect.currentSpan;
-        const data = yield* withTraceEnvelope({ sessionId: "ses_1" }, "link");
-        return { request, data, attempt: yield* attemptOf(data) };
+        const queuedIn = yield* Effect.currentSpan;
+        const envelope = yield* withTraceEnvelope({ sessionId: "ses_1" }, "link");
+        return { request: queuedIn, data: envelope, attempt: yield* attemptOf(envelope) };
       }).pipe(Effect.withSpan("mend.test.request")),
     );
     expect(openEnvelope(data).link).toBe(true);
