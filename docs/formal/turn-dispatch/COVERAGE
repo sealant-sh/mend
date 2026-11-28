@@ -110,7 +110,11 @@
 # same statements without a span of its own. Normalised for that wrapper, trailing commas and
 # whitespace, the file is main's, so no action changes. --quick tlx run at bebfb06a70: every row as
 # expected.
-sync bebfb06a70d1f192ac93f50755e0e11e6139a0ae
+# 22d65f1603 (SLNT-1404) changes protocol-host.ts's tracing only: each event is projected under
+# `untraced` (tracer off and no trace header) where it ran under `withTracerEnabled(false)`, and a
+# turn's run span ends after ten minutes (`turn-trace.ts`). No dispatch, bind, settle, interrupt or
+# turn write changes, so no action changes. --quick tlx run at 22d65f1603: every row as expected.
+sync 22d65f1603035a5ebf6a5b7b6b6e69e43305b926
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
