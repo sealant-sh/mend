@@ -109,9 +109,9 @@ describe("a database span", () => {
   it("files a transaction as one", () => {
     const span = enrichSpan(spanOf("sql.transaction", 1, { "db.system.name": "postgresql" }));
     expect(read(span)).toMatchObject({
-      name: "transaction",
+      name: "mend.db.transaction",
       "sentry.op": "db.sql.transaction",
-      "sentry.description": "transaction",
+      "sentry.description": "database transaction",
     });
   });
 });
@@ -126,6 +126,45 @@ describe("an HTTP span", () => {
       "sentry.op": "http.server",
       "sentry.description": "GET /api/processes/:id/logs",
     });
+  });
+
+  it("names a server span no route matched for the template of its path", () => {
+    const span = read(
+      enrichSpan(
+        spanOf("GET", 2, {
+          "http.request.method": "GET",
+          "http.route": "unrouted",
+          "url.template": "/api/me/cli-auth/:secret",
+        }),
+      ),
+    );
+    expect(span).toMatchObject({
+      name: "GET /api/me/cli-auth/:secret",
+      "sentry.description": "GET /api/me/cli-auth/:secret",
+      "http.route": "/api/me/cli-auth/:secret",
+    });
+    expect(
+      read(
+        enrichSpan(spanOf("POST", 2, { "http.request.method": "POST", "http.route": "unrouted" })),
+      ).name,
+    ).toBe("POST /*");
+  });
+
+  it("names a client call to Mend's API for the route it matches", () => {
+    const named = (path: string) =>
+      read(
+        enrichSpan(
+          spanOf("GET", 3, {
+            "http.request.method": "GET",
+            "url.full": `http://127.0.0.1:3100${path}`,
+          }),
+        ),
+      ).name;
+    expect(named("/api/me/cli-auth/VWMC-T7PJ")).toBe("GET /api/me/cli-auth/:code");
+    expect(named("/api/me/cli-auth/ABCD-EFGH/approve")).toBe("GET /api/me/cli-auth/:code/approve");
+    expect(
+      named("/api/projects/0b6d2c1e-6a43-4a35-8f55-5f2a4f1d9c2e/resources/postgres/start"),
+    ).toBe("GET /api/projects/:id/resources/:name/start");
   });
 
   it("names a client span for its path with the IDs templated out, never its host or query", () => {
@@ -156,6 +195,13 @@ describe("an HTTP span", () => {
     ["/repos/o/r/commits/0123456789abcdef0123", "/repos/o/r/commits/:commitId"],
     ["/api/health", "/api/health"],
     ["/api/settings/git_access", "/api/settings/git_access"],
+    ["/api/me/cli-auth/ABCD-EFGH", "/api/me/cli-auth/:secret"],
+    ["/join/Zq8mJx2vNc4tPr6s", "/join/:secret"],
+    ["/api/me/cli-auth//abcd-efgh", "/api/me/cli-auth//:secret"],
+    ["/API/Me/Cli-Auth/abcd-efgh/approve", "/:id/:id/:id/:secret/approve"],
+    ["/v1/projects/p/resources/vdb3jti/start", "/v1/projects/p/resources/:resourceId/start"],
+    ["/v2/hosts/10.0.0.4/health", "/v2/hosts/:hostId/health"],
+    ["/api/nope/abc/QZXW-PLMK", "/api/nope/abc/:abcId"],
   ])("templates %s", (path, template) => {
     expect(templatePath(path)).toBe(template);
   });
@@ -163,29 +209,43 @@ describe("an HTTP span", () => {
 
 describe("any other span", () => {
   it.each([
-    ["SealantClients.forPrincipal", "mend.sealant.for_principal", "mend.sealant", "for principal"],
-    ["ProjectAccess.sessionAs", "mend.access.session_as", "mend.access", "authorize session"],
-    ["Auth.getSession", "mend.auth.get_session", "mend.auth", "authenticate request"],
     [
-      "SessionEngine.deliverSkillsToWorkspace",
-      "mend.session.deliver_skills_to_workspace",
-      "mend.session",
-      "deliver skills to workspace",
+      "SessionEngine.installDependenciesIfNeeded",
+      "mend.workspace.install_dependencies",
+      "mend.workspace",
+      "install workspace dependencies",
     ],
+    [
+      "ProjectAccess.sessionAs",
+      "mend.access.authorize_session",
+      "mend.access",
+      "authorize session",
+    ],
+    [
+      "ProjectAccess.sessionView",
+      "mend.access.authorize_session_view",
+      "mend.access",
+      "authorize session view",
+    ],
+    ["Auth.getSession", "mend.auth.authenticate_request", "mend.auth", "authenticate request"],
     [
       "SessionEngine.changingBoatKey.drain",
-      "mend.session.changing_boat_key.drain",
-      "mend.session",
-      "changing boat key drain",
+      "mend.workspace.drain_boat_standbys",
+      "mend.workspace",
+      "drain standbys for key change",
     ],
     [
-      "SealantClient.createWorkspace",
-      "mend.sealant.create_workspace",
-      "mend.sealant",
-      "create workspace",
+      "observeLandings",
+      "mend.landing.observe_state",
+      "mend.landing",
+      "observe change landing state",
     ],
-    ["ProtocolHost.sendMessage", "mend.turn.input", "mend.turn", "send turn input"],
-    ["BlobStore.listMultipart", "mend.store.list_multipart", "mend.store", "list multipart"],
+    [
+      "ProtocolHost.sendMessage",
+      "mend.turn.send_message",
+      "mend.turn",
+      "send conversation message",
+    ],
   ])(
     "names %s as %s, filed under %s, reads %s, and keeps its own name",
     (name, renamed, op, description) => {
@@ -200,16 +260,24 @@ describe("any other span", () => {
 
   it.each([
     ["mend.session.launch", "mend.session", "launch session"],
-    ["mend.session.start", "mend.session", "start session"],
+    ["mend.session.start", "mend.session", "create and launch session"],
     ["mend.turn.dispatch", "mend.turn", "dispatch turn"],
     ["mend.turn.complete", "mend.turn", "complete turn"],
-    ["mend.store.sweep_handoff_quarantines", "mend.store", "sweep handoff quarantines"],
     ["sealant.sdk.sessions.get_session_output", "mend.sealant", "get session output"],
   ])("keeps %s, filed under %s, reading %s", (name, op, description) => {
     expect(read(enrichSpan(spanOf(name, 1, {})))).toMatchObject({
       name,
       "sentry.op": op,
       "sentry.description": description,
+    });
+  });
+
+  it("names a span the catalog does not hold for its service and method", () => {
+    expect(read(enrichSpan(spanOf("WidgetRepo.listOpen", 1, {})))).toMatchObject({
+      name: "mend.widget.list_open",
+      "sentry.op": "mend.widget",
+      "sentry.description": "list open",
+      "code.function.name": "WidgetRepo.listOpen",
     });
   });
 
@@ -239,7 +307,7 @@ describe("any other span", () => {
       }),
     );
     expect(read(span)).toMatchObject({
-      name: "mend.web.sessions.sendMessage",
+      name: "mend.web.sessions.send_message",
       "sentry.op": "rpc.server",
       "sentry.description": "sessions.sendMessage",
     });
@@ -349,7 +417,7 @@ describe("the spans that reach Sentry", () => {
       ),
     );
     expect(spans.map((span) => span.name)).not.toContain("sealant.sdk.workspaces.get_workspace");
-    const call = spans.find((span) => span.name === "mend.sealant.get_workspace");
+    const call = spans.find((span) => span.name === "mend.sealant.read_workspace");
     const request = spans.find((span) => span.name === "GET");
     expect(request?.parentSpanId).toBe(call?.spanId);
     expect(call?.attributes).toContainEqual({
@@ -359,7 +427,7 @@ describe("the spans that reach Sentry", () => {
     const value = (key: string) =>
       call?.attributes.find((attribute) => attribute.key === key)?.value;
     expect(value("sentry.op")).toEqual({ stringValue: "mend.sealant" });
-    expect(value("sentry.description")).toEqual({ stringValue: "read workspace" });
+    expect(value("sentry.description")).toEqual({ stringValue: "read sealant workspace" });
     expect(value("code.function.name")).toEqual({ stringValue: "SealantClient.getWorkspace" });
   });
 });

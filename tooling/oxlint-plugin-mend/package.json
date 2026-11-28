@@ -2,7 +2,7 @@
   "name": "@mend/oxlint-plugin-mend",
   "version": "0.0.0",
   "private": true,
-  "description": "Mend's own oxlint rules for the web app and its UI kit",
+  "description": "Mend's own oxlint rules for the web app, its UI kit and the servers' span names",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
@@ -11,6 +11,9 @@
     "lint": "OXLINT_TSGOLINT_PATH=../../node_modules/.bin/tsrs-lint oxlint --type-aware . --no-error-on-unmatched-pattern",
     "test": "vitest run",
     "typecheck": "tsrs -p tsconfig.json --noEmit --checkers 1"
+  },
+  "dependencies": {
+    "@mend/telemetry": "workspace:*"
   },
   "devDependencies": {
     "@mend/test-ci": "workspace:*",

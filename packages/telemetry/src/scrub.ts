@@ -1,4 +1,4 @@
-import { redactDetail } from "@mend/network";
+import { redactDetail, SECRET_SEGMENT_PREFIXES } from "@mend/network";
 import type { OtlpLogger, OtlpResource, OtlpSerialization, OtlpTracer } from "effect/observability";
 
 /**
@@ -41,8 +41,28 @@ const ID_KEY = /(?:^|[._])id$|[a-z]Id$/;
 /** What an ID looks like: no spaces, no slashes, short. */
 const ID_VALUE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
+/**
+ * The segment after a path the edge redacts the next segment of (`/api/me/cli-auth/<code>`,
+ * `/join/<token>`), wherever a path or URL appears in a message, matched as the edge matches it: in
+ * any case, over repeated slashes (SLNT-1407). A failed call's error names its URL.
+ */
+/** A prefix as a pattern: `/api/me/cli-auth` matches `/API/me//cli-auth`. */
+const prefixPattern = (prefix: string): string =>
+  prefix
+    .split("/")
+    .filter((word) => word !== "")
+    .map((word) => `/+${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
+    .join("");
+
+const SECRET_SEGMENT = new RegExp(
+  `((?:^|[^\\w.-])(?:${SECRET_SEGMENT_PREFIXES.map(prefixPattern).join("|")})/+)` +
+    `[^/:\\s?#)"'<>][^/\\s?#)"'<>]*`,
+  "gi",
+);
+
 /** `text` as it may leave the process. */
-export const scrubText = (text: string): string => redactDetail(text);
+export const scrubText = (text: string): string =>
+  redactDetail(text).replace(SECRET_SEGMENT, "$1:secret");
 
 type AnyValue = OtlpResource.AnyValue;
 type KeyValue = OtlpResource.KeyValue;

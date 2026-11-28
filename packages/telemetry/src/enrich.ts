@@ -1,7 +1,10 @@
+import { MEND_API_ROUTE_TEMPLATES } from "@mend/api-contracts/route-templates";
+import { UNROUTED } from "@mend/network/http-observation";
+import { pathOf, routeTemplates, templatePath } from "@mend/network/url-template";
 import type { OtlpResource, OtlpSerialization, OtlpTracer } from "effect/observability";
 
+import { LIBRARY_SPAN_NAMES, SPAN_NAMES } from "./span-names.ts";
 import { summarizeSql } from "./sql-summary.ts";
-import { pathOf, templatePath } from "./url-template.ts";
 
 /**
  * How Mend's spans read in Sentry (SLNT-1375). Sentry files an OTLP span under the operation in
@@ -11,17 +14,20 @@ import { pathOf, templatePath } from "./url-template.ts";
  * else nothing. Effect's own spans (`Effect.fn`, `withSpan`) carry none of that, so this gives each
  * span the operation, the description and the name a person scanning a trace wants:
  *
- * - an HTTP server span: `GET /api/sessions/:id`, from its route template;
+ * - an HTTP server span: `GET /api/sessions/:id`, from its route template, or from its path
+ *   templated when no route matched;
  * - an HTTP client span: `GET /v1/sessions/:sessionId/output`, the path with its IDs templated
- *   out, never the host, a port or the query;
+ *   out, or the API route it matches (`GET /api/me/cli-auth/:code`), never the host, a port or the
+ *   query;
  * - a database span: `select .. from agent_sessions where agent_sessions.id = $1 limit $2`, with
  *   its system, operation and table;
  * - a queue span: the queue's name, as `queue.publish` or `queue.process`;
- * - a procedure of the web tier: `rpc.server — sessions.sendMessage`, its tRPC path;
- * - anything else: a name of `<product>.<area>.<operation>` (an `Effect.fn("SessionEngine.start")`
- *   becomes `mend.session.start`, and keeps its own name in `code.function.name`), filed under
- *   `<product>.<area>` and described in plain words that never repeat it: Sentry shows
- *   `mend.session — launch session`, not `mend.session — mend.session.launch` (`PHRASES`).
+ * - a procedure of the web tier: `mend.web.sessions.send_message`, described by its tRPC path
+ *   `sessions.sendMessage`;
+ * - anything else: the name and words `SPAN_NAMES` gives it (SLNT-1407): an
+ *   `Effect.fn("SessionEngine.provision")` becomes `mend.session.provision`, filed under
+ *   `mend.session`, described "record new session", and keeps its own name in
+ *   `code.function.name`.
  *
  * It runs on the spans as Effect made them, before `scrub.ts` scrubs everything it wrote.
  */
@@ -75,239 +81,97 @@ const withAttributes = (
 
 // --- Names ----------------------------------------------------------------------------------
 
-/**
- * The area each of Mend's services works in, for the services whose names do not say it: the
- * second word of `mend.<area>.<operation>`. A service not listed takes the area its name starts
- * with (`AREA_BY_PREFIX`), and otherwise its own name.
- */
-const AREA_BY_SERVICE: Readonly<Record<string, string>> = {
-  Auth: "auth",
-  MendKeys: "auth",
-  DevicesRepo: "auth",
-  ProjectAccess: "access",
-  SourcePolicy: "access",
-  AccessPoliciesRepo: "access",
-  SealantIdentityStore: "sealant",
-  PersonLayoutPlatform: "sealant",
-  WorkspaceRuntimesReport: "sealant",
-  ExecutorSockets: "executor",
-  HarnessLayoutSteps: "session",
-  ProtocolHost: "session",
-  ProtocolIdleStop: "session",
-  TerminalIdleStop: "session",
-  QueuedSessions: "session",
-  RunStarter: "session",
-  ReviewPrep: "session",
-  CaptureRetention: "session",
-  CaptureSeals: "session",
-  AgentBridge: "session",
-  CodexAdapter: "session",
-  Removal: "session",
-  AdoptionSkills: "session",
-  JobRunner: "job",
-  Dispatcher: "job",
-  SshKeyRevoker: "job",
-  Store: "store",
-  BlobStore: "store",
-  GitOpsRunner: "store",
-  GitRemote: "store",
-  DotfilesStore: "store",
-  ProjectCreation: "project",
-  ProjectOperations: "project",
-  Resources: "resource",
-  ResourceRuntime: "resource",
-  ResourceStatusReads: "resource",
-  ResourceTableReads: "resource",
-  PreviewPreparation: "preview",
-  Landing: "landing",
-  AutomaticLanding: "landing",
-  InferenceProvider: "inference",
-  SecretCipher: "crypto",
-  UserEvents: "user",
-  Migrator: "db",
-  PgDrizzle: "db",
-  MendClient: "gateway",
-};
-
-const AREA_BY_PREFIX: ReadonlyArray<readonly [RegExp, string]> = [
-  [/^Sealant/, "sealant"],
-  [/^(?:Session|Harness|Turn)/, "session"],
-  [/^Slack/, "slack"],
-  [/^(?:Project|Worktree)/, "project"],
-  [/^(?:Capture|Checkpoint)/, "session"],
-  [/^Inference/, "inference"],
-  [/^Mcp/, "mcp"],
-];
-
+/** `inboxRow` → `inbox_row`, `SessionEngine` → `session_engine`. */
 const snake = (word: string): string =>
   word
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .replace(/([A-Z])([A-Z][a-z])/g, "$1_$2")
-    .replace(/[^A-Za-z0-9.]+/g, "_")
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
     .toLowerCase();
 
-const areaOf = (service: string): string =>
-  AREA_BY_SERVICE[service] ??
-  AREA_BY_PREFIX.find(([pattern]) => pattern.test(service))?.[1] ??
-  snake(service.replace(/(?:Repo|Store|Service|Live)$/, ""));
+/** `sessions.inboxRow` → `sessions.inbox_row`: each part of a dotted or slashed path. */
+const snakeParts = (path: string): string =>
+  path
+    .split(/[./]/)
+    .filter((part) => part !== "")
+    .map(snake)
+    .join(".");
+
+/** `snake_case.words` as words: `deliver_skills` reads `deliver skills`. */
+const words = (name: string): string => name.replace(/[._]+/g, " ").trim();
 
 /** `Service.method`, the way `Effect.fn` spans are named; `SessionEngine.changingBoatKey.drain`. */
 const SERVICE_METHOD = /^([A-Z][A-Za-z0-9]*)[. ]([A-Za-z][\w./]*)$/;
 /** Already `<product>.<area>.<operation>`, lower-case words. */
 const DOTTED = /^[a-z][a-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/;
-/** A bare function's name: `ensureCaptureCache`. */
-const FUNCTION = /^[a-z][A-Za-z0-9]*$/;
-
-/**
- * Spans named for a different area than their service's: a protocol host's turns are a turn's
- * steps (`mend.turn — send turn input`), not the session's.
- */
-const RENAMED: Readonly<Record<string, string>> = {
-  "ProtocolHost.sendMessage": "mend.turn.input",
-  "ProtocolHost.submitTurn": "mend.turn.submit",
-  "ProtocolHost.interruptTurn": "mend.turn.interrupt",
-  "ProtocolHost.respondRequest": "mend.turn.respond",
-  "ProtocolHost.steerTurn": "mend.turn.steer",
-  "ProtocolHost.sendSteer": "mend.turn.steer",
-  "ProtocolHost.deliverSteer": "mend.turn.deliver_steer",
-};
 
 interface Named {
   readonly name: string;
   readonly op: string;
+  readonly description: string;
   readonly codeName?: string | undefined;
 }
 
 /** The operation a `<product>.<area>.<operation>` name files under. */
-const opOfDotted = (name: string): string => {
+const opOf = (name: string): string => {
   if (name.startsWith("sealant.sdk.")) return "mend.sealant";
-  if (name.startsWith("mend.web.")) return "mend.web";
   const [product, area] = name.split(".");
   return area === undefined ? (product ?? name) : `${product}.${area}`;
 };
 
+/** An MCP method as an operation: `tools/call` → `call_tool`, `resources/list` → `list_resources`. */
+const mcpOperation = (method: string): string => {
+  const parts = method.split("/").map(snake);
+  const verb = parts.at(-1) ?? "";
+  const objects = parts.slice(0, -1);
+  if (objects.length === 0) return verb;
+  const object = objects.join("_");
+  return `${verb}_${verb === "list" ? object : object.replace(/s$/, "")}`;
+};
+
+const renamed = (name: string, codeName: string, description?: string): Named => {
+  const op = opOf(name);
+  const rest = name.startsWith(`${op}.`) ? name.slice(op.length + 1) : name;
+  return { name, op, description: description ?? words(rest), codeName };
+};
+
+/**
+ * The name, operation and words of a span the code named `name`: its entry in `SPAN_NAMES`, every
+ * span Mend's own code names; else, for the names libraries and routers make, the name they would
+ * have there: a tRPC procedure `mend.web.sessions.inbox_row`, a gateway call
+ * `mend.gateway.orchestration.get_snapshot`, an MCP call `mend.mcp.call_tool`.
+ */
 const nameOf = (name: string): Named => {
-  const renamed = RENAMED[name];
-  if (renamed !== undefined) return { name: renamed, op: opOfDotted(renamed), codeName: name };
-  if (DOTTED.test(name)) return { name, op: opOfDotted(name) };
-  if (name.startsWith("Migrator "))
-    return { name: "mend.db.migrate", op: "db.migrate", codeName: name };
+  const entry = Object.hasOwn(SPAN_NAMES, name)
+    ? SPAN_NAMES[name]
+    : Object.hasOwn(LIBRARY_SPAN_NAMES, name)
+      ? LIBRARY_SPAN_NAMES[name]
+      : undefined;
+  if (entry !== undefined) {
+    const [named, description] = entry;
+    return { ...renamed(named, name, description), codeName: named === name ? undefined : name };
+  }
+  if (name.startsWith("Migrator ")) return renamed("mend.db.migrate", name, "migrate database");
+  if (name.startsWith("mend.web.")) return renamed(`mend.web.${snakeParts(name.slice(9))}`, name);
+  if (name.startsWith("mend.gateway.rpc."))
+    return renamed(`mend.gateway.${snakeParts(name.slice(17))}`, name);
+  if (name.startsWith("McpServer."))
+    return renamed(`mend.mcp.${mcpOperation(name.slice(10))}`, name);
+  if (name.startsWith("sealant.sdk."))
+    return { name, op: "mend.sealant", description: words(name.split(".").slice(3).join(".")) };
+  if (DOTTED.test(name)) return { ...renamed(name, name), codeName: undefined };
   const serviceMethod = SERVICE_METHOD.exec(name);
   if (serviceMethod !== null) {
     const [, service = "", method = ""] = serviceMethod;
-    const area = areaOf(service);
-    const operation = method
-      .split(/[./]/)
-      .filter((part) => part !== "")
-      .map(snake)
-      .join(".");
-    return { name: `mend.${area}.${operation}`, op: `mend.${area}`, codeName: name };
+    const area = snake(service.replace(/(?:Repo|Store|Service|Live)$/, ""));
+    return renamed(`mend.${area}.${snakeParts(method)}`, name);
   }
-  if (FUNCTION.test(name)) return { name: `mend.${snake(name)}`, op: "function", codeName: name };
-  return { name, op: "function" };
+  return { name, op: "function", description: words(name) || name };
 };
 
-// --- Phrases --------------------------------------------------------------------------------
-
-/**
- * What a person reads for the spans a trace is made of, by name: Sentry shows `<op> — <this>`, so
- * none repeats its operation. A name not listed reads as its own words (`phraseOf`).
- */
-const PHRASES: Readonly<Record<string, string>> = {
-  // Who is asking, and may they
-  "mend.auth.get_session": "authenticate request",
-  "mend.auth.access_key_session": "authenticate access key",
-  "mend.access.session_as": "authorize session",
-  "mend.access.session_as_member": "authorize session",
-  "mend.access.session_view": "authorize session",
-  "mend.access.project_as": "authorize project",
-  "mend.access.manage_project": "authorize project management",
-  "mend.access.worktree": "authorize worktree",
-  "mend.access.change": "authorize change",
-  "mend.access.require_owner": "authorize owner",
-  "mend.access.require_operator": "authorize operator",
-  "mend.access.visible_projects_of": "list visible projects",
-  // A session's life
-  "mend.session.start": "start session",
-  "mend.session.create_as": "create session",
-  "mend.session.create_in_worktree_as": "create session",
-  "mend.session.launch": "launch session",
-  "mend.session.provision": "create worktree",
-  "mend.session.create_worktree_in": "create worktree",
-  "mend.session.provision_workspace": "provision workspace",
-  "mend.session.prepare_executor": "prepare workspace",
-  "mend.session.supervise": "supervise session",
-  "mend.session.run_drain": "wind down session",
-  "mend.session.end_agent_process": "end agent process",
-  "mend.session.terminate_workspace": "terminate workspace",
-  "mend.session.stop": "stop session",
-  "mend.session.stop_session": "stop session and workspace",
-  "mend.session.resume": "resume sessions",
-  "mend.session.resume_session": "resume session",
-  "mend.session.reconcile_session": "reconcile session",
-  "mend.session.classify_unclassified_sessions": "classify restart transcripts",
-  "mend.session.switch_mode": "switch mode",
-  "mend.session.launch_follow_up": "launch follow-up",
-  // What a session keeps
-  "mend.session.take_checkpoint": "save checkpoint",
-  "mend.session.checkpoint_now": "save checkpoint",
-  "mend.session.landing_checkpoint": "save landing checkpoint",
-  "mend.session.take_worktree_snapshot": "snapshot worktree",
-  "mend.session.observe_capture_flush": "flush capture",
-  "mend.session.flush_captures": "flush captures",
-  // A turn
-  "mend.turn.dispatch": "dispatch turn",
-  "mend.turn.input": "send turn input",
-  "mend.turn.submit": "submit turn",
-  "mend.turn.run": "run turn",
-  "mend.turn.first_output": "first agent output",
-  "mend.turn.complete": "complete turn",
-  "mend.turn.interrupt": "interrupt turn",
-  "mend.turn.respond": "answer agent request",
-  "mend.turn.steer": "steer turn",
-  // Calls to sealant
-  "mend.sealant.create_workspace": "create workspace",
-  "mend.sealant.find_workspace_by_key": "find workspace",
-  "mend.sealant.get_workspace": "read workspace",
-  "mend.sealant.expire_workspace": "set workspace expiry",
-  "mend.sealant.stop_workspace": "stop workspace",
-  "mend.sealant.open_session": "open session",
-  "mend.sealant.get_session": "read session",
-  "mend.sealant.session_output": "read session output",
-  "mend.sealant.get_run": "read run",
-  "mend.sealant.wait_run": "wait for run",
-  "mend.sealant.run_changes": "read run changes",
-  "mend.sealant.record_commands": "read command record",
-  "mend.sealant.record_scrollback": "read scrollback",
-  "mend.sealant.capture_status": "read capture status",
-  "mend.sealant.open_forward": "open port forward",
-  "mend.sealant.connection_check": "check connection",
-  "mend.sealant.connect": "connect account",
-  "mend.sealant.inspect_image": "inspect image",
-  // Background work and jobs
-  "mend.job.work": "listen for jobs",
-  "mend.job.process": "process job",
-  "mend.db.migrate": "migrate database",
-};
-
-/** `snake_case.words` as words: `deliver_skills_to_workspace` reads `deliver skills to workspace`. */
-const words = (name: string): string => name.replace(/[._]+/g, " ").trim();
-
-/**
- * The words for `name` filed under `op`: its phrase, else the name less the operation it repeats
- * (`mend.session.deliver_skills_to_workspace` under `mend.session` reads `deliver skills to
- * workspace`), less the SDK's `sealant.sdk.<group>.`, or less `mend.` for a bare function.
- */
-const phraseOf = (name: string, op: string): string => {
-  const phrase = PHRASES[name];
-  if (phrase !== undefined) return phrase;
-  const rest = name.startsWith(`${op}.`)
-    ? name.slice(op.length + 1)
-    : name.startsWith("sealant.sdk.")
-      ? name.split(".").slice(3).join(".")
-      : name.replace(/^(?:mend|sealant)\./, "");
-  return words(rest) || words(name);
-};
+/** Library spans that tell a reader nothing: an MCP server telling its client its tools changed. */
+const isDropped = (span: Span): boolean => span.name.startsWith("McpServer/Notifications.");
 
 // --- Spans ----------------------------------------------------------------------------------
 
@@ -315,29 +179,91 @@ interface Enriched {
   readonly name: string;
   readonly set: Readonly<Record<string, string | undefined>>;
   readonly drop?: ReadonlyArray<string>;
+  /** Rewrites the span's own words: its status message and its events' attributes. */
+  readonly rewrite?: ((text: string) => string) | undefined;
 }
 
+/** Mend's API's routes, for naming a call to it by its route (`/api/me/cli-auth/:code`). */
+const API_ROUTES = routeTemplates(MEND_API_ROUTE_TEMPLATES);
+
+/**
+ * A request no route matched (`UNROUTED`) is named by its path, which the observation records only
+ * then, and only templated (`url.template`).
+ */
 const httpServer = (span: Span, method: string): Enriched => {
-  const route = stringOf(span.attributes, "http.route") ?? "unrouted";
-  const description = `${method} ${route}`;
+  const route = stringOf(span.attributes, "http.route");
+  const template =
+    route !== undefined && route !== UNROUTED
+      ? route
+      : (stringOf(span.attributes, "url.template") ?? "/*");
+  const description = `${method} ${template}`;
   return {
     name: description,
-    set: { "sentry.op": "http.server", "sentry.description": description },
+    set: { "sentry.op": "http.server", "sentry.description": description, "http.route": template },
   };
 };
 
+/** `url` with its path replaced by `template`, and no query or fragment. */
+const withPath = (url: string | undefined, template: string): string | undefined => {
+  if (url === undefined) return undefined;
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}${template}`;
+  } catch {
+    return template;
+  }
+};
+
+/** `text` with its percent-escapes read, as a caller that built the URL by hand may have spelled it. */
+const decoded = (text: string | undefined): string | undefined => {
+  if (text === undefined) return undefined;
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return undefined;
+  }
+};
+
+const escaped = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Named for its path's template; the URL it records keeps that template too, never the path it
+ * called: an ID is no secret, but a sign-in code or a link's token in a path is. So do its words:
+ * a call that failed ends with the URL in its status and its exception (`StatusCode error (404 GET
+ * http://…/api/me/cli-auth/<code>)`), and each spelling of the path there, with any query after
+ * it, becomes the template.
+ */
 const httpClient = (span: Span, method: string): Enriched => {
-  const path =
-    pathOf(stringOf(span.attributes, "url.full")) ?? stringOf(span.attributes, "url.path");
-  const template = path === undefined ? undefined : templatePath(path);
+  const full = stringOf(span.attributes, "url.full");
+  const rawPath = stringOf(span.attributes, "url.path");
+  const path = pathOf(full) ?? pathOf(rawPath);
+  const template = path === undefined ? undefined : templatePath(path, API_ROUTES);
   const description = template === undefined ? method : `${method} ${template}`;
+  const spellings = [
+    ...new Set(
+      [path, rawPath, full?.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "")]
+        .flatMap((spelling) => [spelling, decoded(spelling)])
+        .filter((spelling): spelling is string => spelling !== undefined && spelling.length > 1),
+    ),
+  ].toSorted((a, b) => b.length - a.length);
+  const pattern =
+    template === undefined || spellings.length === 0
+      ? undefined
+      : new RegExp(`(?:${spellings.map(escaped).join("|")})(?:[?#][^\\s)"'<>]*)?`, "g");
   return {
+    rewrite:
+      pattern === undefined || template === undefined
+        ? undefined
+        : (text) => text.replace(pattern, () => template),
     name: description,
     set: {
       "sentry.op": "http.client",
       "sentry.description": description,
       "url.template": template,
+      "url.full": template === undefined ? undefined : withPath(full, template),
+      "url.path": template,
     },
+    drop: ["url.full", "url.path", "url.query"],
   };
 };
 
@@ -345,8 +271,8 @@ const httpClient = (span: Span, method: string): Enriched => {
 const database = (span: Span): Enriched => {
   if (span.name === "sql.transaction")
     return {
-      name: "transaction",
-      set: { "sentry.op": "db.sql.transaction", "sentry.description": "transaction" },
+      name: "mend.db.transaction",
+      set: { "sentry.op": "db.sql.transaction", "sentry.description": "database transaction" },
     };
   const query = stringOf(span.attributes, "db.query.text");
   if (query === undefined)
@@ -378,11 +304,14 @@ const messaging = (span: Span): Enriched => {
         : named.op;
   return {
     name: named.name,
-    set: { "sentry.op": op, "sentry.description": queue ?? phraseOf(named.name, named.op) },
+    set: { "sentry.op": op, "sentry.description": queue ?? named.description },
   };
 };
 
-/** A procedure by its method, `sessions.sendMessage`, not the span's `mend.web.` name. */
+/**
+ * A procedure, `mend.web.sessions.send_message`, described by the method its caller sent,
+ * `sessions.sendMessage`.
+ */
 const rpc = (span: Span): Enriched => {
   const named = nameOf(span.name);
   const op =
@@ -391,8 +320,7 @@ const rpc = (span: Span): Enriched => {
     name: named.name,
     set: {
       "sentry.op": op,
-      "sentry.description":
-        stringOf(span.attributes, "rpc.method") ?? phraseOf(named.name, named.op),
+      "sentry.description": stringOf(span.attributes, "rpc.method") ?? named.description,
       "code.function.name": named.codeName,
     },
   };
@@ -404,7 +332,7 @@ const internal = (span: Span): Enriched => {
     name: named.name,
     set: {
       "sentry.op": named.op,
-      "sentry.description": phraseOf(named.name, named.op),
+      "sentry.description": named.description,
       "code.function.name": named.codeName,
     },
   };
@@ -421,16 +349,39 @@ const enrichmentOf = (span: Span): Enriched => {
   return internal(span);
 };
 
+const rewritten = (
+  attributes: ReadonlyArray<KeyValue>,
+  rewrite: (text: string) => string,
+): Array<KeyValue> =>
+  attributes.map((attribute) =>
+    typeof attribute.value.stringValue === "string"
+      ? { ...attribute, value: { stringValue: rewrite(attribute.value.stringValue) } }
+      : attribute,
+  );
+
 /** `span` with the operation, description and name Sentry shows; one it already has is kept. */
 export const enrichSpan = (span: Span): Span => {
   const enriched = enrichmentOf(span);
   const set = has(span.attributes, "sentry.op")
     ? { ...enriched.set, "sentry.op": undefined }
     : enriched.set;
+  const rewrite = enriched.rewrite;
   return {
     ...span,
     name: enriched.name,
     attributes: withAttributes(span.attributes, set, enriched.drop),
+    ...(rewrite === undefined
+      ? {}
+      : {
+          status:
+            span.status.message === undefined
+              ? span.status
+              : { ...span.status, message: rewrite(span.status.message) },
+          events: span.events.map((event) => ({
+            ...event,
+            attributes: rewritten(event.attributes, rewrite),
+          })),
+        }),
   };
 };
 
@@ -447,7 +398,7 @@ export const enrichTraces = (data: OtlpTracer.TraceData): OtlpTracer.TraceData =
     ...resource,
     scopeSpans: resource.scopeSpans.map((scope) => ({
       ...scope,
-      spans: scope.spans.filter((span) => !isOrphanQuery(span)).map(enrichSpan),
+      spans: scope.spans.filter((span) => !isOrphanQuery(span) && !isDropped(span)).map(enrichSpan),
     })),
   })),
 });

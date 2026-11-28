@@ -5884,9 +5884,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Mend cannot address, holding work nothing else has: that ownership is unresolved, and
        * nothing reads it as ended — no removal, no release, no new epoch over it.
        */
-      const launchUnresolved = Effect.fn("SessionEngine.launchUnresolved")(function* (
-        session: Session,
-      ) {
+      const launchUnresolved = Effect.fnUntraced(function* (session: Session) {
         if (capture === null) return false;
         if (session.sealantWorkspaceId !== null && !(yield* createUnanswered(session.id))) {
           return false;
@@ -19772,7 +19770,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * home, whose database the person layout never opens. Refused; its owner could resume it
        * only in that executor, before it was replaced.
        */
-      const opencodeFromSharedHome = Effect.fn("SessionEngine.opencodeFromSharedHome")(function* (
+      const opencodeFromSharedHome = Effect.fnUntraced(function* (
         session: Session,
         workspaceId: string,
         resumeId: string,

@@ -7,6 +7,7 @@
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
+    "./span-names": "./src/span-names.ts",
     "./url-template": "./src/url-template.ts"
   },
   "scripts": {
@@ -15,6 +16,7 @@
     "typecheck": "tsrs -p tsconfig.json --noEmit --checkers 1"
   },
   "dependencies": {
+    "@mend/api-contracts": "workspace:*",
     "@mend/network": "workspace:*",
     "@sentry/core": "catalog:",
     "effect": "catalog:"

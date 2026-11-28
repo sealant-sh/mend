@@ -375,7 +375,16 @@ describe("the page-view token never reaches a trace", () => {
     expect(JSON.stringify(recorded)).not.toContain("secret-ticket-value");
     expect(recorded).toEqual([
       ...Array.from({ length: 6 }, () => getSpan(PAGE_VIEW_PATH, 200)),
-      getSpan("unrouted", 404),
+      // No route: named by the template of its path, which keeps no part a route does not name.
+      [
+        "GET",
+        {
+          "http.request.method": "GET",
+          "http.route": "unrouted",
+          "http.response.status_code": 404,
+          "url.template": "/api/page-view",
+        },
+      ],
       getSpan("/api/worktrees/:id/raw", 200),
       getSpan("/api/health", 200),
     ]);

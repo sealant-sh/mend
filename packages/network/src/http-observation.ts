@@ -13,6 +13,7 @@ import {
 import { INVITATION_HEADER } from "./handed-links.ts";
 import { PAGE_VIEW_TOKEN_PARAM } from "./page-view.ts";
 import { CREDENTIAL_QUERY_PARAMETERS } from "./redact.ts";
+import { templatePath } from "./url-template.ts";
 
 /** The route of a request no route answered: none matched, or a middleware refused it first. */
 export const UNROUTED = "unrouted";
@@ -110,9 +111,20 @@ const failureOf = (outcome: Outcome): string | null => {
   return outcome.status >= 500 ? `status ${outcome.status}` : null;
 };
 
-const endSpan = (span: Tracer.Span, observation: HttpObservation, endTime: bigint) => {
+/**
+ * A request no route matched has only its path to be named by: the span takes it templated, as
+ * `url.template` (`/api/devices/:secret`, `/nowhere/:id`), never as it came, and the exporter names
+ * the span by it (`@mend/telemetry`'s `enrich.ts`).
+ */
+const endSpan = (
+  span: Tracer.Span,
+  observation: HttpObservation,
+  endTime: bigint,
+  path: string,
+) => {
   span.attribute("http.request.method", observation.method);
   span.attribute("http.route", observation.route);
+  if (observation.route === UNROUTED) span.attribute("url.template", templatePath(path));
   if (observation.outcome.kind === "response")
     span.attribute("http.response.status_code", observation.outcome.status);
   const failure = failureOf(observation.outcome);
@@ -171,12 +183,13 @@ const PROBE_PATHS: ReadonlySet<string> = new Set([
   "/api/health",
 ]);
 
+const pathnameOf = (request: HttpServerRequest.HttpServerRequest): string =>
+  Option.getOrUndefined(HttpServerRequest.toURL(request))?.pathname ??
+  request.url.split("?")[0] ??
+  "";
+
 const isProbe = (request: HttpServerRequest.HttpServerRequest): boolean =>
-  PROBE_PATHS.has(
-    Option.getOrUndefined(HttpServerRequest.toURL(request))?.pathname ??
-      request.url.split("?")[0] ??
-      "",
-  );
+  PROBE_PATHS.has(pathnameOf(request));
 
 /** A span for a probe that failed, started when the request was, with no parent: its own trace. */
 const failedProbeSpan = (name: string, startTime: bigint) =>
@@ -224,7 +237,7 @@ const observed = <E, R>(
           (failureOf(observation.outcome) === null
             ? undefined
             : yield* failedProbeSpan(request.method, startTime));
-        if (ended !== undefined) endSpan(ended, observation, endTime);
+        if (ended !== undefined) endSpan(ended, observation, endTime, pathnameOf(request));
       }),
     );
     const served =

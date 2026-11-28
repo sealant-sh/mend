@@ -1,7 +1,13 @@
 import { observedWebHandler } from "@mend/network/http-observation";
 import { createTransport } from "@sentry/core";
 import { Cause, ConfigProvider, Effect, Layer } from "effect";
-import { HttpClient, HttpClientResponse, HttpRouter, HttpServerResponse } from "effect/http";
+import {
+  HttpClient,
+  HttpClientError,
+  HttpClientResponse,
+  HttpRouter,
+  HttpServerResponse,
+} from "effect/http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { frameFilename, reportCause } from "./errors.ts";
@@ -139,6 +145,75 @@ describe("what telemetry may send", () => {
     expect(event.sdk).toMatchObject({ name: "sentry.javascript.mend-telemetry" });
     expect(event.request).toBeUndefined();
     expect(event.server_name).toBeUndefined();
+  });
+
+  it("never names a span for a sign-in code in a path, asked for or called", async () => {
+    // Letters only, as a CLI sign-in's user code can be: no digit gives it away as an ID.
+    const CODE = "QZXW-PLMK";
+    const settings = telemetrySettings({ SENTRY_DSN: DSN });
+    if (settings === null) throw new Error("expected settings");
+    const { otlp, sentry, transports } = capturingTransports();
+    // The API knows no such code: a lookup answers 404, which fails the call with its URL in the
+    // message; a call that never reaches the API fails in transport, with its URL too.
+    const api = HttpClient.make((request) =>
+      request.url.includes("unreachable")
+        ? Effect.fail(
+            new HttpClientError.HttpClientError({
+              reason: new HttpClientError.TransportError({ request, description: "refused" }),
+            }),
+          )
+        : Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response("{}", { status: request.method === "GET" ? 404 : 200 }),
+            ),
+          ),
+    ).pipe(HttpClient.filterStatusOk);
+    const routes = HttpRouter.use((router) =>
+      router.add(
+        "GET",
+        "/approve",
+        Effect.gen(function* () {
+          // Each failure is reported, as the web tier reports a call that failed: its error names
+          // the URL it called.
+          const reported = Effect.catchCause((cause: Cause.Cause<unknown>) =>
+            reportCause(cause, { operation: "authorize" }),
+          );
+          yield* api.get(`http://mend-api.internal/api/me/cli-auth/${CODE}?x=1`).pipe(reported);
+          yield* api.get(`http://unreachable.internal/api/me/cli-auth/${CODE}`).pipe(reported);
+          yield* api.post(`http://mend-api.internal/api/me/cli-auth/${CODE}/approve`);
+          return HttpServerResponse.empty();
+        }).pipe(Effect.orDie),
+      ),
+    );
+    const { handler, dispose } = observedWebHandler(
+      routes.pipe(
+        Layer.provideMerge(enabledTelemetryLayer(settings, { name: "mend-test" }, transports)),
+      ),
+    );
+    expect((await handler(new Request("http://mend.internal/approve"))).status).toBe(204);
+    // No route of this server: the request is named by its path, templated where it is observed.
+    expect(
+      (await handler(new Request(`http://mend.internal/api/me/cli-auth/${CODE}`))).status,
+    ).toBe(404);
+    await dispose();
+
+    const sent = [...otlp.map((request) => request.body), ...sentry].join("\n");
+    expect(sentry.length).toBeGreaterThanOrEqual(2);
+    expect(sent).not.toContain(CODE);
+    const traces = otlp.find((request) => request.url.endsWith("/v1/traces"));
+    const names = JSON.parse(traces?.body ?? "{}").resourceSpans.flatMap(
+      (resource: { scopeSpans: ReadonlyArray<{ spans: ReadonlyArray<ExportedSpan> }> }) =>
+        resource.scopeSpans.flatMap((scope) => scope.spans.map((span) => span.name)),
+    );
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "GET /approve",
+        "GET /api/me/cli-auth/:secret",
+        "GET /api/me/cli-auth/:code",
+        "POST /api/me/cli-auth/:code/approve",
+      ]),
+    );
   });
 
   it("makes no network call, and builds no client, when the process has no DSN", async () => {

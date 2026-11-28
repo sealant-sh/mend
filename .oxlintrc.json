@@ -471,6 +471,14 @@
           }
         ]
       }
+    },
+    {
+      // Every span the server code names reads in Sentry by its entry in @mend/telemetry's span
+      // catalog (SLNT-1407): `mend/span-name` says so where the span is named, since a package's
+      // own tests don't rerun telemetry's. tooling/oxlint-plugin-mend/README.md says what it flags.
+      "files": ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.{ts,tsx}"],
+      "jsPlugins": [{ "name": "mend", "specifier": "./tooling/oxlint-plugin-mend/src/index.ts" }],
+      "rules": { "mend/span-name": "error" }
     }
   ]
 }
