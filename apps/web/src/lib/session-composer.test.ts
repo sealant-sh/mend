@@ -8,6 +8,7 @@ import {
   othersOpenTurn,
   ownRunningTurn,
   sameSelection,
+  selectionToSend,
   shownStatus,
   steerNote,
 } from "./session-composer.ts";
@@ -245,6 +246,56 @@ describe("the model, thinking and permission a session's next turn runs with", (
       true,
     );
     expect(sameSelection(base, { ...base, permissionMode: "ask" })).toBe(false);
+  });
+});
+
+describe("the choice a message goes with (SLNT-1416)", () => {
+  // Codex launched skipping prompts, on gpt-5.5 at its default thinking.
+  const session = { harness: "codex", model: "gpt-5.5", effort: null };
+  const launched = { model: "gpt-5.5", effort: null, permissionMode: "bypass" as const };
+  // What Mend records and runs for a turn sent with `sent`: as sent, else the session's model and
+  // thinking with no permission, which Codex runs in its launch mode (`admittedSelection`, the
+  // adapter's `requested?.permissionMode ?? options.permissionMode`).
+  const admit = (sent: TurnSelection | undefined): TurnSelection =>
+    sent ?? { harness: "codex", model: session.model, effort: null, interactionMode: "default" };
+  const runsAsking = (recorded: TurnSelection) =>
+    (recorded.permissionMode ?? launched.permissionMode) === "ask";
+
+  it("keeps Ask before acting on every later message, after a reload too, as the menu reads it", () => {
+    let turns: ReadonlyArray<TurnView> = [turn("t-0", 0, "completed", "ada", admit(undefined))];
+    const opened = currentSelection(turns, session, launched);
+    expect(opened?.permissionMode).toBe("bypass");
+    if (opened === null) return;
+    // The person ticks Ask before acting once; the page keeps what they picked.
+    const picked: TurnSelection = { ...opened, permissionMode: "ask" };
+    const send = (fromPage: TurnSelection | null) => {
+      const reads = fromPage ?? currentSelection(turns, session, launched);
+      const recorded = admit(
+        selectionToSend(turns, fromPage, currentSelection(turns, session, launched)),
+      );
+      turns = [...turns, turn(`t-${turns.length}`, turns.length, "completed", "ada", recorded)];
+      return { reads: reads?.permissionMode === "ask", asks: runsAsking(recorded) };
+    };
+    expect(send(picked)).toEqual({ reads: true, asks: true });
+    expect(send(picked)).toEqual({ reads: true, asks: true });
+    // Opened afresh: nothing picked on this page, and the menu still reads what runs.
+    expect(send(null)).toEqual({ reads: true, asks: true });
+  });
+
+  it("goes with nothing before anything is picked or recorded, so a fork keeps its source's", () => {
+    expect(selectionToSend([], null, currentSelection([], session, launched))).toBeUndefined();
+  });
+
+  it("reads a turn recorded with no permission as its agent's launch mode", () => {
+    const turns = [turn("t-0", 0, "completed", "ada", admit(undefined))];
+    const asking = { ...launched, permissionMode: "ask" as const };
+    expect(currentSelection(turns, session, asking)?.permissionMode).toBe("ask");
+  });
+
+  it("starts every web turn out of Plan, which the menu doesn't offer", () => {
+    const plan: TurnSelection = { ...admit(undefined), interactionMode: "plan" };
+    const turns = [turn("t-0", 0, "completed", "ada", plan)];
+    expect(currentSelection(turns, session, launched)?.interactionMode).toBe("default");
   });
 });
 

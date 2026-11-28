@@ -62,6 +62,7 @@ import {
   othersOpenTurn,
   ownRunningTurn,
   sameSelection,
+  selectionToSend,
   terminalWaitWords,
 } from "#/lib/session-composer";
 import { harnessName } from "#/lib/session-view";
@@ -489,8 +490,7 @@ function MessageComposer({
   const base = currentSelection(turns, session, detail.currentAgent?.protocolOptions ?? null);
   const [picked, setPicked] = useState<TurnSelection | null>(null);
   const selection = picked ?? base;
-  const changed =
-    picked !== null && base !== null && !sameSelection(picked, base) ? picked : undefined;
+  const sending = selectionToSend(turns, picked, base);
 
   const interrupt = useMutation(
     trpc.sessions.interruptTurn.mutationOptions({
@@ -556,7 +556,7 @@ function MessageComposer({
     // The message first, then the empty field: the words are never in neither place.
     void sendMessage(outbox.courier, scope, words, clientMessageId, {
       resuming: resumes,
-      selection: changed,
+      selection: sending,
     });
     draft.write({ text: "", key: null });
   };
