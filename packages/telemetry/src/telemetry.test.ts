@@ -1,7 +1,13 @@
 import { observedWebHandler } from "@mend/network/http-observation";
 import { createTransport } from "@sentry/core";
 import { Cause, ConfigProvider, Effect, Layer } from "effect";
-import { HttpClient, HttpClientResponse, HttpRouter, HttpServerResponse } from "effect/http";
+import {
+  HttpClient,
+  HttpClientError,
+  HttpClientResponse,
+  HttpRouter,
+  HttpServerResponse,
+} from "effect/http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { frameFilename, reportCause } from "./errors.ts";
@@ -147,15 +153,31 @@ describe("what telemetry may send", () => {
     const settings = telemetrySettings({ SENTRY_DSN: DSN });
     if (settings === null) throw new Error("expected settings");
     const { otlp, transports } = capturingTransports();
+    // The API knows no such code: a lookup answers 404, which fails the call with its URL in the
+    // message; a call that never reaches the API fails in transport, with its URL too.
     const api = HttpClient.make((request) =>
-      Effect.succeed(HttpClientResponse.fromWeb(request, new Response("{}"))),
-    );
+      request.url.includes("unreachable")
+        ? Effect.fail(
+            new HttpClientError.HttpClientError({
+              reason: new HttpClientError.TransportError({ request, description: "refused" }),
+            }),
+          )
+        : Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response("{}", { status: request.method === "GET" ? 404 : 200 }),
+            ),
+          ),
+    ).pipe(HttpClient.filterStatusOk);
     const routes = HttpRouter.use((router) =>
       router.add(
         "GET",
         "/approve",
         Effect.gen(function* () {
-          yield* api.get(`http://mend-api.internal/api/me/cli-auth/${CODE}`);
+          yield* api
+            .get(`http://mend-api.internal/api/me/cli-auth/${CODE}?x=1`)
+            .pipe(Effect.ignore);
+          yield* api.get(`http://unreachable.internal/api/me/cli-auth/${CODE}`).pipe(Effect.ignore);
           yield* api.post(`http://mend-api.internal/api/me/cli-auth/${CODE}/approve`);
           return HttpServerResponse.empty();
         }).pipe(Effect.orDie),

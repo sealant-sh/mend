@@ -144,8 +144,8 @@ export const SPAN_NAMES: Readonly<Record<string, readonly [name: string, descrip
     "switch conversation to terminal",
   ],
   // turn
-  "SessionEngine.steerTurn": ["mend.turn.check_steer", "check steer before sending"],
-  "SessionEngine.submitTurnChecked": ["mend.turn.check_submit", "check turn sender before submit"],
+  "SessionEngine.steerTurn": ["mend.turn.accept_steer", "check and send steer"],
+  "SessionEngine.submitTurnChecked": ["mend.turn.accept_message", "check sender and submit turn"],
   "mend.turn.complete": ["mend.turn.complete", "complete turn"],
   "ProtocolHost.deliverSteer": ["mend.turn.deliver_steer", "deliver steer to turn"],
   "mend.turn.dispatch": ["mend.turn.dispatch", "dispatch turn"],
@@ -241,7 +241,7 @@ export const SPAN_NAMES: Readonly<Record<string, readonly [name: string, descrip
     "mend.workspace.read_mend_toml",
     "read mend.toml in workspace",
   ],
-  "SessionEngine.captureReaper": ["mend.workspace.reap_leases", "reap lapsed workspace leases"],
+  "SessionEngine.captureReaper": ["mend.workspace.reap_leases", "reap leases and stalled drains"],
   "SessionEngine.sweepLeftovers": [
     "mend.workspace.reap_leftovers",
     "reap leftover settled workspaces",
@@ -264,8 +264,8 @@ export const SPAN_NAMES: Readonly<Record<string, readonly [name: string, descrip
     "renew leased workspace ttls",
   ],
   "SessionEngine.replaceExecutor": [
-    "mend.workspace.replace_before_cap",
-    "replace workspace before cap",
+    "mend.workspace.replace_capped",
+    "replace or resume capped workspace",
   ],
   "SessionEngine.replaceWorkspaceNow": [
     "mend.workspace.replace_on_request",

@@ -197,6 +197,8 @@ describe("an HTTP span", () => {
     ["/api/settings/git_access", "/api/settings/git_access"],
     ["/api/me/cli-auth/ABCD-EFGH", "/api/me/cli-auth/:secret"],
     ["/join/Zq8mJx2vNc4tPr6s", "/join/:secret"],
+    ["/api/me/cli-auth//abcd-efgh", "/api/me/cli-auth//:secret"],
+    ["/API/Me/Cli-Auth/abcd-efgh/approve", "/:id/:id/:id/:secret/approve"],
     ["/v1/projects/p/resources/vdb3jti/start", "/v1/projects/p/resources/:resourceId/start"],
     ["/v2/hosts/10.0.0.4/health", "/v2/hosts/:hostId/health"],
     ["/api/nope/abc/QZXW-PLMK", "/api/nope/abc/:abcId"],

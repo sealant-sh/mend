@@ -106,10 +106,18 @@ const matchedRoute = (path: string, routes: RouteTemplates): string | undefined 
   return best?.template;
 };
 
-/** The path's segment after a prefix whose next segment is a secret (`/api/me/cli-auth/<code>`). */
+/**
+ * How many non-empty segments in the path's secret is, after a prefix whose next segment is one
+ * (`/api/me/cli-auth/<code>`), matched as the edge matches it: in any case, over repeated slashes.
+ */
 const secretAt = (path: string): number | undefined => {
-  for (const prefix of SECRET_SEGMENT_PREFIXES)
-    if (path.startsWith(`${prefix}/`)) return prefix.split("/").length;
+  const words = path.split("/").filter((segment) => segment !== "");
+  const lower = words.map((word) => word.toLowerCase());
+  for (const prefix of SECRET_SEGMENT_PREFIXES) {
+    const wanted = prefix.split("/").filter((segment) => segment !== "");
+    if (lower.length > wanted.length && wanted.every((word, index) => lower[index] === word))
+      return wanted.length;
+  }
   return undefined;
 };
 
@@ -122,9 +130,11 @@ export const templatePath = (path: string, routes?: RouteTemplates): string => {
   if (matched !== undefined) return matched;
   const secret = secretAt(path);
   const templated: Array<string> = [];
-  for (const [index, segment] of path.split("/").entries()) {
+  let words = 0;
+  for (const segment of path.split("/")) {
+    const at = segment === "" ? -1 : words++;
     templated.push(
-      index === secret
+      at === secret
         ? ":secret"
         : segment !== "" && isIdSegment(segment)
           ? `:${parameterFor(templated.at(-1))}`

@@ -143,7 +143,11 @@ const renamed = (name: string, codeName: string, description?: string): Named =>
  * `mend.gateway.orchestration.get_snapshot`, an MCP call `mend.mcp.call_tool`.
  */
 const nameOf = (name: string): Named => {
-  const entry = SPAN_NAMES[name] ?? LIBRARY_SPAN_NAMES[name];
+  const entry = Object.hasOwn(SPAN_NAMES, name)
+    ? SPAN_NAMES[name]
+    : Object.hasOwn(LIBRARY_SPAN_NAMES, name)
+      ? LIBRARY_SPAN_NAMES[name]
+      : undefined;
   if (entry !== undefined) {
     const [named, description] = entry;
     return { ...renamed(named, name, description), codeName: named === name ? undefined : name };
@@ -175,6 +179,8 @@ interface Enriched {
   readonly name: string;
   readonly set: Readonly<Record<string, string | undefined>>;
   readonly drop?: ReadonlyArray<string>;
+  /** Rewrites the span's own words: its status message and its events' attributes. */
+  readonly rewrite?: ((text: string) => string) | undefined;
 }
 
 /** Mend's API's routes, for naming a call to it by its route (`/api/me/cli-auth/:code`). */
@@ -208,16 +214,34 @@ const withPath = (url: string | undefined, template: string): string | undefined
   }
 };
 
+const escaped = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
  * Named for its path's template; the URL it records keeps that template too, never the path it
- * called: an ID is no secret, but a sign-in code or a link's token in a path is.
+ * called: an ID is no secret, but a sign-in code or a link's token in a path is. So do its words:
+ * a call that failed ends with the URL in its status and its exception (`StatusCode error (404 GET
+ * http://…/api/me/cli-auth/<code>)`), and each spelling of the path there, with any query after
+ * it, becomes the template.
  */
 const httpClient = (span: Span, method: string): Enriched => {
   const full = stringOf(span.attributes, "url.full");
-  const path = pathOf(full) ?? pathOf(stringOf(span.attributes, "url.path"));
+  const rawPath = stringOf(span.attributes, "url.path");
+  const path = pathOf(full) ?? pathOf(rawPath);
   const template = path === undefined ? undefined : templatePath(path, API_ROUTES);
   const description = template === undefined ? method : `${method} ${template}`;
+  const spellings = [
+    ...new Set(
+      [path, rawPath, full?.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "")].filter(
+        (spelling): spelling is string => spelling !== undefined && spelling.length > 1,
+      ),
+    ),
+  ].toSorted((a, b) => b.length - a.length);
+  const pattern =
+    template === undefined || spellings.length === 0
+      ? undefined
+      : new RegExp(`(?:${spellings.map(escaped).join("|")})(?:[?#][^\\s)"'<>]*)?`, "g");
   return {
+    rewrite: pattern === undefined ? undefined : (text) => text.replace(pattern, template ?? ""),
     name: description,
     set: {
       "sentry.op": "http.client",
@@ -312,16 +336,39 @@ const enrichmentOf = (span: Span): Enriched => {
   return internal(span);
 };
 
+const rewritten = (
+  attributes: ReadonlyArray<KeyValue>,
+  rewrite: (text: string) => string,
+): Array<KeyValue> =>
+  attributes.map((attribute) =>
+    typeof attribute.value.stringValue === "string"
+      ? { ...attribute, value: { stringValue: rewrite(attribute.value.stringValue) } }
+      : attribute,
+  );
+
 /** `span` with the operation, description and name Sentry shows; one it already has is kept. */
 export const enrichSpan = (span: Span): Span => {
   const enriched = enrichmentOf(span);
   const set = has(span.attributes, "sentry.op")
     ? { ...enriched.set, "sentry.op": undefined }
     : enriched.set;
+  const rewrite = enriched.rewrite;
   return {
     ...span,
     name: enriched.name,
     attributes: withAttributes(span.attributes, set, enriched.drop),
+    ...(rewrite === undefined
+      ? {}
+      : {
+          status:
+            span.status.message === undefined
+              ? span.status
+              : { ...span.status, message: rewrite(span.status.message) },
+          events: span.events.map((event) => ({
+            ...event,
+            attributes: rewritten(event.attributes, rewrite),
+          })),
+        }),
   };
 };
 
