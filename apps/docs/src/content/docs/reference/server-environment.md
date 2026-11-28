@@ -515,8 +515,13 @@ them starts and ignores them.
 
 Mend's servers report nothing unless an operator names where: Mend runs on people's own machines,
 and an install never reports to anyone by default. Given a Sentry DSN, the API, its worker and the
-t3code gateway send their errors, traces and logs to that project, and a server with none makes no
-call at all.
+t3code gateway send their errors, traces and logs to that project. A process with none makes no call
+at all: it makes no spans, and its requests carry no `traceparent`, `tracestate` or `baggage`.
+
+A trace covers one thing a person or a timer asked for and ends with it. A live-update stream's or a
+terminal socket's request span ends once it is open. What a session does after its launch (following
+its run, watching its processes, saving its captures, naming it) is in short traces of its own, each
+linked to the start. A sweep or a reaper pass that found nothing to do sends nothing.
 
 | Variable                                                    | Default                 | What it does                                                                                                                                           |
 | ----------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -532,10 +537,11 @@ paths their directories. Trace and span IDs are kept whole.
 
 The Docker bundle runs Mend and sealant in one container, and each reports to a project of its own:
 the bundle hands Mend's processes `MEND_SENTRY_DSN` and sealant's `SEALANT_SENTRY_DSN`, each as
-their `SENTRY_DSN`, and only the web app `SENTRY_BROWSER_DSN`, which it serves to the browser.
-`SEALANTD_SENTRY_DSN` goes to sealant's worker alone, which hands it to the sealantd in each
-workspace it starts, with the trace of the launch; a workspace with restricted egress may then reach
-that DSN's host on port 443. Workspaces already running keep what they started with.
+their `SENTRY_DSN`, and only the web app `SENTRY_BROWSER_DSN`, which it serves to the browser. The
+bundle's t3code gateway is given none, so it runs with telemetry off. `SEALANTD_SENTRY_DSN` goes to
+sealant's worker alone, which hands it to the sealantd in each workspace it starts, with the trace
+of the launch; a workspace with restricted egress may then reach that DSN's host on port 443.
+Workspaces already running keep what they started with.
 
 ## Set them on the Docker install
 
