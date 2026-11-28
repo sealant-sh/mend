@@ -3541,8 +3541,8 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   `writeStdin`), and project 10 has no span with operation `default` or an empty description.
   `sealantd.control.open_session` ("open session", with `sealantd.session.create_journal` and
   `sealantd.session.spawn` "spawn PTY session" under it) sits in the session start's trace under
-  `mend.sealant — open sealant session` and sealant's `POST /v1/sessions/as-user` (SLNT-1405). The start's
-  trace holds under a few hundred mend-server spans, and none from after the launch: no
+  `mend.sealant — open sealant session` and sealant's `POST /v1/sessions/as-user` (SLNT-1405). The
+  start's trace holds under a few hundred mend-server spans, and none from after the launch: no
   `GET /v1/runs/:runId` polling, no `observe capture flush`, no naming job. Traces end (SLNT-1404),
   over the run's window in project 3: no trace holds more than 2,000 spans or lasts more than 30
   minutes, and no span lasts more than 10 minutes; the page's `GET /api/events` server span lasts
