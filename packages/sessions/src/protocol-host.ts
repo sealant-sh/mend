@@ -76,7 +76,7 @@ import {
   type SealantRequestPriority,
   withSealantRequestPriority,
 } from "@mend/sealant";
-import { untraced } from "@mend/telemetry";
+import { currentOrigin, inOwnTrace, traced, untraced } from "@mend/telemetry";
 import { SealantApiError, SealantBudgetExceededError, type InteractiveSession } from "@sealant/sdk";
 import {
   Cause,
@@ -1531,10 +1531,23 @@ export const ProtocolHostLive: Layer.Layer<
       const readOutput: Stream.Stream<
         { readonly sequence: bigint; readonly data: Uint8Array },
         SealantPlatformError
-      > = Stream.suspend(() =>
-        Stream.fromAsyncIterable(
-          input.pipe.output({ from: nextOutputSequence, signal: abort.signal }),
-          (cause) => toPlatformError("output", cause),
+      > = Stream.unwrap(
+        // The output stream lives as long as the agent does. Opened under a span of its own, a
+        // trace linked to the launch, it never keeps the launch's trace open: the SDK sends the
+        // span current when it opens the stream, and sealant serves it under that (SLNT-1393).
+        Effect.flatMap(currentOrigin, (origin) =>
+          Effect.sync(() =>
+            Stream.fromAsyncIterable(
+              input.pipe.output({ from: nextOutputSequence, signal: abort.signal }),
+              (cause) => toPlatformError("output", cause),
+            ),
+          ).pipe(
+            inOwnTrace("mend.session.open_output", {
+              origin,
+              attributes: { "mend.session_id": input.process.sessionId },
+            }),
+            traced,
+          ),
         ),
       ).pipe(
         Stream.catch(
