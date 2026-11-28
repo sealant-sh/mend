@@ -386,8 +386,22 @@ const flushTelemetry = async () => {
     pendingEnvelopes.size > 0 ||
     (await page.evaluate(() => Boolean(window.__MEND_TELEMETRY__)).catch(() => false));
   if (!hasTelemetry) return;
-  // Let a span ending on the final render tick dispatch its fetch before checking in-flight ones.
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  // Let a span ending on the final render tick enter Sentry's span buffer before flushing it.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  // `@sentry/browser` v11 streams spans on a 5 s buffer interval and flushes early on `pagehide`
+  // or `visibilitychange` (hidden). Fire `pagehide` so a recipe that exits right after an action
+  // (such as `start-session.composer`) drains its buffered spans before `browser.close()`.
+  await Promise.all(
+    context.pages().map((open) =>
+      open
+        .evaluate(() => {
+          window.dispatchEvent(new PageTransitionEvent("pagehide"));
+        })
+        .catch(() => undefined),
+    ),
+  );
+  // Give the flushed `fetch(.../envelope/)` a tick to register on the Playwright context.
+  await new Promise((resolve) => setTimeout(resolve, 150));
   if (pendingEnvelopes.size === 0) return;
   await new Promise((resolve) => {
     const timer = setTimeout(() => {

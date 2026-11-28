@@ -151,6 +151,75 @@ test(
 );
 
 test(
+  "drive-web fires pagehide and waits for buffered telemetry envelopes before closing",
+  { skip: noBrowser },
+  async () => {
+    const privateDir = privateWithAccount();
+    const out = fresh("evidence");
+    const envelopes = [];
+    const server = createServer((request, response) => {
+      if (request.method === "POST" && request.url === "/api/4/envelope/") {
+        let body = "";
+        request.on("data", (data) => (body += data));
+        request.on("end", () => {
+          setTimeout(() => {
+            envelopes.push(body);
+            response.writeHead(200).end();
+          }, 100);
+        });
+        return;
+      }
+      response.setHeader("content-type", "text/html");
+      response.end(
+        `<main>ready</main>
+        <script>
+          window.__MEND_TELEMETRY__ = { dsn: location.origin + "/4" };
+          window.addEventListener("pagehide", () => {
+            fetch("/api/4/envelope/", { method: "POST", body: "mend.web.session.start" });
+          });
+        </script>`,
+      );
+    });
+    await new Promise((done) => server.listen(0, "127.0.0.1", done));
+    const web = `http://127.0.0.1:${server.address().port}`;
+    tunnelTo(privateDir, server.address().port);
+    const recipePath = join(fresh("recipe"), "recipe.mjs");
+    writeFileSync(
+      recipePath,
+      `export default async ({ page, web }) => {
+        await page.goto(web);
+        await page.getByText("ready").waitFor();
+      };`,
+    );
+    const run = await new Promise((done) => {
+      const child = spawn(
+        process.execPath,
+        [
+          join(here, "drive-web.mjs"),
+          "--web",
+          web,
+          "--out",
+          out,
+          "--recipe",
+          recipePath,
+          "--private",
+          privateDir,
+          "--timeout",
+          "5000",
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let stderr = "";
+      child.stderr.on("data", (data) => (stderr += data));
+      child.stdout.resume();
+      child.on("close", (status) => done({ status, stderr }));
+    }).finally(() => new Promise((done) => server.close(done)));
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(envelopes, ["mend.web.session.start"]);
+  },
+);
+
+test(
   "a typed setup token and secret-file contents stay out of snapshots and screenshots",
   { skip: noBrowser },
   () => {
