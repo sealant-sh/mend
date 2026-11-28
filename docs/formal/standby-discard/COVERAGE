@@ -211,7 +211,11 @@
 # ends, and the timer loops (the hot-pool sweep among them) send a pass only when it did
 # something. No hot-pool, claim, retire, drain or discard call changes, so no action changes.
 # --quick tlx run at dd69d78ae1: every row as expected.
-sync dd69d78ae137bd97eb71e020d9bf75707c1f8d3f
+# d517b0f210 (SLNT-1404, the same branch) wraps three detached reads in traces of their own: the
+# capture status read (`refreshCaptureStatus`, the reaper's status pass), the runtime deadline
+# read and a deferred flush nobody waits for (`runDeferredDetached`). Tracing only; no action
+# changes. --quick tlx run at d517b0f210: every row as expected.
+sync d517b0f210d5cc4f048bd52628e51fe1af9adfbe
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

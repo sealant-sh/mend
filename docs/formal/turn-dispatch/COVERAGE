@@ -114,7 +114,7 @@
 # `untraced` (tracer off and no trace header) where it ran under `withTracerEnabled(false)`, and a
 # turn's run span ends after ten minutes (`turn-trace.ts`). No dispatch, bind, settle, interrupt or
 # turn write changes, so no action changes. --quick tlx run at dd69d78ae1: every row as expected.
-sync dd69d78ae137bd97eb71e020d9bf75707c1f8d3f
+sync d517b0f210d5cc4f048bd52628e51fe1af9adfbe
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
