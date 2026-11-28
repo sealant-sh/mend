@@ -202,8 +202,6 @@
 # Effect.fn("…") into Effect.fnUntraced: each runs the same statements without a span of its own.
 # Normalised for that wrapper and whitespace, engine.ts is main's, so no action changes. --quick
 # tlx run at 7afbb270c4: every row as expected.
-# 22d65f1603 (SLNT-1404) changes engine.ts's tracing only. `runDrain`'s loop body moved, statement for
-# dd69d78ae1 (SLNT-1404) changes engine.ts's tracing only. `runDrain`'s loop body moved, statement for
 # ad8cda5e04 (SLNT-1404) changes engine.ts's tracing only. `runDrain`'s loop body moved, statement for
 # statement and in the same order, into `drainPass`, its locals into a `DrainState` the loop hands
 # each pass (so a stalled drain's later passes can be traces of their own); `discardStandbyNeverClaimed`
