@@ -152,7 +152,7 @@ describe("what telemetry may send", () => {
     const CODE = "QZXW-PLMK";
     const settings = telemetrySettings({ SENTRY_DSN: DSN });
     if (settings === null) throw new Error("expected settings");
-    const { otlp, transports } = capturingTransports();
+    const { otlp, sentry, transports } = capturingTransports();
     // The API knows no such code: a lookup answers 404, which fails the call with its URL in the
     // message; a call that never reaches the API fails in transport, with its URL too.
     const api = HttpClient.make((request) =>
@@ -174,10 +174,13 @@ describe("what telemetry may send", () => {
         "GET",
         "/approve",
         Effect.gen(function* () {
-          yield* api
-            .get(`http://mend-api.internal/api/me/cli-auth/${CODE}?x=1`)
-            .pipe(Effect.ignore);
-          yield* api.get(`http://unreachable.internal/api/me/cli-auth/${CODE}`).pipe(Effect.ignore);
+          // Each failure is reported, as the web tier reports a call that failed: its error names
+          // the URL it called.
+          const reported = Effect.catchCause((cause: Cause.Cause<unknown>) =>
+            reportCause(cause, { operation: "authorize" }),
+          );
+          yield* api.get(`http://mend-api.internal/api/me/cli-auth/${CODE}?x=1`).pipe(reported);
+          yield* api.get(`http://unreachable.internal/api/me/cli-auth/${CODE}`).pipe(reported);
           yield* api.post(`http://mend-api.internal/api/me/cli-auth/${CODE}/approve`);
           return HttpServerResponse.empty();
         }).pipe(Effect.orDie),
@@ -195,7 +198,8 @@ describe("what telemetry may send", () => {
     ).toBe(404);
     await dispose();
 
-    const sent = otlp.map((request) => request.body).join("\n");
+    const sent = [...otlp.map((request) => request.body), ...sentry].join("\n");
+    expect(sentry.length).toBeGreaterThanOrEqual(2);
     expect(sent).not.toContain(CODE);
     const traces = otlp.find((request) => request.url.endsWith("/v1/traces"));
     const names = JSON.parse(traces?.body ?? "{}").resourceSpans.flatMap(

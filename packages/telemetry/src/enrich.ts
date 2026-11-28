@@ -214,6 +214,16 @@ const withPath = (url: string | undefined, template: string): string | undefined
   }
 };
 
+/** `text` with its percent-escapes read, as a caller that built the URL by hand may have spelled it. */
+const decoded = (text: string | undefined): string | undefined => {
+  if (text === undefined) return undefined;
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return undefined;
+  }
+};
+
 const escaped = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
@@ -231,9 +241,9 @@ const httpClient = (span: Span, method: string): Enriched => {
   const description = template === undefined ? method : `${method} ${template}`;
   const spellings = [
     ...new Set(
-      [path, rawPath, full?.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "")].filter(
-        (spelling): spelling is string => spelling !== undefined && spelling.length > 1,
-      ),
+      [path, rawPath, full?.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "")]
+        .flatMap((spelling) => [spelling, decoded(spelling)])
+        .filter((spelling): spelling is string => spelling !== undefined && spelling.length > 1),
     ),
   ].toSorted((a, b) => b.length - a.length);
   const pattern =
@@ -241,7 +251,10 @@ const httpClient = (span: Span, method: string): Enriched => {
       ? undefined
       : new RegExp(`(?:${spellings.map(escaped).join("|")})(?:[?#][^\\s)"'<>]*)?`, "g");
   return {
-    rewrite: pattern === undefined ? undefined : (text) => text.replace(pattern, template ?? ""),
+    rewrite:
+      pattern === undefined || template === undefined
+        ? undefined
+        : (text) => text.replace(pattern, () => template),
     name: description,
     set: {
       "sentry.op": "http.client",
