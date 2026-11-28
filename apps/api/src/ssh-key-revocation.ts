@@ -1,5 +1,6 @@
 import { AuditEventsRepo, type SshKeyRevocation, SshKeyRevocationsRepo } from "@mend/db";
 import { SealantClients } from "@mend/sealant";
+import { quietWhenIdle } from "@mend/telemetry";
 import { Duration, Effect, Layer, Result, Schedule } from "effect";
 import * as Context from "effect/Context";
 
@@ -145,6 +146,8 @@ export const SshKeyRevocationScheduleLive: Layer.Layer<never, never, SshKeyRevok
             ),
           ),
           Effect.repeat(Schedule.spaced(SSH_KEY_REVOCATION_SWEEP_INTERVAL)),
+          // A pass that revoked nothing leaves no trace (SLNT-1404).
+          quietWhenIdle,
         ),
       );
     }),

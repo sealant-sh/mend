@@ -15,6 +15,7 @@
   "dependencies": {
     "@mend/api-contracts": "workspace:*",
     "@mend/domain": "workspace:*",
+    "@mend/telemetry": "workspace:*",
     "@sealant/sdk": "catalog:",
     "effect": "catalog:"
   },

@@ -1,6 +1,7 @@
 import { Auth } from "@mend/auth";
 import { ProjectsRepo, type MendEvent, type SignIn } from "@mend/db";
 import { ProjectId } from "@mend/domain";
+import { currentOrigin, inOwnTrace, traced, untraced } from "@mend/telemetry";
 import { Deferred, Effect, Option, Ref, Schedule, Stream } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 
@@ -134,11 +135,18 @@ export const EventsRoutes = HttpRouter.use((router) =>
         if (overBudget !== null) return overBudget;
         const initial = yield* viewOf(signIn);
         const view = yield* Ref.make(initial);
-        const refresh = Effect.gen(function* () {
+        // The stream lives for hours, and its request's span ends once its headers go out
+        // (SLNT-1404). What the stream does after is not that request: a refresh an event asked
+        // for is a trace of its own, linked to the request that opened the stream. Deciding which
+        // frames to send, and the heartbeat's refresh every 25 seconds, are untraced: one per bus
+        // event, and one per open stream every 25 seconds.
+        const origin = yield* currentOrigin;
+        const reread = Effect.gen(function* () {
           const next = yield* viewOf(signIn);
           yield* Ref.set(view, next);
           return next;
         });
+        const refresh = reread.pipe(inOwnTrace("mend.page.refresh_view", { origin }), traced);
 
         const ends = (signal: BusSignal | { readonly kind: "tick" }) =>
           Effect.gen(function* () {
@@ -165,7 +173,7 @@ export const EventsRoutes = HttpRouter.use((router) =>
             // A revoked stream says nothing more but why it ended.
             if ((yield* Deferred.isDone(revoked)) && !(yield* ends(signal))) return null;
             if (signal.kind === "tick") {
-              yield* refresh;
+              yield* reread;
               return ": ping\n\n";
             }
             if (signal.kind === "resync") {
@@ -203,7 +211,7 @@ export const EventsRoutes = HttpRouter.use((router) =>
             if (Option.isNone(yield* auth.getSession(headers))) yield* end;
             const subscription = yield* bus.subscribe;
             return Stream.fromSubscription(subscription);
-          }),
+          }).pipe(inOwnTrace("mend.page.open_updates", { origin })),
         );
         const ticks = Stream.fromSchedule(Schedule.spaced(VIEW_REFRESH)).pipe(
           Stream.map(() => ({ kind: "tick" as const })),
@@ -219,7 +227,7 @@ export const EventsRoutes = HttpRouter.use((router) =>
             Stream.interruptWhen(
               Deferred.await(revoked).pipe(Effect.andThen(Effect.sleep(REVOKED_GRACE))),
             ),
-            Stream.mapEffect(frameFor),
+            Stream.mapEffect((signal) => untraced(frameFor(signal))),
             Stream.filter((frame): frame is string => frame !== null),
             Stream.map((chunk) => encoder.encode(chunk)),
           ),

@@ -1,3 +1,4 @@
+import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
 import { Effect, Layer, Option, Tracer } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -84,4 +85,31 @@ describe("a turn's trace", () => {
     expect(fresh?.traceId).not.toBe(TRACE);
     expect(fresh?.parent).toBeNull();
   });
+
+  effectIt.effect(
+    "ends a turn's run span after ten minutes while the turn runs on, and its end then completes the trace",
+    () => {
+      const { layer, seen } = recording();
+      const traces = makeTurnTraces((id: string) =>
+        Effect.succeed(id === "turn-1" ? { traceparent: `00-${TRACE}-${ACCEPTED}-01` } : null),
+      );
+      return Effect.gen(function* () {
+        yield* traces.begin(turn, "codex-turn-1");
+        yield* TestClock.adjust("9 minutes");
+        expect(seen()[0]).toMatchObject({ name: "mend.turn.run", ended: false });
+        yield* TestClock.adjust("1 minute");
+        expect(seen()[0]).toMatchObject({ name: "mend.turn.run", ended: true, status: "running" });
+        yield* TestClock.adjust("20 minutes");
+        yield* traces.end({ ...turn, status: "completed" }, "codex-turn-1");
+        const [, complete] = seen();
+        expect(complete).toMatchObject({
+          name: "mend.turn.complete",
+          traceId: TRACE,
+          parent: ACCEPTED,
+          ended: true,
+          status: "completed",
+        });
+      }).pipe(Effect.provide(layer));
+    },
+  );
 });

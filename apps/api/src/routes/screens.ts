@@ -15,6 +15,7 @@ import { Auth } from "@mend/auth";
 import { OrganizationsRepo, ScreensRepo, SessionProcessesRepo, UpgradeTicketsRepo } from "@mend/db";
 import { SessionId, ViewerConnectionId } from "@mend/domain";
 import { SCREEN_LIMITS, type ScreenLogBody, screenHolderOf } from "@mend/domain/workbench";
+import { requestOpened } from "@mend/network/http-observation";
 import { type ScreenControlAnswer, Screens, type ViewerBytes, type WatchEnd } from "@mend/sessions";
 import { type Cause, Duration, Effect, Queue, Semaphore } from "effect";
 import { HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -253,6 +254,9 @@ export const makeScreenSocketRoutes = (timing: ScreenSocketTiming) =>
                 });
               // Leaving the organization closes it; shared control going off does not (D2).
               yield* held.opened(closeWith, caller.stillAdmitted);
+              // Registered and checked: the socket is open, its request's span ends, and its life is
+              // not that request's trace (SLNT-1404).
+              yield* requestOpened(101);
               const guard = held;
               const frames = makeFrameGuard(budgets.limits.frameBytes, closeWith);
               const connection = ViewerConnectionId.make(

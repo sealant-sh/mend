@@ -35,6 +35,13 @@ export interface JobSpec {
   readonly startAfterSeconds?: number;
   /** Base retry delay; with the engine's exponential backoff this spaces retries out over minutes. */
   readonly retryDelaySeconds?: number;
+  /**
+   * How the job's attempts relate to the trace that queued it: `continue` (the default) runs each
+   * attempt inside it, `link` runs each as a trace of its own linked to it. A job that retries for
+   * minutes after a request answered (naming a session while it starts) links, so the request's
+   * trace ends with the request (SLNT-1404).
+   */
+  readonly trace?: "continue" | "link";
 }
 
 export interface WorkOptions {
@@ -241,7 +248,10 @@ export const JobRunnerLive: Layer.Layer<JobRunner, Config.ConfigError> = Layer.e
     // A PRODUCER span: it reads as `queue.publish — <queue>`, and its attempts join it.
     const enqueue = Effect.fn("JobRunner.enqueue", { kind: "producer" })(function* (spec: JobSpec) {
       // The job carries this span's context, so its attempts join the trace that queued it.
-      const job: JobSpec = { ...spec, payload: yield* withTraceEnvelope(spec.payload) };
+      const job: JobSpec = {
+        ...spec,
+        payload: yield* withTraceEnvelope(spec.payload, spec.trace),
+      };
       yield* Effect.annotateCurrentSpan({
         "messaging.system": "pg-boss",
         "messaging.destination.name": job.name,
@@ -357,7 +367,7 @@ export const JobRunnerTest: Layer.Layer<JobRunner> = Layer.sync(JobRunner, () =>
       const id = crypto.randomUUID();
       if (handler !== undefined)
         yield* processAttempt(
-          { queue: job.name, id, data: yield* withTraceEnvelope(job.payload) },
+          { queue: job.name, id, data: yield* withTraceEnvelope(job.payload, job.trace) },
           handler,
         );
       return queuedOrDropped(id);

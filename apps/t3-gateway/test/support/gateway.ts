@@ -115,6 +115,8 @@ export const gatewayTestLayer = (
     readonly queueTimings?: Partial<QueueTimings>;
     readonly logs?: Array<string>;
     readonly spans?: Array<Tracer.Span>;
+    /** The gateway's tracing, as `telemetryLayer` gives it (`tracingOff` with no DSN). */
+    readonly tracing?: Layer.Layer<never>;
     /**
      * Find's parser, to share one worker pool across gateways. Without it the gateway starts its
      * own, as production does.
@@ -145,6 +147,7 @@ export const gatewayTestLayer = (
     ),
     Layer.provide(Logger.layer(options.logs === undefined ? [] : [collectingLogger(options.logs)])),
     Layer.provide(options.spans === undefined ? Layer.empty : recordingTracer(options.spans)),
+    Layer.provide(options.tracing ?? Layer.empty),
     Layer.provideMerge(
       Layer.succeed(GatewayConfig, {
         mendUrl,

@@ -31,6 +31,7 @@ import {
 } from "@mend/domain/workbench";
 import { mayRunIn } from "@mend/sessions";
 import { slackThreadReach } from "@mend/slack";
+import { quietWhenIdle } from "@mend/telemetry";
 import { Clock, Effect, Layer, Redacted, Schema, Stream } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
@@ -488,6 +489,8 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
           Effect.annotateLogs({ cause: String(cause) }),
         ),
       ),
+      // An event that notifies nobody leaves no trace (SLNT-1404).
+      quietWhenIdle,
       Effect.forkScoped,
     );
   });

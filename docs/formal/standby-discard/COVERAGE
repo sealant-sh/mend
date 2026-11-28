@@ -202,7 +202,20 @@
 # Effect.fn("…") into Effect.fnUntraced: each runs the same statements without a span of its own.
 # Normalised for that wrapper and whitespace, engine.ts is main's, so no action changes. --quick
 # tlx run at 7afbb270c4: every row as expected.
-sync 7afbb270c4e6b15006a2f11014fcccc6cc68ed9d
+# ad8cda5e04 (SLNT-1404) changes engine.ts's tracing only. `runDrain`'s loop body moved, statement for
+# statement and in the same order, into `drainPass`, its locals into a `DrainState` the loop hands
+# each pass (so a stalled drain's later passes can be traces of their own); `discardStandbyNeverClaimed`
+# is called as before, once per drain (`standbyLooked`). Background forks leave the trace that forked
+# them (`forkSealantBackground`), supervision and process watchers are untraced but for their
+# ends, and the timer loops (the hot-pool sweep among them) send a pass only when it did
+# something. No hot-pool, claim, retire, drain or discard call changes, so no action changes.
+# --quick tlx run at ad8cda5e04: every row as expected.
+# 106695c06f (SLNT-1404, the same branch) wraps three detached reads in traces of their own: the
+# capture status read (`refreshCaptureStatus`, the reaper's status pass), the runtime deadline
+# read and a deferred flush nobody waits for (`runDeferredDetached`). Tracing only; no action
+# changes. --quick tlx run at 106695c06f: every row as expected.
+# e5ec67df44 is the same branch later: engine.ts has not changed since 106695c06f.
+sync e5ec67df44d96e8f6d24df1f7ca31d3d738469df
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

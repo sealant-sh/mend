@@ -10,6 +10,7 @@ import { JobRunner } from "@mend/jobs";
 import { SLACK_TOKEN_REFUSALS } from "@mend/slack/client";
 import { SlackSocket } from "@mend/slack/socket";
 import { SecretCipher } from "@mend/store";
+import { quietWhenIdle } from "@mend/telemetry";
 import { Clock, Effect, Exit, FiberMap, Layer, Schedule, Schema, Stream } from "effect";
 
 import { SlackRunner } from "./slack-runner.ts";
@@ -170,11 +171,14 @@ export const SlackSocketsLive: Layer.Layer<
         ),
       ),
       Effect.repeat(Schedule.spaced(SLACK_RECONCILE_INTERVAL)),
+      // A pass that changes nothing leaves no trace (SLNT-1404).
+      quietWhenIdle,
       Effect.forkScoped,
     );
     yield* Clock.currentTimeMillis.pipe(
       Effect.flatMap((now) => claims.sweep(new Date(now - SLACK_EVENT_CLAIM_RETENTION_MS))),
       Effect.repeat(Schedule.spaced(SLACK_CLAIM_SWEEP_INTERVAL)),
+      quietWhenIdle,
       Effect.forkScoped,
     );
   }),

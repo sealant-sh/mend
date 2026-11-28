@@ -38,6 +38,7 @@ import {
 import { NetworkConfig } from "@mend/network";
 import { asSealantUser, forkSealantBackground } from "@mend/sealant";
 import { SessionEngine, WorkspaceGitHooks, WorktreeReads } from "@mend/sessions";
+import { quietWhenIdle } from "@mend/telemetry";
 import { Cause, Clock, Duration, Effect, Layer, Result, Schema, Stream } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
@@ -512,11 +513,13 @@ export const automaticLanding = (events: Stream.Stream<string, SqlError>) =>
               return again.delete(sessionId) ? look(sessionId) : Effect.void;
             }),
           ),
+          // A look that lands nothing leaves no trace (SLNT-1404).
+          quietWhenIdle,
           forkSealantBackground(scope),
           Effect.asVoid,
         );
       });
-    yield* Effect.forkScoped(lander.sweep());
+    yield* Effect.forkScoped(lander.sweep().pipe(quietWhenIdle));
 
     yield* events.pipe(
       Stream.runForEach((payload) =>

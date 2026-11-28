@@ -12,6 +12,7 @@
     "./http-observation": "./src/http-observation.ts",
     "./secret-segments": "./src/secret-segments.ts",
     "./url-template": "./src/url-template.ts",
+    "./trace-origin": "./src/trace-origin.ts",
     "./tunnel-client": "./src/tunnel-client.ts"
   },
   "scripts": {
@@ -24,6 +25,7 @@
     "tldts": "catalog:"
   },
   "devDependencies": {
+    "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
     "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",

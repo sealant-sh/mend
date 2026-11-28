@@ -1,5 +1,6 @@
 import { IssuesRepo, SettingsRepo } from "@mend/db";
 import type { ChangeId, Issue, RunId } from "@mend/domain";
+import { detachTrace, quietWhenIdle } from "@mend/telemetry";
 import { Config, Duration, Effect, Layer, Option, Schedule, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -71,7 +72,9 @@ export class Dispatcher extends Context.Service<
         return { concurrency: current.concurrency, mending, started: true };
       });
 
-      const run = Effect.fn("Dispatcher.run")(function* () {
+      // No span covers the poll, which lasts as long as the process: each tick is its own trace,
+      // and one that started nothing leaves none (SLNT-1404).
+      const run = Effect.fnUntraced(function* () {
         yield* Effect.logInfo("dispatcher: polling").pipe(
           Effect.annotateLogs({ interval: Duration.format(interval) }),
         );
@@ -80,6 +83,8 @@ export class Dispatcher extends Context.Service<
             Effect.logError("dispatcher: tick died").pipe(Effect.annotateLogs({ defect })),
           ),
           Effect.repeat(Schedule.spaced(interval)),
+          quietWhenIdle,
+          detachTrace,
         );
       });
 

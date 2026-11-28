@@ -1,5 +1,5 @@
 import { makeMendApiClient, type MendApiClient } from "@mend/api-contracts";
-import { reportCause, telemetryLayer } from "@mend/telemetry";
+import { reportCause, telemetryLayer, Tracing } from "@mend/telemetry";
 import { Cause, Effect, Exit, Layer, ManagedRuntime, Option, type Tracer } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
@@ -51,9 +51,10 @@ const sentryBaggage = (baggage: string): string =>
 /**
  * Never detach browser credentials from their Origin, or infer trust from Host. The trace goes on
  * too: `traceparent` is the procedure's own span's (Effect's client sets it on every request),
- * and the caller's `tracestate` and `sentry-*` baggage ride beside it.
+ * and the caller's `tracestate` and `sentry-*` baggage ride beside it. A web tier with telemetry
+ * off sends none of the three (SLNT-1404): it has no span of its own for the API to hang off.
  */
-const credentialHeaders = (headers: Headers): Record<string, string> => {
+const credentialHeaders = (headers: Headers, tracing: boolean): Record<string, string> => {
   const forwarded: Record<string, string> = {};
   const cookie = headers.get("cookie");
   const authorization = headers.get("authorization");
@@ -66,6 +67,7 @@ const credentialHeaders = (headers: Headers): Record<string, string> => {
   // the entries its trusted hops appended (`clientAddressOf`), so this grants nothing.
   const forwardedFor = headers.get("x-forwarded-for");
   if (forwardedFor !== null) forwarded["x-forwarded-for"] = forwardedFor;
+  if (!tracing) return forwarded;
   const tracestate = headers.get("tracestate");
   if (tracestate !== null) forwarded["tracestate"] = tracestate;
   const baggage = sentryBaggage(headers.get("baggage") ?? "");
@@ -77,10 +79,16 @@ const credentialHeaders = (headers: Headers): Record<string, string> => {
 export const apiClientFor = (
   ctx: TrpcContext,
 ): Effect.Effect<MendApiClient, never, HttpClient.HttpClient> =>
-  makeMendApiClient({
-    baseUrl: ctx.apiUrl,
-    transformClient: (client) =>
-      HttpClient.mapRequest(client, HttpClientRequest.setHeaders(credentialHeaders(ctx.headers))),
+  Effect.gen(function* () {
+    const tracing = yield* Tracing;
+    return yield* makeMendApiClient({
+      baseUrl: ctx.apiUrl,
+      transformClient: (client) =>
+        HttpClient.mapRequest(
+          client,
+          HttpClientRequest.setHeaders(credentialHeaders(ctx.headers, tracing)),
+        ),
+    });
   });
 
 /**

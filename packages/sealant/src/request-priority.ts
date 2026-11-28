@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
+import { detachTrace } from "@mend/telemetry";
 import { Effect, Fiber, Scope } from "effect";
 import { dual } from "effect/Function";
 
@@ -45,8 +46,26 @@ export const withInteractiveSealant = <A, E, R>(
 ): Effect.Effect<A, E, R> =>
   Effect.suspend(() => self.pipe(withSealantRequestPriority(priority.getStore() ?? "interactive")));
 
-/** Fork maintenance in its owner's scope without inheriting a person's interactive allowance. */
+/**
+ * Fork maintenance in its owner's scope without inheriting a person's interactive allowance, or
+ * the trace it was forked in (SLNT-1404): maintenance outlives the request or the launch that
+ * forked it, often by the session's whole life, and would hold that trace open for as long. Each
+ * trace it starts is linked to the span it was forked from instead (`detachTrace`).
+ */
 export const forkSealantBackground: typeof Effect.forkIn = dual(
+  (args) => Effect.isEffect(args[0]),
+  <A, E, R>(
+    self: Effect.Effect<A, E, R>,
+    scope: Scope.Scope,
+    options?: Parameters<typeof Effect.forkIn>[2],
+  ) => Effect.forkIn(self.pipe(withSealantRequestPriority("normal"), detachTrace), scope, options),
+);
+
+/**
+ * `forkSealantBackground` for work its caller waits on (with a deadline): it stays in the caller's
+ * trace, where it is the caller's own work, and keeps the caller's other references.
+ */
+export const forkSealantAwaited: typeof Effect.forkIn = dual(
   (args) => Effect.isEffect(args[0]),
   <A, E, R>(
     self: Effect.Effect<A, E, R>,

@@ -110,7 +110,16 @@
 # same statements without a span of its own. Normalised for that wrapper, trailing commas and
 # whitespace, the file is main's, so no action changes. --quick tlx run at bebfb06a70: every row as
 # expected.
-sync bebfb06a70d1f192ac93f50755e0e11e6139a0ae
+# ad8cda5e04 (SLNT-1404) changes protocol-host.ts's tracing only: each event is projected under
+# `untraced` (tracer off and no trace header) where it ran under `withTracerEnabled(false)`, and a
+# turn's run span ends after ten minutes (`turn-trace.ts`). No dispatch, bind, settle, interrupt or
+# turn write changes, so no action changes. --quick tlx run at ad8cda5e04: every row as expected.
+# 106695c06f is the same branch later: no covered file changed after ad8cda5e04.
+# e5ec67df44 (SLNT-1393) opens the agent's output stream (`attachInternal`'s `readOutput`) under
+# a span of its own, `mend.session.open_output`, linked to the launch: the same stream, from the
+# same sequence, read the same way. No dispatch, bind, settle, interrupt or turn write changes, so
+# no action changes. --quick tlx run at e5ec67df44: every row as expected.
+sync e5ec67df44d96e8f6d24df1f7ca31d3d738469df
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla

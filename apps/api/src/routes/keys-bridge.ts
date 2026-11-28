@@ -1,5 +1,6 @@
 import { Auth } from "@mend/auth";
 import { OrganizationsRepo, UpgradeTicketsRepo } from "@mend/db";
+import { requestOpened } from "@mend/network/http-observation";
 import { AgentBridge } from "@mend/store";
 import { Effect } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
@@ -73,6 +74,9 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
               undefined,
               "key-bridge",
             );
+            // Registered and checked: the socket is open, its request's span ends, and its life is
+            // not that request's trace (SLNT-1404).
+            yield* requestOpened(101);
             const frames = makeFrameGuard(budgets.limits.frameBytes, write);
 
             // The bridge speaks through a plain callback; each frame rides

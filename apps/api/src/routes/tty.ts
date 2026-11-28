@@ -8,6 +8,7 @@ import {
 } from "@mend/db";
 import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
 import { currentAgentProcess, TERMINAL_CLIENT_TOUCH_EVERY_MS } from "@mend/domain/workbench";
+import { requestOpened } from "@mend/network/http-observation";
 import { withSealantRequestPriority } from "@mend/sealant";
 import { asSealantUser, SealantClient, SealantPlatformError } from "@mend/sealant";
 import { SessionEngine, WorkspaceCaller } from "@mend/sessions";
@@ -343,6 +344,9 @@ export const TtyRoutes = HttpRouter.use((router) =>
               sessionId,
               "terminal",
             );
+            // Registered and checked: the socket is open, its request's span ends, and its life is
+            // not that request's trace (SLNT-1404).
+            yield* requestOpened(101);
             const frames = makeFrameGuard(budgets.limits.frameBytes, write);
             const agentProcessId = target.terminalAgentId;
             // The owner's terminal open on a terminal agent (SLNT-1235): once the last one

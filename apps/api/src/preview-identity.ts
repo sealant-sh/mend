@@ -13,6 +13,7 @@ import {
 import { PreviewId } from "@mend/domain";
 import { canSeeProject, type Preview, type Viewer } from "@mend/domain/workbench";
 import { forkSealantBackground } from "@mend/sealant";
+import { quietWhenIdle } from "@mend/telemetry";
 import {
   Cause,
   Clock,
@@ -474,7 +475,13 @@ export const makePreviewIdentityLayer = (
             );
         });
 
-      yield* stampOpen.pipe(Effect.delay(timing.sweepEvery), Effect.forever, Effect.forkScoped);
+      // A pass that stamps nothing leaves no trace (SLNT-1404).
+      yield* stampOpen.pipe(
+        Effect.delay(timing.sweepEvery),
+        Effect.forever,
+        quietWhenIdle,
+        Effect.forkScoped,
+      );
       yield* grants.cleanup().pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("preview: grant cleanup failed; it runs again").pipe(
@@ -482,6 +489,7 @@ export const makePreviewIdentityLayer = (
           ),
         ),
         Effect.repeat(Schedule.fixed(timing.cleanupEvery)),
+        quietWhenIdle,
         Effect.forkScoped,
       );
       return { issueTicket, exchangeTicket, withViewer };

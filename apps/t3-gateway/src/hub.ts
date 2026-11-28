@@ -58,6 +58,7 @@ import {
   type ServerRemoveKeybindingInput,
   type ResolvedKeybindingsConfig,
 } from "@mend/t3-contracts";
+import { currentOrigin, detachTrace, inOwnTrace } from "@mend/telemetry";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -1399,6 +1400,23 @@ const mergeItems = (watch: Watch, read: ReadonlyArray<MendItem>) => {
     watch.cursor = Math.max(watch.cursor, item.seq);
   }
 };
+
+/** Whether `key` names a refresh `refreshOf` makes; any other does nothing. */
+const isRefreshKey = (key: string): boolean =>
+  key === "all" ||
+  key === "devices" ||
+  key.startsWith("project:") ||
+  key.startsWith("conversation:");
+
+/** The span a refresh of `key` runs in (`refreshKeyOf`'s keys): one name per kind, never an ID. */
+const refreshSpanOf = (key: string): string =>
+  key === "all"
+    ? "mend.gateway.refresh_all"
+    : key === "devices"
+      ? "mend.gateway.check_devices"
+      : key.startsWith("project:")
+        ? "mend.gateway.refresh_project"
+        : "mend.gateway.refresh_conversation";
 
 export const makePersonHub = (input: {
   /** The only way the hub reaches Mend (`device-gate.ts`). */
@@ -3438,6 +3456,12 @@ export const makePersonHub = (input: {
         );
       });
 
+    /**
+     * One refresh, as a trace of its own (SLNT-1404): the hub runs detached from the request that
+     * opened it (`Projections`), and each of its traces is linked to that request.
+     */
+    const refreshTraced = (key: string): Effect.Effect<void, HubReadError> =>
+      isRefreshKey(key) ? refreshOf(key).pipe(inOwnTrace(refreshSpanOf(key))) : Effect.void;
     const refreshOf = (key: string): Effect.Effect<void, HubReadError> => {
       if (key === "all") {
         return loadLock.withPermits(1)(refreshAll.pipe(Effect.tap(() => markLoaded)));
@@ -3462,7 +3486,7 @@ export const makePersonHub = (input: {
                 deferredKeys.add(key);
                 return Effect.void;
               }
-              return refreshOf(key).pipe(
+              return refreshTraced(key).pipe(
                 Effect.catch((error) =>
                   Effect.logWarning("t3 gateway could not refresh from Mend", {
                     key,
@@ -3503,6 +3527,9 @@ export const makePersonHub = (input: {
         return refresh.pipe(
           Effect.andThen(
             Effect.suspend(() => readNativeHistory(sessionId, ++readGeneration)).pipe(
+              inOwnTrace("mend.gateway.read_native_history", {
+                attributes: { "mend.session_id": sessionId },
+              }),
               Effect.forkIn(hubScope),
               Effect.asVoid,
             ),
@@ -7062,7 +7089,16 @@ export const makePersonHub = (input: {
       );
     });
     const shellSnapshot = ensureLoaded.pipe(
-      Effect.andThen(Effect.forkIn(refreshPullRequests, hubScope)),
+      // A trace of its own, linked to the call that asked for the shell: it reads every linked
+      // pull request, and outlives that call.
+      Effect.andThen(
+        Effect.flatMap(currentOrigin, (origin) =>
+          refreshPullRequests.pipe(
+            inOwnTrace("mend.gateway.refresh_pull_requests", { origin }),
+            Effect.forkIn(hubScope),
+          ),
+        ),
+      ),
       Effect.andThen(locked(Effect.sync(currentShell))),
     );
 
@@ -7974,6 +8010,8 @@ export const ProjectionsLive: Layer.Layer<
     const hubs: RcMap.RcMap<string, PersonHub> = yield* RcMap.make({
       lookup: (userId: string) => {
         const tokens = tokensOf(userId);
+        // Built inside the request that first asked for it, and living on long after: everything
+        // the hub does on its own starts its own trace, linked to that request (SLNT-1404).
         return makePersonHub({
           // Every call the hub makes with a device token goes through the gate.
           mend: gateDeviceCalls(mend, tokens.refuse),
@@ -7985,7 +8023,7 @@ export const ProjectionsLive: Layer.Layer<
           queueTimings: { ...Queueing.DEFAULT_QUEUE_TIMINGS, ...config.queueTimings },
           mendUrl: config.mendUrl,
           dispose: RcMap.invalidate(hubs, userId),
-        });
+        }).pipe(detachTrace);
       },
       idleTimeToLive: config.hubIdleTimeToLive ?? HUB_IDLE_TTL,
     });
@@ -8021,6 +8059,8 @@ export const ProjectionsLive: Layer.Layer<
           Effect.scoped(
             RcMap.get(hubs, userId).pipe(Effect.flatMap((held) => held.shellSnapshot)),
           ).pipe(
+            // Each attempt a trace of its own: Mend may not answer for a while (SLNT-1404).
+            inOwnTrace("mend.gateway.restore_queue"),
             // A device Mend refused will not come back; only Mend not answering is waited out.
             Effect.retry({
               schedule: Schedule.spaced(QUEUE_RESTORE_RETRY),
@@ -8066,6 +8106,8 @@ export const ProjectionsLive: Layer.Layer<
         devices.values(),
         (session) =>
           mend.checkDevice(session.deviceToken).pipe(
+            // Each attempt a trace of its own: Mend may not answer for a while (SLNT-1404).
+            inOwnTrace("mend.gateway.check_device"),
             Effect.retry({ schedule: DEVICE_RECONCILE_RETRY, while: isOutage }),
             Effect.flatMap((verdict) =>
               // A person with no hub yet holds no known token, so this also completes their

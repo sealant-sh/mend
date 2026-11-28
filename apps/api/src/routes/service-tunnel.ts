@@ -7,6 +7,7 @@ import {
   UpgradeTicketsRepo,
 } from "@mend/db";
 import { ServiceId } from "@mend/domain";
+import { requestOpened } from "@mend/network/http-observation";
 import { asSealantUser, withSealantRequestPriority, type ForwardIssueReason } from "@mend/sealant";
 import { ForwardAdapter, portTarget, ServiceHost } from "@mend/sessions";
 import { type Cause, Effect, Option, Queue, Semaphore } from "effect";
@@ -195,6 +196,9 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
               owner.value.id,
               "tunnel",
             );
+            // Registered and checked: the socket is open, its request's span ends, and its life is
+            // not that request's trace (SLNT-1404).
+            yield* requestOpened(101);
             const frames = makeFrameGuard(budgets.limits.frameBytes, write);
             const inbound = yield* Queue.unbounded<
               { readonly pulled: ReadonlyArray<string | Uint8Array>; readonly held: number },

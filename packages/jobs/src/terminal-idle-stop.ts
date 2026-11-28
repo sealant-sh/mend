@@ -19,6 +19,7 @@ import {
 } from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
+import { quietWhenIdle } from "@mend/telemetry";
 import { Clock, Config, Duration, Effect, Layer, Schedule } from "effect";
 import * as Context from "effect/Context";
 
@@ -222,6 +223,8 @@ export const TerminalIdleStopScheduleLive: Layer.Layer<never, never, TerminalIdl
             ),
           ),
           Effect.repeat(Schedule.spaced(PROTOCOL_IDLE_SWEEP_INTERVAL)),
+          // A pass that stopped nothing leaves no trace (SLNT-1404).
+          quietWhenIdle,
         ),
       );
     }),

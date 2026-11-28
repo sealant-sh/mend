@@ -1,5 +1,5 @@
-import { spanOfCarrier } from "@mend/telemetry";
-import { Clock, Context, Effect, Exit, Option, Tracer } from "effect";
+import { spanOfCarrier, traced } from "@mend/telemetry";
+import { Clock, Context, Duration, Effect, Exit, Fiber, Option, Tracer } from "effect";
 
 /**
  * A conversation turn's trace (SLNT-1349, "Crossing async boundaries"). A turn is accepted in one
@@ -24,7 +24,16 @@ export interface TracedTurn<Id extends string = string> {
 interface Run {
   readonly span: Tracer.Span;
   firstOutput: boolean;
+  /** Ends the span once `RUN_SPAN_LIMIT` passes with the turn still running. */
+  timer?: Fiber.Fiber<void>;
 }
+
+/**
+ * A turn's run span ends by now even while the turn still runs (SLNT-1404): no span stays open
+ * longer than about ten minutes. The turn's end is then its own `mend.turn.complete`, in the
+ * same trace.
+ */
+const RUN_SPAN_LIMIT = Duration.minutes(10);
 
 /** Runs this many turns at most are held open; the oldest is ended first past it. */
 const MAX_OPEN_RUNS = 1_000;
@@ -76,7 +85,7 @@ export const makeTurnTraces = <Id extends string>(
     Effect.flatMap(parentOf(turn), (parent) =>
       effect.pipe(
         Effect.withSpan("mend.turn.dispatch", { ...parent, attributes: attributesOf(turn) }),
-        Effect.withTracerEnabled(true),
+        traced,
       ),
     );
 
@@ -87,12 +96,24 @@ export const makeTurnTraces = <Id extends string>(
       const span = yield* Effect.makeSpan("mend.turn.run", {
         ...parent,
         attributes: attributesOf(turn),
-      }).pipe(Effect.withTracerEnabled(true));
-      runs.set(providerTurnId, { span, firstOutput: false });
+      }).pipe(traced);
+      const begun: Run = { span, firstOutput: false };
+      runs.set(providerTurnId, begun);
+      begun.timer = yield* Effect.sleep(RUN_SPAN_LIMIT).pipe(
+        Effect.andThen(
+          Effect.suspend(() => {
+            if (runs.get(providerTurnId) !== begun) return Effect.void;
+            runs.delete(providerTurnId);
+            return endRun(begun, { "mend.turn.status": "running" });
+          }),
+        ),
+        Effect.forkDetach,
+      );
       for (const [id, run] of runs) {
         if (runs.size <= MAX_OPEN_RUNS) break;
         runs.delete(id);
         yield* endRun(run, { "mend.turn.status": "unobserved" });
+        run.timer?.interruptUnsafe();
       }
     });
 
@@ -124,13 +145,16 @@ export const makeTurnTraces = <Id extends string>(
       const run = runs.get(providerTurnId);
       if (run !== undefined) {
         runs.delete(providerTurnId);
-        return yield* endRun(run, { "mend.turn.status": turn.status });
+        yield* endRun(run, { "mend.turn.status": turn.status });
+        // The span is ended first: an interrupt now cannot leave it open.
+        run.timer?.interruptUnsafe();
+        return;
       }
       // Ended after a restart, or by a run this process never began: its trace still ends.
       const parent = yield* parentOf(turn);
       yield* Effect.annotateCurrentSpan("mend.turn.status", turn.status).pipe(
         Effect.withSpan("mend.turn.complete", { ...parent, attributes: attributesOf(turn) }),
-        Effect.withTracerEnabled(true),
+        traced,
       );
     });
 
