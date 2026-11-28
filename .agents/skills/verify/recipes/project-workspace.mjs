@@ -21,7 +21,9 @@
 //   as someone who may only read it, and a status read that fails.
 //
 // - Real, where you ran sessions in verify-fixture (the box): its ready workspaces raised, an image
-//   saved, and the server reporting them `starting`; its image and count put back exactly.
+//   saved, and the server reporting them `starting`; its image and count put back exactly. When
+//   you have no session there from the last 6 days, the recipe starts and stops a shell session in
+//   it first, since the pool warms only for recent owners (SLNT-1421).
 //
 // - Real, at the end: once the project's automatic installs have ended, Remove project… on its
 //   General page removes it (SLNT-1243: an install that ended during a removal's check kept its
@@ -448,6 +450,61 @@ export default async ({ page, web, capture, note }) => {
         }
         return null;
       };
+      // The pool warms only for owners with a session in the project from the last 7 days that is
+      // not a setup or an automatic install. A copy booted from a master whose last verify-fixture
+      // session of yours is older keeps none for you, and the step below would fail for want of a
+      // session, not for the rewarm (SLNT-1421). On the box, start and stop one shell session there
+      // first unless one from the last 6 days exists (6, so it can't age out during the step). It
+      // needs no agent login; the pool doesn't ask which harness a session ran.
+      if (onBox) {
+        const since = Date.now() - 6 * 24 * 60 * 60 * 1_000;
+        // The REST read with `deadEnds=include`: an ended shell session keeps no transcript, and
+        // the default read leaves those out.
+        const everySession = async () =>
+          (
+            await page.evaluate(
+              async (id) => (await fetch(`/api/projects/${id}?deadEnds=include`)).json(),
+              real.id,
+            )
+          ).sessions;
+        const recent = (await everySession()).find(
+          (session) =>
+            session.ownerUserId === me.userId &&
+            session.purpose !== "setup" &&
+            session.label !== "install · mend" &&
+            Date.parse(session.createdAt) > since,
+        );
+        if (recent !== undefined)
+          note(
+            `hot-rewarm (real): your newest session in verify-fixture is from ${recent.createdAt}, inside the pool's 7 days`,
+          );
+        else {
+          const shell = await call(
+            "sessions.create",
+            {
+              projectId: real.id,
+              session: { harness: "shell", label: "pool owner", name: null, base: null },
+            },
+            "mutate",
+          );
+          await call("sessions.launch", { id: shell.id, request: {} }, "mutate");
+          let state = "";
+          for (const until = Date.now() + 180_000; Date.now() < until; ) {
+            state = (await everySession()).find((session) => session.id === shell.id)?.status ?? "";
+            if (["running", "completed", "stopped", "failed"].includes(state)) break;
+            await page.waitForTimeout(2_000);
+          }
+          await call("sessions.stop", { id: shell.id }, "mutate").catch(() => undefined);
+          expect(
+            "the shell session in verify-fixture started",
+            state === "running" || state === "completed",
+            state,
+          );
+          note(
+            "hot-rewarm (real): no session of yours in verify-fixture in the last 6 days, so the pool would keep none; started and stopped a shell session there first",
+          );
+        }
+      }
       try {
         await open(realHome);
         await heading("Workspace");
