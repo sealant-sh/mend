@@ -232,4 +232,14 @@ test("a stack reports to Sentry only when this machine names the projects", asyn
       "verify-stack",
     ],
   );
+  assert.deepEqual(
+    telemetryFlags(
+      {
+        MEND_VERIFY_SENTRY_BROWSER_DSN: "https://w@sentry.example/4",
+        MEND_VERIFY_SENTRY_ENVIRONMENT: " slnt-1408-web ",
+      },
+      "check-vm",
+    ),
+    ["--sentry-browser-dsn", "https://w@sentry.example/4", "--sentry-environment", "slnt-1408-web"],
+  );
 });

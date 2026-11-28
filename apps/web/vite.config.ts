@@ -1,4 +1,7 @@
+import path from "node:path";
+
 import { loadPublicNetwork } from "@mend/network";
+import { experimentalComponentNameAnnotatePlugin } from "@sentry/babel-plugin-component-annotate";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
@@ -21,6 +24,9 @@ const allowedHosts = [
 ];
 
 const apiTarget = process.env["MEND_API_URL"] ?? "http://localhost:3101";
+
+/** The app's own source: the files whose components Sentry names (below). */
+const appSource = `${path.join(import.meta.dirname, "src")}${path.sep}`;
 
 const config = defineConfig({
   // Vite's own resolver, not vite-tsconfig-paths: that plugin returns a bare id, so a module first
@@ -87,7 +93,17 @@ const config = defineConfig({
       devProxy: devProxyRoutes(apiTarget),
       compressPublicAssets: { gzip: true, brotli: true },
     }),
-    viteReact(),
+    viteReact({
+      // Each of the app's components names its first DOM element (`data-sentry-component`), so
+      // Sentry names a click or a layout shift for the Mend component around it rather than its
+      // class list (SLNT-1408). Sentry's root-element variant: one attribute per component that
+      // writes a DOM element itself, none on a wrapper of another component. The kit's
+      // (`packages/ui`) stay unnamed: a click in a session's row reads `SessionRow`, not the
+      // `SidebarMenuItem` it is drawn with, and the sign-in page carries fewer bytes.
+      babel: (id) => ({
+        plugins: id.startsWith(appSource) ? [experimentalComponentNameAnnotatePlugin] : [],
+      }),
+    }),
   ],
 });
 

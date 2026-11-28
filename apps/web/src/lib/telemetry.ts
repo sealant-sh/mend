@@ -106,7 +106,8 @@ export const actionHeaders = (
 
 /**
  * `fetch` for Mend's tRPC links: a request that names an action goes out with that action's span
- * active, so its `http.client` span and trace headers are the action's, and without the header.
+ * active, so its `http.client` span and trace headers are the action's, and without the header. A
+ * background read goes out in a trace of its own.
  */
 export const actionFetch =
   <U, I extends { readonly headers?: HeadersInit | undefined } | undefined, R>(
@@ -115,7 +116,11 @@ export const actionFetch =
   (url: U, init?: I): R => {
     const headers = new Headers(init?.headers);
     const key = headers.get(ACTION_HEADER);
-    if (init === undefined || key === null) return fetch(url, init);
+    if (init === undefined || key === null) {
+      return reporter === null
+        ? fetch(url, init)
+        : reporter.aside(String(url), () => fetch(url, init));
+    }
     headers.delete(ACTION_HEADER);
     const send = () => fetch(url, { ...init, headers });
     return reporter === null ? send() : reporter.withinAction(key, send);

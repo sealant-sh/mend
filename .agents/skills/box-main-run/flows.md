@@ -3485,16 +3485,28 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
   a `mend.web.message.send` per message with the `mend.turn_id` of the turn it started (none for the
   message sent into a running turn), and one `mend.web.turn.first_visible_output` per answered turn
   with the same `mend.turn_id`, `mend.turn.waited_from` send, lasting about as long as the answer
-  took; a send's trace holds its own `http.client` span (`POST /trpc/sessions.sendMessage`) and the
-  web server's `mend.web.sessions.sendMessage` under it, and nothing else of the page. Across both
-  projects (SLNT-1375): no span with operation `default` or an empty description; no database span
-  whose description is `[Filtered]`, each reading as a short query naming its table
+  took; a send's trace holds its own `http.client` span (`POST /trpc/:procedures`) with
+  `trpc sessions.send_message` (op `rpc.client`) and the web server's
+  `mend.web.sessions.sendMessage` under it, and nothing else of the page. In project 4 for the
+  copy's environment (SLNT-1408): every tRPC request named `POST /trpc/:procedures`, never a
+  procedure list or a `+N` count, with one `rpc.client` child per procedure it carried
+  (`trpc sessions.inbox_row`); clicks (`ui.interaction.click`) named for a Mend component
+  (`SessionRow`, described `click in SessionRow`) or, for a click too quick for the SDK to name its
+  element, `Click` described by its page (`click on /sessions/$sessionId`), never a class list, and
+  no `browser.web_vital.inp.target`, `…lcp.element` or `…cls.source.N` selector on any span (a label
+  can hold a session's name); every `ui.webvital.cls` span with a description
+  (`no layout shift on /login` for a page that never moved); page loads and navigations named by URL
+  template, a splat as `/settings/*` or `/*`, never `/$`; each five-second `executor.calls` read a
+  trace of its own (`POST /trpc/:procedures` over `trpc executor.calls`), never under a page load;
+  and no trace that lasts more than a few seconds past its root span's end, however long the run's
+  tab stayed open (a web vital reported later is a trace of its own, linked to its page). Across
+  both projects (SLNT-1375): no span with operation `default` or an empty description; no database
+  span whose description is `[Filtered]`, each reading as a short query naming its table
   (`select .. from projects where …`, op `db.sql.query`); every `http.client` named for a route
-  template (`GET /v1/sessions/:sessionId/output`, `POST /trpc/sessions.detail +2`), never a host,
-  port, ID or query; Mend's own spans named `mend.<area>.<operation>`; no `drizzle.operation` span;
-  and no browser span for the five-second `executor.calls` read. In project 3 (SLNT-1385): each of
-  Mend's own spans described in plain words that never repeat its operation
-  (`mend.auth — authenticate request`, `mend.access — authorize session`,
+  template (`GET /v1/sessions/:sessionId/output`, `POST /trpc/:procedures`), never a host, port, ID,
+  query or count; Mend's own spans named `mend.<area>.<operation>`; and no `drizzle.operation` span.
+  In project 3 (SLNT-1385): each of Mend's own spans described in plain words that never repeat its
+  operation (`mend.auth — authenticate request`, `mend.access — authorize session`,
   `mend.session — launch session`, `rpc.server — sessions.inbox`), so no description starts with
   `mend.`; web-write's `POST /api/sessions/:id/launch` showing one `launch session` with
   `provision workspace` and `mend.sealant — open session` under it, and no `session`,

@@ -423,8 +423,9 @@ the projects, in the verifier's own environment, never in the repository: `MEND_
 sealant-server), `MEND_VERIFY_SEALANTD_SENTRY_DSN` (the sealantd in each workspace, sealantd) and
 `MEND_VERIFY_SENTRY_BROWSER_DSN` (the web app in the browser, mend-web); the DSNs are in SLNT-1349's
 contract. `pnpm verify stack up` hands them to the stack's `mend server setup` under the environment
-`verify-stack`, and `pnpm verify vm up` to the copy's under `check-vm`. Unset, both report to
-nobody, as every install does.
+`verify-stack`, and `pnpm verify vm up` to the copy's under `check-vm`; a check that wants its spans
+apart from every other run's names its own with `MEND_VERIFY_SENTRY_ENVIRONMENT` (`slnt-1408-web`).
+Unset, both report to nobody, as every install does.
 
 The daily run of `main` sets them for every copy it boots when the dev machine's
 `~/.local/share/sentry-mend/verify.env` names them (the `box-main-run` skill's `copies.sh` reads
