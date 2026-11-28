@@ -4,12 +4,12 @@ import { SealantPlatformError } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, Workspace, WorkspaceCaptureStatus } from "@sealant/sdk";
-import { Clock, Duration, Effect } from "effect";
+import { Clock, Duration, Effect, Queue } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { lifecycleLayer, memoryHotPool } from "./engine/capture-fixture.ts";
-import { makeStandbyClock } from "./engine/clock-fixture.ts";
+import { makeStandbyClock, signalled, signalWrites, watched } from "./engine/clock-fixture.ts";
 import {
   captureAnswer,
   servedSocketApis,
@@ -60,6 +60,9 @@ interface Outcome {
   readonly placeholder: number | null;
 }
 
+/** What the reaper says as it takes up a drain no fiber runs. */
+const DRAIN_TAKEN_UP = "session engine: capture mode · a drain no fiber runs · taken up";
+
 const drain = {
   terminationWait: Duration.millis(50),
   pollInterval: Duration.millis(10),
@@ -77,8 +80,12 @@ const unsavedEpochsOf = (world: World, workspaceId: string) =>
 const run = (scenario: Scenario) =>
   Effect.gen(function* () {
     const created: Array<CreateOptions> = [];
-    const stops: Array<"drain" | "discard"> = [];
-    const logs: Array<string> = [];
+    /** A platform stop recorded, or a session row written: wakes whoever waits on either. */
+    const changes = yield* Queue.make<void>();
+    const untilChanged = signalled(changes);
+    const stops = watched<"drain" | "discard">(changes);
+    /** Every engine log line, each waking `untilChanged`. */
+    const logs = watched<string>(changes);
     const memory = makeMemoryCaptureStore();
     const pool = memoryHotPool();
     const clock = yield* makeStandbyClock(pool);
@@ -162,6 +169,9 @@ const run = (scenario: Scenario) =>
           unchanged: false,
         };
       });
+    /** What the stop's drain says each time its final flush answered complete and it did not save. */
+    const unsavedReadings = () =>
+      logs.filter((line) => line.includes("evidence does not read saved"));
     const result: { outcome: Outcome | null } = { outcome: null };
     yield* withPreparedEngineEffect(
       (testWorld, tmp) => setup(tmp, testWorld),
@@ -211,18 +221,12 @@ const run = (scenario: Scenario) =>
           }
           if (scenario.read === "after-launch") yield* readStatus;
           yield* sessions.stop(session.id);
-          const settle = Effect.gen(function* () {
-            for (
-              let look = 0;
-              look < 200 &&
-              stops.length === 0 &&
-              testWorld.sessions.get(session.id)?.captureNotSavedAt == null;
-              look++
-            ) {
-              yield* TestClock.adjust(drain.pollInterval);
-            }
-          });
-          yield* settle;
+          // The stop's drain harvests (real file work) before its first pass, which stops the
+          // workspace or keeps it at once (`stallSeconds: 0`): woken by either, not by the clock.
+          yield* untilChanged(
+            () => stops.length > 0 || testWorld.sessions.get(session.id)?.captureNotSavedAt != null,
+            "the stop's drain",
+          );
           if (scenario.final === "kept-then-saves") {
             // Kept: a person sees `not saved · workspace kept`. The person's write saves; the
             // capture reaper takes the kept drain up again, as it does after an upgrade.
@@ -231,15 +235,21 @@ const run = (scenario: Scenario) =>
             finalSaves = true;
             // Past the kept drain's first wait (10 s): what a restart's empty memory skips.
             yield* TestClock.adjust(Duration.seconds(10));
+            const unsavedBefore = unsavedReadings().length;
             yield* sessions.reapCaptureLeases();
-            for (let look = 0; look < 200 && stops.length === 0; look++) {
-              yield* TestClock.adjust(drain.pollInterval);
-            }
+            // This pass, not a later one, took the drain up.
+            expect(logs.filter((line) => line.includes(DRAIN_TAKEN_UP))).toHaveLength(1);
+            // The drain it forked harvests (real file work) before it stops the workspace, or
+            // reads the evidence not saved once more and keeps it.
+            yield* untilChanged(
+              () => stops.length > 0 || unsavedReadings().length > unsavedBefore,
+              "the reaper's drain",
+            );
           }
           const row = testWorld.sessions.get(session.id);
           result.outcome = {
             stops: [...stops],
-            drainWords: logs.filter((line) => line.includes("evidence does not read saved")),
+            drainWords: unsavedReadings(),
             placeholderWords: logs.filter((line) =>
               line.includes("answered under its placeholder"),
             ),
@@ -253,6 +263,7 @@ const run = (scenario: Scenario) =>
       {
         captured: memory,
         logs,
+        prepareWorld: (testWorld) => void signalWrites(testWorld.sessions, changes),
         hotWorkspacesLayer: clock.poolLayer,
         wrapCaptureChannel: clock.wrapCaptureChannel,
         drainPolicy: drain,
